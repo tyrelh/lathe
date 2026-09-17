@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyrelh/lathe/internal/trace"
 )
@@ -240,7 +241,7 @@ func TestLiveScout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := "live_" + filepath.Base(t.TempDir())
+	runID := "live_" + time.Now().UTC().Format("20060102T150405Z")
 	if err := db.RunStart(runID, "scout", repo, "live phase 3 check"); err != nil {
 		t.Fatal(err)
 	}
