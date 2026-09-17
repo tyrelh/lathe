@@ -35,7 +35,8 @@
 
 <script>
 const app = document.getElementById('app'), sub = document.getElementById('sub');
-let runID = location.hash.slice(1) || null, after = 0, seen = new Set();
+let runID = location.hash.slice(1) || null, after = 0, done = false;
+const PAGE = 500;   // the server's per-poll event cap
 
 const esc = s => String(s ?? '').replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]));
 const cls = s => s === 'ok' || s === 'success' ? 'ok' : s === 'running' ? 'running' : 'fail';
@@ -44,10 +45,11 @@ const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 
 addEventListener('hashchange', () => {
   runID = location.hash.slice(1) || null;
-  after = 0; seen.clear(); app.innerHTML = ''; tick();
+  after = 0; done = false; app.innerHTML = ''; tick();
 });
 
 async function tick() {
+  if (done) return;
   try {
     if (runID) await detail(); else await list();
   } catch (e) {
@@ -110,11 +112,14 @@ async function detail() {
       <td class="wrap">${esc(p.error)}</td>
     </tr>`).join('');
 
+  // A settled run is final: the phases and the log above are the whole of it,
+  // so the poll stops rather than re-running three queries every second. A full
+  // page means the server capped this poll and there is more to fetch first.
+  if (r.status !== 'running' && d.events.length < PAGE) done = true;
+
   const log = document.getElementById('log');
   for (const e of d.events) {
-    if (seen.has(e.event_id)) continue;
-    seen.add(e.event_id);
-    after = Math.max(after, e.event_id);
+    after = e.event_id;
     const row = log.insertRow();
     row.innerHTML = `
       <td class="dim">${time(e.at)}</td>
