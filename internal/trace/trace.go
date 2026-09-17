@@ -115,6 +115,14 @@ type Phase struct {
 	End    string
 }
 
+// NewRunID builds the canonical run ID <UTC timestamp>_<workflow>. Second
+// resolution means two runs of the same workflow starting in the same second
+// collide on the primary key, which fails the insert loudly rather than
+// merging two runs; add a suffix if that ever actually happens.
+func NewRunID(workflow string) string {
+	return time.Now().UTC().Format("20060102T150405Z") + "_" + workflow
+}
+
 // NewPhase builds a phase with the canonical ID <runID>_<seq, two digits>_<name>,
 // keeping the ID convention in the package that owns the schema.
 func NewPhase(runID string, seq int, name, kind, owner string) *Phase {

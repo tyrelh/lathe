@@ -71,14 +71,17 @@ type Block struct {
 	Text string `json:"text"`
 }
 
-// Text returns the first text block, which is where the assistant's reply lives.
+// Text joins every text block, which is where the assistant's reply lives.
+// Both captured runs carry one block per message, but returning only the first
+// would drop an envelope silently if that ever stopped being true.
 func (m Message) Text() string {
+	var parts []string
 	for _, b := range m.Content {
 		if b.Type == "text" {
-			return b.Text
+			parts = append(parts, b.Text)
 		}
 	}
-	return ""
+	return strings.Join(parts, "\n")
 }
 
 // DecodeMessage parses the deferred message payload.
