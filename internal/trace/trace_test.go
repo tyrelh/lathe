@@ -2,7 +2,6 @@ package trace
 
 import (
 	"database/sql"
-	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -23,7 +22,7 @@ func TestWriteFakeRun(t *testing.T) {
 	}
 
 	for i, name := range []string{"request", "scout"} {
-		p := &Phase{ID: fmt.Sprintf("%s_%02d_%s", runID, i, name), RunID: runID, Seq: i, Name: name, Kind: "agent", Owner: name}
+		p := NewPhase(runID, i, name, "agent", name)
 		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +32,7 @@ func TestWriteFakeRun(t *testing.T) {
 		if err := db.Event(runID, p.ID, "tool_call", "read", map[string]any{"path": "main.go"}); err != nil {
 			t.Fatal(err)
 		}
-		p.Status, p.End = "success", nowUTC()
+		p.Finish("success", "")
 		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
 		}

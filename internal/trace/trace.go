@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS phases (
   name       TEXT,
   kind       TEXT,
   owner      TEXT,
-  status     TEXT DEFAULT 'fail',
+  status     TEXT,
   error      TEXT,
   started_at TEXT,
   ended_at   TEXT
@@ -82,6 +82,7 @@ func Open(dataRoot string) (*DB, error) {
 	db.SetMaxOpenConns(1)
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL", // WAL keeps this crash-safe without a per-statement fsync
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA foreign_keys=ON",
 	} {
@@ -114,6 +115,25 @@ type Phase struct {
 	End    string
 }
 
+// NewPhase builds a phase with the canonical ID <runID>_<seq, two digits>_<name>,
+// keeping the ID convention in the package that owns the schema.
+func NewPhase(runID string, seq int, name, kind, owner string) *Phase {
+	return &Phase{
+		ID:    fmt.Sprintf("%s_%02d_%s", runID, seq, name),
+		RunID: runID,
+		Seq:   seq,
+		Name:  name,
+		Kind:  kind,
+		Owner: owner,
+	}
+}
+
+// Finish stamps the phase's end now and settles its status, so no caller ever
+// formats a time. Write it back with PhaseUpsert.
+func (p *Phase) Finish(status, errMsg string) {
+	p.Status, p.Error, p.End = status, errMsg, nowUTC()
+}
+
 // RunStart records a run as running. Every timestamp in the database comes
 // from nowUTC so a Mac and a VPS interleave correctly.
 func (d *DB) RunStart(runID, workflow, repo, request string) error {
@@ -133,7 +153,8 @@ func (d *DB) RunFinish(runID, status string, tokens int, cost float64) error {
 }
 
 // PhaseUpsert writes the whole phase row, creating or replacing it. Leaving
-// p.Start or p.End empty stamps them now, so a caller never formats a time.
+// p.Start empty stamps it now (and sticks, so the second write keeps it);
+// p.End stays empty until Finish sets it.
 func (d *DB) PhaseUpsert(p *Phase) error {
 	if p.Start == "" {
 		p.Start = nowUTC()
