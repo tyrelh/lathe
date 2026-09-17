@@ -115,12 +115,12 @@ type Phase struct {
 	End    string
 }
 
-// NewRunID builds the canonical run ID <UTC timestamp>_<workflow>. Second
-// resolution means two runs of the same workflow starting in the same second
-// collide on the primary key, which fails the insert loudly rather than
-// merging two runs; add a suffix if that ever actually happens.
+// NewRunID builds the canonical run ID <UTC timestamp>_<workflow>_<pid>. The
+// timestamp is second-resolution, so two runs of the same workflow starting in
+// the same second would collide on the primary key; the pid settles it,
+// because one lathe process runs exactly one run.
 func NewRunID(workflow string) string {
-	return time.Now().UTC().Format("20060102T150405Z") + "_" + workflow
+	return fmt.Sprintf("%s_%s_%d", time.Now().UTC().Format("20060102T150405Z"), workflow, os.Getpid())
 }
 
 // NewPhase builds a phase with the canonical ID <runID>_<seq, two digits>_<name>,
@@ -197,6 +197,39 @@ func (d *DB) Event(runID, phaseID, typ, name string, payload any) error {
 		`INSERT INTO events (run_id, phase_id, type, name, payload, at) VALUES (?, ?, ?, ?, ?, ?)`,
 		runID, nullIfEmpty(phaseID), typ, name, blob, nowUTC())
 	return err
+}
+
+// Row is one run as `lathe runs` lists it.
+type Row struct {
+	ID       string
+	Workflow string
+	Repo     string
+	Status   string
+	Started  string
+	Tokens   int
+	Cost     float64
+}
+
+// Recent returns the n most recent runs across every repo — the whole point of
+// one global database.
+func (d *DB) Recent(n int) ([]Row, error) {
+	rows, err := d.sql.Query(
+		`SELECT run_id, workflow, repo, status, started_at, tokens, cost
+		 FROM runs ORDER BY started_at DESC, run_id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Row
+	for rows.Next() {
+		var r Row
+		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Status, &r.Started, &r.Tokens, &r.Cost); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }

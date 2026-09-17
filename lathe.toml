@@ -15,8 +15,8 @@ tools    = ["read", "grep", "find", "ls"]
 # A model that stalls otherwise hangs lathe until someone notices.
 timeout  = "10m"
 
+# Find and report where things live; change nothing.
 [[agents]]
-name    = "scout"
-purpose = "Find and report where things live; change nothing."
-system  = "prompts/scout/system.md"
-user    = "prompts/scout/user.md"
+name   = "scout"
+system = "prompts/scout/system.md"
+user   = "prompts/scout/user.md"

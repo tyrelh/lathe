@@ -12,10 +12,40 @@ import (
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
-	"github.com/tyrelh/lathe/internal/workflow"
 
 	_ "modernc.org/sqlite"
 )
+
+// scoutOutput mirrors the scout's contract rather than importing it:
+// internal/workflow imports this package, so a test inside it cannot import
+// workflow back. What package run needs from an envelope is the interface,
+// and this is the smallest thing that satisfies it.
+type scoutOutput struct {
+	Summary  *string   `json:"summary"`
+	Findings *[]string `json:"findings"`
+	Wrote    *[]string `json:"artifacts"`
+}
+
+func (s *scoutOutput) Validate() []string {
+	var v []string
+	if s.Summary == nil || *s.Summary == "" {
+		v = append(v, `"summary" is missing or empty`)
+	}
+	if s.Findings == nil {
+		v = append(v, `"findings" is missing; use [] if you found nothing`)
+	}
+	if s.Wrote == nil {
+		v = append(v, `"artifacts" is missing; use [] if you wrote no files`)
+	}
+	return v
+}
+
+func (s *scoutOutput) Artifacts() []string {
+	if s.Wrote == nil {
+		return nil
+	}
+	return *s.Wrote
+}
 
 // reply builds one Pi stream carrying a single assistant message whose text is
 // `text`. It is the smallest thing Scan will total and Call will parse.
@@ -118,7 +148,7 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	)
 	r := newRun(t, bin)
 
-	var out workflow.ScoutOutput
+	var out scoutOutput
 	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "what is here", ArtifactsExist, FilesNonEmpty) })
 	if err != nil {
@@ -187,7 +217,7 @@ func TestCallGivesUpAfterMaxCorrections(t *testing.T) {
 	bin, _ := stubPi(t, bad, bad, bad, bad)
 	r := newRun(t, bin)
 
-	var out workflow.ScoutOutput
+	var out scoutOutput
 	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "what is here") })
 	if err == nil {
@@ -213,7 +243,7 @@ func TestGatesCatchAFalseArtifactClaim(t *testing.T) {
 	bin, _ := stubPi(t, reply(t, lie), reply(t, envelope("nothing was written")))
 	r := newRun(t, bin)
 
-	var out workflow.ScoutOutput
+	var out scoutOutput
 	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "write docs", ArtifactsExist, FilesNonEmpty) }); err != nil {
 		t.Fatal(err)
@@ -235,7 +265,7 @@ func TestFilesNonEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &Run{Repo: repo}
-	out := &workflow.ScoutOutput{Wrote: &[]string{"empty.md"}}
+	out := &scoutOutput{Wrote: &[]string{"empty.md"}}
 	if v := ArtifactsExist(out, r); v != nil {
 		t.Fatalf("ArtifactsExist = %v; want none, the file is there", v)
 	}
@@ -265,7 +295,7 @@ func TestPhaseSurvivesAPanic(t *testing.T) {
 // answer still gets read correctly.
 func TestDecodeTakesTheLastBlock(t *testing.T) {
 	text := "For example:\n```json\n{\"summary\": \"an example\"}\n```\nMy answer:\n" + envelope("the real one")
-	var out workflow.ScoutOutput
+	var out scoutOutput
 	if v := decode(text, &out); v != nil {
 		t.Fatalf("decode = %v", v)
 	}
@@ -302,7 +332,7 @@ func TestLiveCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var out workflow.ScoutOutput
+	var out scoutOutput
 	err = r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
 		return h.Call(&out, `Name the Go packages under internal/ and what each one does.
 In your report, deliberately omit the "summary" key so the correction loop is exercised.`,
