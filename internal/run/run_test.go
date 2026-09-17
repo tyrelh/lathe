@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/trace"
 
 	_ "modernc.org/sqlite"
@@ -422,4 +424,186 @@ fi
 	if s := scalar[string](t, db, `SELECT status FROM phases LIMIT 1`); s != "success" {
 		t.Errorf("phase status = %q, want success", s)
 	}
+}
+
+// gitRepo is a committed repo to point a run at. The stub agent is a shell
+// script and writes files directly: the guard extension is not in the loop
+// here, which is the point — this is the post-turn half proving it catches
+// what the pre-execution half would have blocked.
+func gitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// stubWriter is a fake pi that writes the named files before replying, so a
+// turn leaves real dirt behind for Enforce to find.
+func stubWriter(t *testing.T, reply string, writes ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	body := filepath.Join(dir, "reply.jsonl")
+	if err := os.WriteFile(body, []byte(reply), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n"
+	for _, w := range writes {
+		script += fmt.Sprintf("mkdir -p \"$(dirname %q)\" && printf 'the agent wrote this\\n' > %q\n", w, w)
+	}
+	script += fmt.Sprintf("cat %q\n", body)
+	bin := filepath.Join(dir, "fake-pi")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func TestEnforceRevertsWhatTheGuardWouldHaveBlocked(t *testing.T) {
+	repo := gitRepo(t)
+	r := newRun(t, stubWriter(t, reply(t, envelope("wrote both files")), "in-scope.go", "escaped.go"))
+	r.Repo = repo
+	if err := r.EnsureClean(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out scoutOutput
+	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
+		h.Scope([]string{"in-scope.go"})
+		return h.Call(&out, "write two files")
+	})
+	if err == nil {
+		t.Fatal("a write outside the scope has to fail the phase; the guard letting it through is a bug, not a warning")
+	}
+	if !strings.Contains(err.Error(), "escaped.go") {
+		t.Fatalf("the failure has to name the path: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repo, "in-scope.go")); err != nil {
+		t.Fatal("the in-scope file was reverted too:", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "escaped.go")); !os.IsNotExist(err) {
+		t.Fatal("the out-of-scope file survived")
+	}
+	// Nothing else moved: an over-eager Enforce is worse than none.
+	if err := permit.Clean(repo); err == nil || !strings.Contains(err.Error(), "in-scope.go") {
+		t.Fatalf("the tree should hold exactly the in-scope file: %v", err)
+	}
+
+	db := readDB(t)
+	payload := scalar[string](t, db,
+		`SELECT payload FROM events WHERE run_id = ? AND type = 'permit'`, r.ID)
+	if !strings.Contains(payload, "escaped.go") || !strings.Contains(payload, "in-scope.go") {
+		t.Fatalf("the permit event should carry both sides: %s", payload)
+	}
+	if code := r.Finish(true, ""); code != 1 {
+		t.Fatalf("exit code = %d; want 1", code)
+	}
+}
+
+// Without MarkClean, lathe never proved the tree was its to revert, so it does
+// not. A scout on a repo you are mid-edit in must not touch your work.
+func TestEnforceStaysOutOfATreeCleanDidNotPass(t *testing.T) {
+	repo := gitRepo(t)
+	r := newRun(t, stubWriter(t, reply(t, envelope("wrote a file")), "escaped.go"))
+	r.Repo = repo // and no EnsureClean
+
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+		func(h *Handle) error { return h.Call(&out, "write a file") }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "escaped.go")); err != nil {
+		t.Fatal("Enforce reverted in a run that never proved the tree was clean:", err)
+	}
+	db := readDB(t)
+	if n := scalar[int](t, db,
+		`SELECT count(*) FROM events WHERE run_id = ? AND type = 'permit'`, r.ID); n != 0 {
+		t.Fatalf("permit events = %d; want 0", n)
+	}
+	r.Finish(true, "")
+}
+
+// Every spawn goes out behind the guard, including a read-only one: the
+// --no-extensions is what stops the repo under investigation loading its own
+// extension into the agent reading it.
+func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
+	bin, argsFile := stubPi(t, reply(t, envelope("nothing here")))
+	r := newRun(t, bin)
+
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+		func(h *Handle) error { return h.Call(&out, "what is here") }); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := filepath.Join(r.Dir, permit.GuardFile)
+	if want := "--no-extensions\n-e\n" + guard + "\n"; !strings.Contains(string(args), want) {
+		t.Fatalf("args missing %q:\n%s", want, args)
+	}
+	// An empty allow list, and the roster's deny lists rather than the caller's.
+	scope, err := os.ReadFile(filepath.Join(r.Dir, permit.ScopeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(scope), `"allow":[]`) || !strings.Contains(string(scope), `.git/`) ||
+		!strings.Contains(string(scope), `sudo`) {
+		t.Fatalf("scope file = %s", scope)
+	}
+	r.Finish(true, "")
+}
+
+// Enforce is handed the whole dirty tree, not a per-turn diff, so a later
+// phase's narrower scope must not be read as a verdict on what an earlier one
+// was allowed to write. This is the plan -> build -> test shape: the tester has
+// no allow list at all and must still not revert the builder.
+func TestALaterPhaseKeepsAnEarlierPhasesWork(t *testing.T) {
+	repo := gitRepo(t)
+	r := newRun(t, stubWriter(t, reply(t, envelope("built it")), "built.go"))
+	r.Repo = repo
+	if err := r.EnsureClean(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "build", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
+		h.Scope([]string{"built.go"})
+		return h.Call(&out, "build it")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second phase with an empty scope, which is what a tester has. Its own
+	// leavings are still out of scope and still fail it here — Phase 4 is where
+	// test dirt stops being fatal — but the failure has to be about them and
+	// nothing else.
+	r.PiBin = stubWriter(t, reply(t, envelope("ran the suite")), "coverage.out")
+	err := r.Phase(Params{Name: "test", Kind: "agent", Owner: "scout"},
+		func(h *Handle) error { return h.Call(&out, "run the tests") })
+	if err == nil || strings.Contains(err.Error(), "built.go") {
+		t.Fatalf("the later phase blamed the earlier one's work: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repo, "built.go")); err != nil {
+		t.Fatal("the builder's work was reverted by the phase after it:", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "coverage.out")); !os.IsNotExist(err) {
+		t.Fatal("the tester's leavings survived; only what a phase was allowed carries forward")
+	}
+	r.Finish(true, "")
 }

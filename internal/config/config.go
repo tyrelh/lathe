@@ -34,8 +34,13 @@ type Config struct {
 	// two forms. It is one list in one file on purpose: the Go gates and the
 	// guard extension have to be holding the same one.
 	Protected []string `toml:"protected"`
-	Defaults  Agent    `toml:"defaults"`
-	Agents    []Agent  `toml:"agents"`
+	// BashDenied is the same idea for the one agent that gets a shell: Go
+	// regexps, checked by the guard before a command runs. It is coarse and a
+	// determined model gets past it — `python -c` alone does — so it is the
+	// careless case it catches, and it grows by incident.
+	BashDenied []string `toml:"bash_denied"`
+	Defaults   Agent    `toml:"defaults"`
+	Agents     []Agent  `toml:"agents"`
 
 	fsys fs.FS
 }
