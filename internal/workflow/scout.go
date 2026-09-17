@@ -76,20 +76,20 @@ func Scout(cfg config.Config, ov config.Overrides, repo, request string) int {
 				if err := ph.Call(&out, request, run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 					return err
 				}
-				return writeResult(r.Dir, &out)
+				return writeResult(r.Dir, "result.json", &out)
 			})
 	}
 
 	return r.Finish(true, "")
 }
 
-// writeResult puts the accepted envelope beside raw.jsonl. It is written
-// inside the phase so a disk failure fails the phase rather than being
-// discovered later by whatever expected the file.
-func writeResult(dir string, out any) error {
+// writeResult puts the accepted envelope beside raw.jsonl, under the name the
+// workflow's readers expect. It is written inside the phase so a disk failure
+// fails the phase rather than being discovered later by whatever wanted the file.
+func writeResult(dir, name string, out any) error {
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "result.json"), append(b, '\n'), 0o644)
+	return os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o644)
 }

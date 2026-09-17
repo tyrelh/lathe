@@ -36,13 +36,18 @@ func write(t *testing.T, path, body string) {
 	}
 }
 
-// reply is one Pi stream carrying a single assistant message whose text is the
-// agent's whole answer.
+// reply is one Pi stream carrying a scout's whole answer.
 func reply(t *testing.T, artifacts string) string {
 	t.Helper()
-	text := "Had a look.\n\n```json\n" +
-		`{"summary": "main.go dispatches subcommands", "findings": ["main.go: a switch on os.Args"], "artifacts": [` + artifacts + `]}` +
-		"\n```\n"
+	return piReply(t, "Had a look.\n\n```json\n"+
+		`{"summary": "main.go dispatches subcommands", "findings": ["main.go: a switch on os.Args"], "artifacts": [`+artifacts+`]}`+
+		"\n```\n")
+}
+
+// piReply wraps an agent's whole answer as the single assistant message a Pi
+// stream would carry it in.
+func piReply(t *testing.T, text string) string {
+	t.Helper()
 	b, err := json.Marshal(map[string]any{
 		"type": "message_end",
 		"message": map[string]any{
