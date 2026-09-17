@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `
 
+// busyTimeout makes a second connection wait its turn rather than fail. Both
+// openers set it, so it is one literal.
+const busyTimeout = "PRAGMA busy_timeout=5000"
+
 // DataRoot is where the database and per-run artifacts live: $XDG_DATA_HOME/lathe,
 // falling back to ~/.local/share/lathe.
 func DataRoot() (string, error) {
@@ -83,7 +87,7 @@ func Open(dataRoot string) (*DB, error) {
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL", // WAL keeps this crash-safe without a per-statement fsync
-		"PRAGMA busy_timeout=5000",
+		busyTimeout,
 		"PRAGMA foreign_keys=ON",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
@@ -160,6 +164,16 @@ func (d *DB) RunFinish(runID, status string, tokens int, cost float64) error {
 	return err
 }
 
+// RunInterrupt settles a run killed by a signal. It leaves tokens and cost
+// alone so a signal handler never has to read counters the run is still
+// updating; the usage events hold the spend either way.
+func (d *DB) RunInterrupt(runID string) error {
+	_, err := d.sql.Exec(
+		`UPDATE runs SET status = 'fail', ended_at = ? WHERE run_id = ? AND ended_at IS NULL`,
+		nowUTC(), runID)
+	return err
+}
+
 // PhaseUpsert writes the whole phase row, creating or replacing it. Leaving
 // p.Start empty stamps it now (and sticks, so the second write keeps it);
 // p.End stays empty until Finish sets it.
@@ -199,34 +213,38 @@ func (d *DB) Event(runID, phaseID, typ, name string, payload any) error {
 	return err
 }
 
-// Row is one run as `lathe runs` lists it.
+// Row is one run as `lathe runs` lists it and the dashboard renders it.
 type Row struct {
-	ID       string
-	Workflow string
-	Repo     string
-	Status   string
-	Started  string
-	Tokens   int
-	Cost     float64
+	ID       string  `json:"run_id"`
+	Workflow string  `json:"workflow"`
+	Repo     string  `json:"repo"`
+	Request  string  `json:"request"`
+	Status   string  `json:"status"`
+	Started  string  `json:"started_at"`
+	Ended    string  `json:"ended_at"`
+	Tokens   int     `json:"tokens"`
+	Cost     float64 `json:"cost"`
 }
 
 // Recent returns the n most recent runs across every repo — the whole point of
 // one global database.
 func (d *DB) Recent(n int) ([]Row, error) {
 	rows, err := d.sql.Query(
-		`SELECT run_id, workflow, repo, status, started_at, tokens, cost
+		`SELECT run_id, workflow, repo, request, status, started_at, ended_at, tokens, cost
 		 FROM runs ORDER BY started_at DESC, run_id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []Row
+	out := []Row{}
 	for rows.Next() {
 		var r Row
-		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Status, &r.Started, &r.Tokens, &r.Cost); err != nil {
+		var ended sql.NullString
+		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status, &r.Started, &ended, &r.Tokens, &r.Cost); err != nil {
 			return nil, err
 		}
+		r.Ended = ended.String
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -239,4 +257,110 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// OpenRO opens runs.db read-only, which is what the dashboard uses: a UI bug
+// cannot write, and mode=ro fails loudly if the file is not there rather than
+// creating an empty database that looks like "no runs yet".
+func OpenRO(dataRoot string) (*DB, error) {
+	path := filepath.Join(dataRoot, "runs.db")
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("no trace database at %s — run something first", path)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(busyTimeout); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &DB{sql: db}, nil
+}
+
+// PhaseRow and EventRow are phases and events as the dashboard reads them
+// back. Payload is passed through unparsed: it went in as JSON and the browser
+// is the one that wants it.
+type PhaseRow struct {
+	ID     string `json:"phase_id"`
+	Seq    int    `json:"seq"`
+	Name   string `json:"name"`
+	Owner  string `json:"owner"`
+	Status string `json:"status"`
+	Error  string `json:"error"`
+	Start  string `json:"started_at"`
+	End    string `json:"ended_at"`
+}
+
+type EventRow struct {
+	ID      int64           `json:"event_id"`
+	PhaseID string          `json:"phase_id"`
+	Type    string          `json:"type"`
+	Name    string          `json:"name"`
+	Payload json.RawMessage `json:"payload"`
+	At      string          `json:"at"`
+}
+
+// Get returns one run. A missing run is sql.ErrNoRows.
+func (d *DB) Get(runID string) (Row, error) {
+	var r Row
+	var ended sql.NullString
+	err := d.sql.QueryRow(
+		`SELECT run_id, workflow, repo, request, status, started_at, ended_at, tokens, cost
+		 FROM runs WHERE run_id = ?`, runID).
+		Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status, &r.Started, &ended, &r.Tokens, &r.Cost)
+	r.Ended = ended.String
+	return r, err
+}
+
+// Phases returns a run's phases in the order they ran.
+func (d *DB) Phases(runID string) ([]PhaseRow, error) {
+	rows, err := d.sql.Query(
+		`SELECT phase_id, seq, name, owner, status, error, started_at, ended_at
+		 FROM phases WHERE run_id = ? ORDER BY seq`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []PhaseRow{}
+	for rows.Next() {
+		var p PhaseRow
+		var errMsg, end sql.NullString
+		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.Owner, &p.Status, &errMsg, &p.Start, &end); err != nil {
+			return nil, err
+		}
+		p.Error, p.End = errMsg.String, end.String
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// Events returns a run's events with event_id greater than after, which is the
+// dashboard's poll cursor: the same query serves live tailing and replay.
+// limit bounds one poll; the cursor picks the rest up on the next one.
+func (d *DB) Events(runID string, after int64, limit int) ([]EventRow, error) {
+	rows, err := d.sql.Query(
+		`SELECT event_id, phase_id, type, name, payload, at
+		 FROM events WHERE run_id = ? AND event_id > ? ORDER BY event_id LIMIT ?`,
+		runID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []EventRow{}
+	for rows.Next() {
+		var e EventRow
+		var phaseID, payload sql.NullString
+		if err := rows.Scan(&e.ID, &phaseID, &e.Type, &e.Name, &payload, &e.At); err != nil {
+			return nil, err
+		}
+		e.PhaseID = phaseID.String
+		if payload.Valid {
+			e.Payload = json.RawMessage(payload.String)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

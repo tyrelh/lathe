@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lathe</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a; --panel: #1b1e24; --line: #2b2f37;
+    --fg: #d8dce3; --dim: #838b98;
+    --ok: #5ec27a; --fail: #e2686b; --run: #d8a657;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header b { letter-spacing: .1em; }
+  main { padding: 16px; max-width: 1100px; }
+  h2 { font-size: 12px; color: var(--dim); text-transform: uppercase;
+       letter-spacing: .1em; margin: 24px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line);
+       vertical-align: top; white-space: nowrap; }
+  td.wrap { white-space: normal; color: var(--dim); width: 100%; }
+  tr.run { cursor: pointer; }
+  tr.run:hover td { background: var(--panel); }
+  .dim { color: var(--dim); }
+  .ok { color: var(--ok); } .fail { color: var(--fail); } .running { color: var(--run); }
+  a { color: var(--fg); cursor: pointer; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
+  #log td:last-child { white-space: normal; width: 100%; }
+</style>
+
+<header><b>lathe</b> <span class="dim" id="sub"></span></header>
+<main id="app"></main>
+
+<script>
+const app = document.getElementById('app'), sub = document.getElementById('sub');
+let runID = location.hash.slice(1) || null, after = 0, done = false;
+const PAGE = 500;   // the server's per-poll event cap
+
+const esc = s => String(s ?? '').replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]));
+const cls = s => s === 'ok' || s === 'success' ? 'ok' : s === 'running' ? 'running' : 'fail';
+const time = s => (s || '').slice(11, 19);
+const base = p => (p || '').split('/').filter(Boolean).pop() || p;
+
+addEventListener('hashchange', () => {
+  runID = location.hash.slice(1) || null;
+  after = 0; done = false; app.innerHTML = ''; tick();
+});
+
+async function tick() {
+  if (done) return;
+  try {
+    if (runID) await detail(); else await list();
+  } catch (e) {
+    sub.textContent = String(e);
+  }
+}
+
+async function get(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function list() {
+  const runs = await get('/api/runs?n=50');
+  sub.textContent = runs.length + ' runs';
+  const repos = new Map();
+  for (const r of runs) {
+    const k = base(r.repo);
+    if (!repos.has(k)) repos.set(k, []);
+    repos.get(k).push(r);
+  }
+
+  app.innerHTML = [...repos].map(([repo, rows]) => `
+    <h2>${esc(repo)}</h2>
+    <table>${rows.map(r => `
+      <tr class="run" onclick="location.hash='${esc(r.run_id)}'">
+        <td class="dim">${esc(r.started_at.replace('T', ' ').replace('Z', ''))}</td>
+        <td class="${cls(r.status)}">${esc(r.status)}</td>
+        <td>${esc(r.workflow)}</td>
+        <td class="dim">${r.tokens} tok</td>
+        <td class="dim">$${r.cost.toFixed(5)}</td>
+        <td class="wrap">${esc(r.request)}</td>
+      </tr>`).join('')}</table>`).join('');
+}
+
+async function detail() {
+  const d = await get('/api/runs/' + encodeURIComponent(runID) + '?after=' + after);
+  const r = d.run;
+  sub.textContent = `${r.workflow} · ${r.status} · ${r.tokens} tok · $${r.cost.toFixed(5)}`;
+
+  // The header and phases are re-rendered every poll; the log is appended, so
+  // scrolling through a finished phase is not undone a second later.
+  if (!document.getElementById('log')) {
+    app.innerHTML = `
+      <p><a href="#">&larr; all runs</a></p>
+      <p id="head"></p>
+      <h2>phases</h2><table id="phases"></table>
+      <h2>events</h2><table id="log"></table>`;
+  }
+  document.getElementById('head').innerHTML =
+    `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
+  document.getElementById('phases').innerHTML = d.phases.map(p => `
+    <tr>
+      <td class="dim">${p.seq}</td>
+      <td>${esc(p.name)}</td>
+      <td class="dim">${esc(p.owner)}</td>
+      <td class="${cls(p.status)}">${esc(p.status)}</td>
+      <td class="dim">${time(p.started_at)}${p.ended_at ? ' → ' + time(p.ended_at) : ''}</td>
+      <td class="wrap">${esc(p.error)}</td>
+    </tr>`).join('');
+
+  // A settled run is final: the phases and the log above are the whole of it,
+  // so the poll stops rather than re-running three queries every second. A full
+  // page means the server capped this poll and there is more to fetch first.
+  if (r.status !== 'running' && d.events.length < PAGE) done = true;
+
+  const log = document.getElementById('log');
+  for (const e of d.events) {
+    after = e.event_id;
+    const row = log.insertRow();
+    row.innerHTML = `
+      <td class="dim">${time(e.at)}</td>
+      <td class="${e.type === 'error' ? 'fail' : ''}">${esc(e.type)}</td>
+      <td>${esc(e.name)}</td>
+      <td><pre>${esc(payload(e.payload))}</pre></td>`;
+  }
+}
+
+// One line per event: the whole payload if it is short, its shape if not. The
+// run directory has the full transcript; this is a tail, not a viewer.
+function payload(p) {
+  if (p === null || p === undefined) return '';
+  const s = typeof p === 'string' ? p : JSON.stringify(p);
+  return s.length > 300 ? s.slice(0, 300) + '…' : s;
+}
+
+tick();
+setInterval(tick, 1000);
+</script>
