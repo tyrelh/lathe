@@ -30,10 +30,11 @@ func openSample(t *testing.T, name string) *os.File {
 func TestScanSample(t *testing.T) {
 	var raw bytes.Buffer
 	var tools []Event
-	res, err := Scan(openSample(t, "pi-sample.jsonl"), &raw, func(ev Event) {
+	res, err := Scan(openSample(t, "pi-sample.jsonl"), &raw, func(ev Event) bool {
 		if ev.Type == "tool_execution_end" {
 			tools = append(tools, ev)
 		}
+		return true
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,10 +73,11 @@ func TestScanSample(t *testing.T) {
 // A failed tool comes back in-band, and the run carries on.
 func TestScanToolError(t *testing.T) {
 	var failed int
-	if _, err := Scan(openSample(t, "pi-sample-toolerror.jsonl"), nil, func(ev Event) {
+	if _, err := Scan(openSample(t, "pi-sample-toolerror.jsonl"), nil, func(ev Event) bool {
 		if ev.Type == "tool_execution_end" && ev.IsError {
 			failed++
 		}
+		return true
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +108,7 @@ func TestRunHugeToolResult(t *testing.T) {
 
 	var got int
 	res, err := Run(context.Background(), Options{Bin: stub, Dir: dir}, "read it",
-		func(ev Event) { got = len(ev.Result) })
+		func(ev Event) bool { got = len(ev.Result); return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,14 +136,15 @@ func TestScanStreamsToolCallsToDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Scan(openSample(t, "pi-sample.jsonl"), nil, func(ev Event) {
+	res, err := Scan(openSample(t, "pi-sample.jsonl"), nil, func(ev Event) bool {
 		if ev.Type != "tool_execution_end" {
-			return
+			return true
 		}
 		if err := db.Event(runID, ph.ID, "tool_call", ev.ToolName,
 			map[string]any{"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError}); err != nil {
 			t.Error(err)
 		}
+		return true
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -265,11 +268,12 @@ func TestLiveScout(t *testing.T) {
 		Tools: []string{"read", "grep", "find", "ls"},
 		Raw:   rawFile, SessionID: runID,
 		OnStart: func(pid int) { db.Event(runID, ph.ID, "log", "pi_pid", map[string]int{"pid": pid}) },
-	}, "Read every .go file under internal/ and list what each package does.", func(ev Event) {
+	}, "Read every .go file under internal/ and list what each package does.", func(ev Event) bool {
 		if ev.Type == "tool_execution_end" {
 			db.Event(runID, ph.ID, "tool_call", ev.ToolName,
 				map[string]any{"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError})
 		}
+		return true
 	})
 	if err != nil {
 		t.Fatal(err)

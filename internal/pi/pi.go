@@ -13,6 +13,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // maxLine caps a single JSONL record. Scanner's 64KB default truncates a run
@@ -91,9 +92,12 @@ func (e Event) DecodeMessage() (Message, error) {
 	return m, err
 }
 
-// Handler sees every parsed event as it arrives. It must not block for long:
-// the agent's stdout is not being read while it runs.
-type Handler func(Event)
+// Handler sees every parsed event as it arrives and returns whether to keep
+// reading. It must not block for long: the agent's stdout is not being read
+// while it runs. Returning false stops the stream where it stands, which is
+// how a caller ends a turn early — killing the child alone does not, because
+// its own children inherit the pipe and hold it open.
+type Handler func(Event) bool
 
 // Result is what a whole stream added up to.
 type Result struct {
@@ -154,6 +158,11 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 	cmd.Stdin = nil
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	// Stderr is a buffer rather than a file, so os/exec copies it through a
+	// pipe that Pi's own tool children inherit. Without a delay, Wait blocks on
+	// that copy until the last grandchild exits — which is exactly the case a
+	// cancelled turn is trying to escape.
+	cmd.WaitDelay = time.Second
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -222,8 +231,8 @@ func Scan(r io.Reader, raw io.Writer, onEvent Handler) (Result, error) {
 			}
 		}
 
-		if onEvent != nil {
-			onEvent(ev)
+		if onEvent != nil && !onEvent(ev) {
+			break
 		}
 	}
 	return res, errors.Join(sc.Err(), rawErr)
