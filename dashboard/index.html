@@ -117,6 +117,11 @@ async function detail() {
   // page means the server capped this poll and there is more to fetch first.
   if (r.status !== 'running' && d.events.length < PAGE) done = true;
 
+  // Follow the tail, but only for someone already at the bottom: measure
+  // before appending, or the new rows have already moved the answer. Scrolling
+  // up to read a tool call is how you say "stop following".
+  const following = innerHeight + scrollY >= document.body.scrollHeight - 40;
+
   const log = document.getElementById('log');
   for (const e of d.events) {
     after = e.event_id;
@@ -127,6 +132,7 @@ async function detail() {
       <td>${esc(e.name)}</td>
       <td><pre>${esc(payload(e.payload))}</pre></td>`;
   }
+  if (d.events.length && following) scrollTo(0, document.body.scrollHeight);
 }
 
 // One line per event: the whole payload if it is short, its shape if not. The
