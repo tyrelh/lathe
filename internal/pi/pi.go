@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -120,8 +121,16 @@ type Options struct {
 	SessionDir   string
 	SystemPrompt string
 	Tools        []string
-	Raw          io.Writer     // verbatim JSONL, written before parsing
-	OnStart      func(pid int) // child PID, so a hung agent is killable by run id
+	// Extension is lathe's guard, loaded with -e. It brings --no-extensions
+	// with it: the target repo auto-discovers .pi/extensions/*.ts otherwise,
+	// which would let the repo under investigation load code into the agent
+	// investigating it. Pi honours an explicit -e through --no-extensions.
+	Extension string
+	// Env is added to the inherited environment. The child's environment is
+	// inherited rather than scrubbed, deliberately — a test suite needs it.
+	Env     []string
+	Raw     io.Writer     // verbatim JSONL, written before parsing
+	OnStart func(pid int) // child PID, so a hung agent is killable by run id
 }
 
 // Run spawns Pi, streams its events to onEvent, and returns the run's totals.
@@ -149,10 +158,16 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 			args = append(args, kv[0], kv[1])
 		}
 	}
+	if o.Extension != "" {
+		args = append(args, "--no-extensions", "-e", o.Extension)
+	}
 	args = append(args, "--", prompt) // -- so a prompt starting with - stays a prompt
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = o.Dir
+	if len(o.Env) > 0 {
+		cmd.Env = append(os.Environ(), o.Env...)
+	}
 	// Explicit: an inherited stdin makes Pi wait forever for input that never
 	// comes — no request, no output, 0% CPU. nil gets /dev/null.
 	cmd.Stdin = nil

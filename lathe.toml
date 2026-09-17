@@ -8,6 +8,19 @@
 # the repo boundary.
 protected = [".git/", ".env*", "*.pem", "*.key"]
 
+# Commands the guard refuses to run, as Go regexps (JavaScript reads the same
+# ones). Only the tester ever gets a shell, and this narrows the obvious ways
+# out of the repo without closing them: a heredoc or `python -c` gets past it.
+bash_denied = [
+  "\\bgit\\s+push\\b",
+  "\\brm\\s+-[a-zA-Z]*r",
+  "\\bcurl\\b",
+  "\\bwget\\b",
+  "\\bsudo\\b",
+  "\\bssh\\b",
+  "\\bscp\\b",
+]
+
 [defaults]
 provider = "moonshotai"
 model    = "kimi-k2.7-code"

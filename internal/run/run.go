@@ -19,6 +19,7 @@ import (
 	"syscall"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
 	"github.com/tyrelh/lathe/internal/trace"
 )
@@ -76,14 +77,22 @@ type Run struct {
 	// Out is where the closing banner goes.
 	Out io.Writer
 
-	cfg    config.Config
-	ov     config.Overrides
-	db     *trace.DB
-	raw    *os.File
-	seq    int
-	tokens int
-	cost   float64
-	err    error // the first phase failure, which decides the run's status
+	cfg   config.Config
+	ov    config.Overrides
+	db    *trace.DB
+	raw   *os.File
+	guard string // the extension, written once and passed to every spawn
+	clean bool   // EnsureClean passed, which is what licenses a revert
+	// accepted is every path an earlier phase was allowed to leave behind.
+	// Enforce is handed the whole dirty tree, so without carrying this forward
+	// the tester's empty allow list would revert the builder's work and then
+	// fail the phase for a violation the builder committed. A run accumulates
+	// permission across its phases; it does not start each one from nothing.
+	accepted []string
+	seq      int
+	tokens   int
+	cost     float64
+	err      error // the first phase failure, which decides the run's status
 }
 
 // New creates the run's directory, opens the trace, and records the run as
@@ -114,6 +123,16 @@ func New(cfg config.Config, ov config.Overrides, workflow, repo, request string)
 		return nil, err
 	}
 	if err := r.db.RunStart(r.ID, workflow, repo, request); err != nil {
+		r.raw.Close()
+		r.db.Close()
+		return nil, err
+	}
+	// Every agent runs behind the guard, including the read-only ones: their
+	// empty allow list is what makes "this agent changes nothing" a rule the
+	// tool layer enforces rather than a consequence of the tool list, and the
+	// --no-extensions that comes with it is what stops the target repo loading
+	// its own extension into the agent reading it.
+	if r.guard, err = permit.Guard(r.Dir); err != nil {
 		r.raw.Close()
 		r.db.Close()
 		return nil, err
@@ -198,6 +217,44 @@ func (r *Run) Finish(accepted bool, reason string) int {
 	return code
 }
 
+// EnsureClean refuses to start when the target root has uncommitted changes,
+// and records that it passed. The check and the record are one call because
+// splitting them leaves a flag that says the tree was clean without anything
+// having looked: reverting on that lie throws away work that was never the
+// agent's. Only a writing workflow calls it.
+func (r *Run) EnsureClean() error {
+	if err := permit.Clean(r.Repo); err != nil {
+		return err
+	}
+	r.clean = true
+	return nil
+}
+
+// enforce is the post-turn half of the boundary, run after every spawn. With
+// the guard in front of the tool it should find nothing a builder did; what it
+// does find is either a guard bug or a test suite's leavings, and the caller
+// decides which of those is fatal. It reports nothing at all when Clean did not
+// pass, because the tree it would be reverting is not the agent's.
+func (r *Run) enforce(h *Handle) ([]string, error) {
+	if !r.clean {
+		return nil, nil
+	}
+	scope := h.permit()
+	scope.Allow = append(append([]string{}, scope.Allow...), r.accepted...)
+
+	kept, reverted, err := permit.Enforce(r.Repo, scope)
+	if err != nil {
+		return nil, err
+	}
+	// kept is self-pruning: a path an earlier phase wrote and a later one put
+	// back is no longer dirty, so it drops out rather than being protected
+	// forever.
+	r.accepted = kept
+	r.db.Event(r.ID, h.phase.ID, "permit", h.phase.Name,
+		map[string]any{"kept": kept, "reverted": reverted})
+	return reverted, nil
+}
+
 // Tokens and Cost are what the run has spent so far.
 func (r *Run) Tokens() int   { return r.tokens }
 func (r *Run) Cost() float64 { return r.cost }
@@ -213,6 +270,23 @@ func (r *Run) fail(err error) error {
 type Handle struct {
 	run   *Run
 	phase *trace.Phase
+	allow []string
+}
+
+// Scope is the exact set of repo-relative paths this phase's agent may write.
+// Unset, it permits nothing, which is the right default for every agent that
+// has no write tool and the only safe one for an agent that does.
+func (h *Handle) Scope(allow []string) { h.allow = allow }
+
+// permit is the whole boundary for one phase: its own allow list, plus the
+// roster's deny lists. A phase chooses what it may write; what nobody may write
+// is not a phase's to pick, so it is not in Scope's signature either.
+func (h *Handle) permit() permit.Scope {
+	return permit.Scope{
+		Allow:    h.allow,
+		Deny:     h.run.cfg.Protected,
+		BashDeny: h.run.cfg.BashDenied,
+	}
 }
 
 // Log records something lathe itself did, with no agent involved.
@@ -282,6 +356,13 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 // spawn is one Pi invocation. Every attempt reuses the phase id as the session
 // id, which is what makes a correction cheap.
 func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
+	// Rewritten before every spawn rather than once per run: each agent's allow
+	// list differs, and the guard re-reads the file per tool call.
+	scopeFile, err := permit.Write(r.Dir, h.permit())
+	if err != nil {
+		return pi.Result{}, err
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if a.Deadline > 0 {
@@ -301,6 +382,8 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		SystemPrompt: a.SystemPrompt,
 		SessionID:    h.phase.ID,
 		SessionDir:   r.Dir, // the session is thrown away with the run that made it
+		Extension:    r.guard,
+		Env:          []string{"LATHE_PERMIT=" + scopeFile},
 		Raw:          r.raw,
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
@@ -333,6 +416,20 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	r.cost += res.Cost
 	r.db.Event(r.ID, h.phase.ID, "usage", a.Name,
 		map[string]any{"attempt": attempt, "tokens": res.Tokens, "cost": res.Cost})
+
+	// Enforced before the envelope is read, and after a failed turn too: the
+	// turn that ended badly is the one most likely to have left something
+	// behind, and a correction round must not build on it. A revert outranks
+	// whatever else went wrong, including the tool budget, because it means the
+	// guard did not hold — that is not a thing to nudge the agent about.
+	reverted, enforceErr := r.enforce(h)
+	switch {
+	case len(reverted) > 0:
+		return res, fmt.Errorf("%s wrote outside its scope; reverted %s",
+			a.Name, strings.Join(reverted, ", "))
+	case enforceErr != nil:
+		return res, enforceErr
+	}
 
 	// A killed Pi reports as a failed command, so the budget has to claim its
 	// own cancellation before the error is read as one.
