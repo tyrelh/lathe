@@ -19,7 +19,6 @@ import (
 // which is the price of not carrying a pointer for every key.
 type Agent struct {
 	Name     string   `toml:"name"`
-	Purpose  string   `toml:"purpose"`
 	Provider string   `toml:"provider"`
 	Model    string   `toml:"model"`
 	Thinking string   `toml:"thinking"`
