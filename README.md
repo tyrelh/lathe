@@ -16,10 +16,11 @@ A Go binary that runs phased agent work against whatever repository you invoke i
 make install     # build to ~/.local/bin/lathe, then link into ~/.claude and ~/.codex and ~/.pi/agent skills
 ```
 
-**Status: Phase 6.** `lathe scout "<request>"` runs the one v0 workflow: a read-only agent investigates the repo you invoked it from, its typed report is validated and gated, and the whole run is traced to one global SQLite database at `$XDG_DATA_HOME/lathe/runs.db` (else `~/.local/share/lathe/runs.db`). `lathe runs` lists recent runs across every repo; `lathe dash` serves those runs at http://127.0.0.1:4700, reading the database read-only and polling for new events so a run appears while it happens; `lathe install` links the checkout into each agent's skills directory. Agents run through [pi](https://github.com/earendil-works/pi) on its built-in `moonshotai` provider (needs `MOONSHOT_API_KEY` exported somewhere non-interactive shells see it).
+**Status: v1 Phase 1.** Two read-only workflows. `lathe scout "<request>"` investigates the repo you invoked it from and reports what is there; `lathe plan "<request>"` plans a change to it, producing a summary, ordered steps, the exact files the change may touch, and the risks. Each agent's typed report is validated and gated — a plan naming a protected path such as `.git` or `.env*` is rejected — and the whole run is traced to one global SQLite database at `$XDG_DATA_HOME/lathe/runs.db` (else `~/.local/share/lathe/runs.db`). `lathe runs` lists recent runs across every repo; `lathe dash` serves those runs at http://127.0.0.1:4700, reading the database read-only and polling for new events so a run appears while it happens; `lathe install` links the checkout into each agent's skills directory. Agents run through [pi](https://github.com/earendil-works/pi) on its built-in `moonshotai` provider (needs `MOONSHOT_API_KEY` exported somewhere non-interactive shells see it).
 
 ```sh
 lathe scout "where is authentication handled and what calls it"
+lathe plan "add retry with backoff to the fetch client"
 lathe runs
 lathe dash    # in another terminal; the page updates itself while a run is going
 ```

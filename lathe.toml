@@ -1,6 +1,13 @@
 # The agent roster. Embedded into the binary at build time, so editing this
 # file means rebuilding — `go run .` during development, `make build` to deploy.
 
+# Paths no agent may write and no plan may name. An entry ending in "/" is a
+# directory name, matched at any depth; anything else is a glob matched against
+# the basename. Today this gates the planner's file list; the guard extension
+# will check the same list on the resolved path, which is what extends it past
+# the repo boundary.
+protected = [".git/", ".env*", "*.pem", "*.key"]
+
 [defaults]
 provider = "moonshotai"
 model    = "kimi-k2.7-code"
@@ -20,3 +27,9 @@ timeout  = "10m"
 name   = "scout"
 system = "prompts/scout/system.md"
 user   = "prompts/scout/user.md"
+
+# Read the repo and produce the plan the builder implements; change nothing.
+[[agents]]
+name   = "planner"
+system = "prompts/planner/system.md"
+user   = "prompts/planner/user.md"

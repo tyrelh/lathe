@@ -22,6 +22,7 @@ usage: lathe <command> [flags] [args]
 
 commands:
   scout "<request>"   investigate the current repo and report what is there
+  plan "<request>"    plan a change to the current repo; write nothing
   runs                list recent runs, from every repo
   dash                serve the run dashboard on http://127.0.0.1:4700
   install             link this repo into each agent's skills directory
@@ -46,7 +47,11 @@ func dispatch(args []string) int {
 	}
 	switch cmd := args[0]; cmd {
 	case "scout":
-		return scout(args[1:])
+		return agentCmd("scout", "scout", workflow.Scout,
+			`lathe scout "where does auth live"`, args[1:])
+	case "plan":
+		return agentCmd("plan", "planner", workflow.Plan,
+			`lathe plan "add retry with backoff to the fetch client"`, args[1:])
 	case "runs":
 		return runs(args[1:])
 	case "dash":
@@ -62,18 +67,19 @@ func dispatch(args []string) int {
 	}
 }
 
-// scout resolves both roots and the roster before anything is spawned, so an
-// unknown model or a directory outside a git repo fails in under a second
-// rather than after an agent turn.
-func scout(args []string) int {
-	fs := flag.NewFlagSet("scout", flag.ExitOnError)
+// agentCmd is the body both read-only workflows share: same flags, same
+// preflight, different graph. Both roots and the roster are resolved before
+// anything is spawned, so an unknown model or a directory outside a git repo
+// fails in under a second rather than after an agent turn.
+func agentCmd(name, agent string, graph func(config.Config, config.Overrides, string, string) int, example string, args []string) int {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	repo := fs.String("repo", "", "repository to act on (default: the git root of the working directory)")
 	ov := overrideFlags(fs)
 	fs.Parse(args)
 
 	request := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if request == "" {
-		fmt.Fprint(os.Stderr, "lathe scout: needs a request, e.g. lathe scout \"where does auth live\"\n")
+		fmt.Fprintf(os.Stderr, "lathe %s: needs a request, e.g. %s\n", name, example)
 		return 2
 	}
 
@@ -98,11 +104,11 @@ func scout(args []string) int {
 	}
 	// Resolving now turns an unknown agent, a bad timeout or a missing prompt
 	// into an error before a run row exists.
-	if _, err := cfg.Resolve("scout", *ov); err != nil {
+	if _, err := cfg.Resolve(agent, *ov); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe:", err)
 		return 1
 	}
-	return workflow.Scout(cfg, *ov, root, request)
+	return graph(cfg, *ov, root, request)
 }
 
 // runs lists what is in the one global database. Repos show as basenames,

@@ -30,8 +30,12 @@ type Agent struct {
 
 // Config is the decoded roster plus the filesystem the prompts came from.
 type Config struct {
-	Defaults Agent   `toml:"defaults"`
-	Agents   []Agent `toml:"agents"`
+	// Protected is the deny list every agent is held to, in internal/permit's
+	// two forms. It is one list in one file on purpose: the Go gates and the
+	// guard extension have to be holding the same one.
+	Protected []string `toml:"protected"`
+	Defaults  Agent    `toml:"defaults"`
+	Agents    []Agent  `toml:"agents"`
 
 	fsys fs.FS
 }

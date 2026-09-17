@@ -102,3 +102,31 @@ func eval(t *testing.T, p string) string {
 	}
 	return r
 }
+
+// The planner is read-only too: it is the builder's write scope that it
+// produces, not one of its own.
+func TestPlannerIsReadOnly(t *testing.T) {
+	a, err := assets(t).Resolve("planner", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{"bash", "write", "edit"} {
+		for _, got := range a.Tools {
+			if got == banned {
+				t.Fatalf("planner was granted %q", banned)
+			}
+		}
+	}
+	if !strings.Contains(a.UserPrompt, "{{request}}") || !strings.Contains(a.UserPrompt, `"files"`) {
+		t.Fatal("the planner prompt was not read out of the embedded FS")
+	}
+}
+
+// The deny list is one list in one file, because the Go gates and the guard
+// extension both have to be holding the same one.
+func TestProtectedDecodes(t *testing.T) {
+	got := strings.Join(assets(t).Protected, ",")
+	if !strings.Contains(got, ".git/") || !strings.Contains(got, ".env*") {
+		t.Fatalf("protected = %q; want at least .git/ and .env*", got)
+	}
+}
