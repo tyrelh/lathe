@@ -66,6 +66,8 @@ func handler(db *trace.DB) http.Handler {
 			return
 		}
 		// The cursor bounds one poll; whatever is left arrives on the next one.
+		// index.html knows this number: a full page is how it tells that a
+		// settled run still has events to fetch before it stops polling.
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), 500)
 		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events}, err)
 	})

@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `
 
+// busyTimeout makes a second connection wait its turn rather than fail. Both
+// openers set it, so it is one literal.
+const busyTimeout = "PRAGMA busy_timeout=5000"
+
 // DataRoot is where the database and per-run artifacts live: $XDG_DATA_HOME/lathe,
 // falling back to ~/.local/share/lathe.
 func DataRoot() (string, error) {
@@ -83,7 +87,7 @@ func Open(dataRoot string) (*DB, error) {
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL", // WAL keeps this crash-safe without a per-statement fsync
-		"PRAGMA busy_timeout=5000",
+		busyTimeout,
 		"PRAGMA foreign_keys=ON",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
@@ -267,7 +271,7 @@ func OpenRO(dataRoot string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	if _, err := db.Exec(busyTimeout); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -281,7 +285,6 @@ type PhaseRow struct {
 	ID     string `json:"phase_id"`
 	Seq    int    `json:"seq"`
 	Name   string `json:"name"`
-	Kind   string `json:"kind"`
 	Owner  string `json:"owner"`
 	Status string `json:"status"`
 	Error  string `json:"error"`
@@ -313,7 +316,7 @@ func (d *DB) Get(runID string) (Row, error) {
 // Phases returns a run's phases in the order they ran.
 func (d *DB) Phases(runID string) ([]PhaseRow, error) {
 	rows, err := d.sql.Query(
-		`SELECT phase_id, seq, name, kind, owner, status, error, started_at, ended_at
+		`SELECT phase_id, seq, name, owner, status, error, started_at, ended_at
 		 FROM phases WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, err
@@ -324,7 +327,7 @@ func (d *DB) Phases(runID string) ([]PhaseRow, error) {
 	for rows.Next() {
 		var p PhaseRow
 		var errMsg, end sql.NullString
-		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.Kind, &p.Owner, &p.Status, &errMsg, &p.Start, &end); err != nil {
+		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.Owner, &p.Status, &errMsg, &p.Start, &end); err != nil {
 			return nil, err
 		}
 		p.Error, p.End = errMsg.String, end.String
