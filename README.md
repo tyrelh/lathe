@@ -16,4 +16,4 @@ A Go binary that runs phased agent work against whatever repository you invoke i
 make install     # build to ~/.local/bin/lathe, then link into ~/.claude and ~/.codex and ~/.pi/agent skills
 ```
 
-**Status: Phase 0.** Only `lathe install` and `lathe help` exist. Agents run through [pi](https://github.com/earendil-works/pi) on its built-in `moonshotai` provider (needs `MOONSHOT_API_KEY` exported somewhere non-interactive shells see it). Orchestration, tracing, and the dashboard are still to come.
+**Status: Phase 2.** `lathe install` and `lathe help` are the only commands; `internal/trace` now writes runs, phases, and events to one global SQLite database at `$XDG_DATA_HOME/lathe/runs.db` (else `~/.local/share/lathe/runs.db`), shared by every repo. Agents run through [pi](https://github.com/earendil-works/pi) on its built-in `moonshotai` provider (needs `MOONSHOT_API_KEY` exported somewhere non-interactive shells see it). Orchestration and the dashboard are still to come.
