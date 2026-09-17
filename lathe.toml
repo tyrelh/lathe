@@ -1,0 +1,22 @@
+# The agent roster. Embedded into the binary at build time, so editing this
+# file means rebuilding — `go run .` during development, `make build` to deploy.
+
+[defaults]
+provider = "moonshotai"
+model    = "kimi-k2.7-code"
+# A request, not a guarantee: kimi-k2.7-code has thinking always on and no dial,
+# and Pi drops the level for models that do not take one. Keep the key so
+# switching to kimi-k3 (which honours low/high/max) is a one-line change.
+thinking = "medium"
+# No `bash`, no `write`, no `edit`: with no write-capable tool and no shell
+# there is no mechanism by which a v0 run can modify the repo it was pointed at.
+# Granting bash would reintroduce the whole risk surface on its own.
+tools    = ["read", "grep", "find", "ls"]
+# A model that stalls otherwise hangs lathe until someone notices.
+timeout  = "10m"
+
+[[agents]]
+name    = "scout"
+purpose = "Find and report where things live; change nothing."
+system  = "prompts/scout/system.md"
+user    = "prompts/scout/user.md"
