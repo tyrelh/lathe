@@ -7,6 +7,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,26 @@ import (
 // session before the phase fails. Two is enough for a formatting slip and few
 // enough that a confused agent stops burning tokens.
 const maxCorrections = 2
+
+// toolBudget is how many tool calls one agent turn may make before lathe ends
+// the turn and asks for the report. It is the backstop, deliberately above the
+// number prompts/scout/user.md asks the agent to keep to, so a well-behaved
+// agent lands on its own and only a spiralling one ever meets this. A run that
+// hit it once loops forever without it: the deadline is the only other bound,
+// and the deadline produces a failure rather than an answer.
+const toolBudget = 40
+
+// errBudget means the turn was cut short by toolBudget rather than by anything
+// going wrong, so the caller asks for the report instead of failing the phase.
+var errBudget = errors.New("tool call budget spent")
+
+// budgetSpent is what the agent is told when that happens. It goes to the same
+// Pi session, so everything it has read is still in its context — it has to
+// write the report, not repeat the investigation.
+const budgetSpent = "You have used your tool call budget for this phase. " +
+	"Do not call any more tools.\n\nReply now with the fenced json block, " +
+	"built from what you have already read. Anything you could not determine " +
+	"belongs in \"findings\" as an honest gap, phrased as what is still unknown."
 
 // Params names a phase. Kind is engineer | agent | code; Owner is the agent
 // name from the roster, or "engineer" for a phase lathe performs itself.
@@ -211,9 +232,16 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 	}
 
 	prompt := agent.Prompt(request)
+	nudged := false
 	for attempt := 0; ; attempt++ {
 		res, err := r.spawn(h, agent, prompt, attempt)
-		if err != nil {
+		switch {
+		case errors.Is(err, errBudget) && !nudged:
+			nudged, prompt = true, budgetSpent
+			continue
+		case errors.Is(err, errBudget):
+			return fmt.Errorf("%s kept calling tools after its budget was spent", agent.Name)
+		case err != nil:
 			return err
 		}
 
@@ -254,12 +282,14 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 // spawn is one Pi invocation. Every attempt reuses the phase id as the session
 // id, which is what makes a correction cheap.
 func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if a.Deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.Deadline)
-		defer cancel()
+		var stop context.CancelFunc
+		ctx, stop = context.WithTimeout(ctx, a.Deadline)
+		defer stop()
 	}
+	calls := 0
 
 	res, err := pi.Run(ctx, pi.Options{
 		Bin:          r.PiBin,
@@ -275,7 +305,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
 		},
-	}, prompt, func(ev pi.Event) {
+	}, prompt, func(ev pi.Event) bool {
 		// ponytail: this writes to SQLite while Pi's stdout is not being read,
 		// so a contended database back-pressures the agent for up to
 		// busy_timeout. The fix, if a run ever actually stalls here, is a
@@ -284,7 +314,18 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 			r.db.Event(r.ID, h.phase.ID, "tool_call", ev.ToolName, map[string]any{
 				"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError,
 			})
+			// Ending the read is what ends the turn: killing Pi alone leaves
+			// its own tool children holding the pipe open. The session on disk
+			// keeps the context, so the next prompt resumes it rather than
+			// starting cold.
+			if calls++; calls == toolBudget {
+				r.db.Event(r.ID, h.phase.ID, "log", "budget_spent",
+					map[string]int{"attempt": attempt, "calls": calls})
+				cancel()
+				return false
+			}
 		}
+		return true
 	})
 
 	// Spend is real whether or not the call succeeded, so it is recorded first.
@@ -292,6 +333,12 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	r.cost += res.Cost
 	r.db.Event(r.ID, h.phase.ID, "usage", a.Name,
 		map[string]any{"attempt": attempt, "tokens": res.Tokens, "cost": res.Cost})
+
+	// A killed Pi reports as a failed command, so the budget has to claim its
+	// own cancellation before the error is read as one.
+	if err != nil && calls >= toolBudget {
+		return res, errBudget
+	}
 	return res, err
 }
 
