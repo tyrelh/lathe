@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/pi"
@@ -95,7 +97,25 @@ func New(cfg config.Config, ov config.Overrides, workflow, repo, request string)
 		r.db.Close()
 		return nil, err
 	}
+	r.onSignal()
 	return r, nil
+}
+
+// onSignal settles the run row on Ctrl-C. Finish is an ordinary call at the
+// end of a workflow, so without this a signal leaves the run 'running'
+// forever — which the dashboard is what makes visible. Pi is in the same
+// process group and takes the signal itself.
+func (r *Run) onSignal() {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		if err := r.db.RunInterrupt(r.ID); err != nil {
+			fmt.Fprintln(r.Out, "lathe: recording the interrupt failed:", err)
+		}
+		fmt.Fprintf(r.Out, "\nlathe %s %s: interrupted\n  %s\n", r.Workflow, r.ID, r.Dir)
+		os.Exit(130)
+	}()
 }
 
 // Phase runs fn as a traced phase. The phase exists at status 'fail' from the

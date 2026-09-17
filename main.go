@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/tyrelh/lathe/dashboard"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/install"
 	"github.com/tyrelh/lathe/internal/trace"
@@ -22,6 +23,7 @@ usage: lathe <command> [flags] [args]
 commands:
   scout "<request>"   investigate the current repo and report what is there
   runs                list recent runs, from every repo
+  dash                serve the run dashboard on http://127.0.0.1:4700
   install             link this repo into each agent's skills directory
   help                show this message
 
@@ -47,6 +49,8 @@ func dispatch(args []string) int {
 		return scout(args[1:])
 	case "runs":
 		return runs(args[1:])
+	case "dash":
+		return dash()
 	case "install":
 		return installCmd()
 	case "help", "-h", "--help":
@@ -137,6 +141,21 @@ func runs(args []string) int {
 			r.Started, r.Status, r.Workflow, filepath.Base(r.Repo), r.Tokens, r.Cost, r.ID)
 	}
 	return flush(w)
+}
+
+// dash serves the trace read-only in the foreground; Ctrl-C stops it. The bind
+// address is a literal in the dashboard package, not a flag: the server has no
+// authentication.
+func dash() int {
+	dataRoot, err := trace.DataRoot()
+	if err == nil {
+		err = dashboard.Serve(dataRoot, os.Stdout)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "lathe dash:", err)
+		return 1
+	}
+	return 0
 }
 
 func flush(w *tabwriter.Writer) int {
