@@ -23,7 +23,7 @@ usage: lathe <command> [flags] [args]
 commands:
   scout "<request>"   investigate the current repo and report what is there
   plan "<request>"    plan a change to the current repo; write nothing
-  build "<request>"   plan and implement a change; leave it uncommitted
+  build "<request>"   plan, implement and test a change; leave it uncommitted
   runs                list recent runs, from every repo
   dash                serve the run dashboard on http://127.0.0.1:4700
   install             link this repo into each agent's skills directory
@@ -54,7 +54,7 @@ func dispatch(args []string) int {
 		return agentCmd("plan", []string{"planner"}, workflow.Plan,
 			`lathe plan "add retry with backoff to the fetch client"`, args[1:])
 	case "build":
-		return agentCmd("build", []string{"planner", "builder"}, workflow.Build,
+		return agentCmd("build", []string{"planner", "builder", "tester"}, workflow.Build,
 			`lathe build "add retry with backoff to the fetch client"`, args[1:])
 	case "runs":
 		return runs(args[1:])

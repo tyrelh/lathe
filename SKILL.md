@@ -27,10 +27,14 @@ of `lathe` is the trace it leaves behind.
   file list is the write scope the builder is held to, so a plan that
   names `.git`, `.env*` or key material is rejected before it is printed.
 
-- `build "<request>"` — plan and implement a change in a clean Git repository.
+- `build "<request>"` — plan, implement and test a change in a clean Git repository.
   The builder gets write and edit tools, no shell, and may write only the plan's
   files. Changes remain uncommitted. A missed file ends the run as a failure
-  naming the needed path. Review with `git diff`; tests are not run yet.
+  naming the needed path. The tester discovers a command; lathe runs it under
+  the tester timeout and shell deny list with your inherited environment. A red
+  exit gets up to two fix→verify rounds in the builder's same session. Test dirt
+  outside the accumulated plan scope is reverted. Review with `git diff`, including
+  after failure: planned changes remain in the tree.
 
 ## Writing the request
 
@@ -52,5 +56,6 @@ Before the request, not after:
 The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
 prints; `<dir>/build.json` is the builder's report (also saved when it reports
-needed files); `<dir>/raw.jsonl` is the full event stream. `lathe runs` lists recent
+needed files); `<dir>/test.json` records the discovered command and observations;
+`<dir>/raw.jsonl` is the full event stream. `lathe runs` lists recent
 runs from every repo.
