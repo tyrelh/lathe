@@ -40,6 +40,7 @@ func buildRepo(t *testing.T) (config.Config, string) {
 func buildStub(t *testing.T, action, report string) string {
 	t.Helper()
 	dir := t.TempDir()
+	write(t, filepath.Join(dir, "test"), piReply(t, "```json\n"+`{"summary":"discovered","command":"true","failures":[],"artifacts":[]}`+"\n```"))
 	write(t, filepath.Join(dir, "plan"), planReply(t, `"hello.txt"`))
 	write(t, filepath.Join(dir, "build"), piReply(t, "```json\n"+report+"\n```"))
 	script := fmt.Sprintf(`#!/bin/sh
@@ -50,6 +51,8 @@ printf '%%s\n' "$@" > %[1]q/args$n
 cp "$LATHE_PERMIT" %[1]q/scope$n
 if [ "$n" = 0 ]; then
   cat %[1]q/plan
+elif [ "$n" = 2 ] && [ -f %[1]q/success ]; then
+  cat %[1]q/test
 else
   %[2]s
   cat %[1]q/build
@@ -65,7 +68,7 @@ func TestBuild(t *testing.T) {
 		want                          int
 		calls                         string
 	}{
-		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, "2"},
+		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, "3"},
 		{"needed is terminal", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, "2"},
 		{"unplanned write reverted", "printf 'hello world\\n' > hello.txt; echo bad > outside.txt", `["hello.txt"]`, `[]`, 1, "2"},
 		{"false claim", ":", `["hello.txt"]`, `[]`, 1, "4"},
@@ -75,6 +78,9 @@ func TestBuild(t *testing.T) {
 			cfg, repo := buildRepo(t)
 			report := fmt.Sprintf(`{"summary":"updated greeting","changed":%s,"needed":%s,"artifacts":[]}`, tc.changed, tc.needed)
 			stub := buildStub(t, tc.action, report)
+			if tc.want == 0 {
+				write(t, filepath.Join(stub, "success"), "")
+			}
 			if got := Build(cfg, config.Overrides{}, repo, "greet the world"); got != tc.want {
 				t.Fatalf("code = %d, want %d", got, tc.want)
 			}

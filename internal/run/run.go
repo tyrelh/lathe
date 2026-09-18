@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/tyrelh/lathe/internal/config"
@@ -51,7 +52,13 @@ const budgetSpent = "You have used your tool call budget for this phase. " +
 
 // Params names a phase. Kind is engineer | agent | code; Owner is the agent
 // name from the roster, or "engineer" for a phase lathe performs itself.
-type Params struct{ Name, Kind, Owner string }
+type Params struct {
+	Name, Kind, Owner string
+	// SessionID continues an earlier agent phase; empty starts a new session.
+	SessionID string
+	// RevertOnly tolerates test-generated dirt after enforcement.
+	RevertOnly bool
+}
 
 // Envelope is an agent's typed output. Validate returns what is missing —
 // encoding/json zero-fills absent fields, so required ones must be pointers
@@ -84,12 +91,14 @@ type Run struct {
 	// Out is where the closing banner goes.
 	Out io.Writer
 
-	cfg   config.Config
-	ov    config.Overrides
-	db    *trace.DB
-	raw   *os.File
-	guard string // the extension, written once and passed to every spawn
-	clean bool   // EnsureClean passed, which is what licenses a revert
+	cfg        config.Config
+	ov         config.Overrides
+	db         *trace.DB
+	raw        *os.File
+	guard      string // the extension, written once and passed to every spawn
+	clean      bool   // EnsureClean passed, which is what licenses a revert
+	commandMu  sync.Mutex
+	commandPID int // isolated verify process group, killed on interruption
 	// accepted is every path an earlier phase was allowed to leave behind.
 	// Enforce is handed the whole dirty tree, so without carrying this forward
 	// the tester's empty allow list would revert the builder's work and then
@@ -157,6 +166,11 @@ func (r *Run) onSignal() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
+		r.commandMu.Lock()
+		if r.commandPID != 0 {
+			_ = syscall.Kill(-r.commandPID, syscall.SIGKILL)
+		}
+		r.commandMu.Unlock()
 		if err := r.db.RunInterrupt(r.ID); err != nil {
 			fmt.Fprintln(r.Out, "lathe: recording the interrupt failed:", err)
 		}
@@ -189,16 +203,20 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 		r.db.PhaseUpsert(ph)
 		r.db.Event(r.ID, ph.ID, "phase_end", p.Name, map[string]string{"status": status})
 		if err != nil {
-			r.fail(err)
+			// Keep measured red in the timeline without poisoning a later green.
+			var red *CommandFailure
+			if !errors.As(err, &red) {
+				r.fail(err)
+			}
 		}
 	}()
-	return fn(&Handle{run: r, phase: ph})
+	return fn(&Handle{run: r, phase: ph, params: p})
 }
 
 // Finish settles the database status, the banner and the exit code in one
 // call, so the three cannot disagree. accepted is "the run produced an
 // acceptable result", which is a different question from "every phase worked";
-// v0 always passes true, and a test phase is what will make it earn its keep.
+// A red verify phase is recoverable; the workflow passes false if fixes run out.
 func (r *Run) Finish(accepted bool, reason string) int {
 	status, code := "ok", 0
 	switch {
@@ -259,6 +277,12 @@ func (r *Run) enforce(h *Handle) ([]string, error) {
 	r.accepted = kept
 	r.db.Event(r.ID, h.phase.ID, "permit", h.phase.Name,
 		map[string]any{"kept": kept, "reverted": reverted})
+	// Tolerance is a property of the phase, so it is settled here rather than
+	// at each call site: a later phase that needs it gets it by declaring it,
+	// not by remembering to repeat the check.
+	if h.params.RevertOnly {
+		return nil, nil
+	}
 	return reverted, nil
 }
 
@@ -275,9 +299,18 @@ func (r *Run) fail(err error) error {
 // Handle is what a phase body is given: the only way to write to the trace or
 // to call an agent, and both are already scoped to this phase.
 type Handle struct {
-	run   *Run
-	phase *trace.Phase
-	allow []string
+	run    *Run
+	phase  *trace.Phase
+	allow  []string
+	params Params
+}
+
+// SessionID is stable across correction and fix turns.
+func (h *Handle) SessionID() string {
+	if h.params.SessionID != "" {
+		return h.params.SessionID
+	}
+	return h.phase.ID
 }
 
 // Scope is the exact set of repo-relative paths this phase's agent may write.
@@ -371,8 +404,8 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 	}
 }
 
-// spawn is one Pi invocation. Every attempt reuses the phase id as the session
-// id, which is what makes a correction cheap.
+// spawn is one Pi invocation. Corrections and fix phases reuse the original
+// session id, which keeps the builder context across the red loop.
 func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
 	// Rewritten before every spawn rather than once per run: each agent's allow
 	// list differs, and the guard re-reads the file per tool call.
@@ -398,7 +431,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		Thinking:     a.Thinking,
 		Tools:        a.Tools,
 		SystemPrompt: a.SystemPrompt,
-		SessionID:    h.phase.ID,
+		SessionID:    h.SessionID(),
 		SessionDir:   r.Dir, // the session is thrown away with the run that made it
 		Extension:    r.guard,
 		Env:          []string{"LATHE_PERMIT=" + scopeFile},

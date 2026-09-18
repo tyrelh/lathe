@@ -39,3 +39,20 @@ func TestEmbeddedBuilder(t *testing.T) {
 		t.Fatal("builder prompts missing")
 	}
 }
+
+func TestEmbeddedTester(t *testing.T) {
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := cfg.Resolve("tester", config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(a.Tools, ",") != "read,grep,find,ls,bash" {
+		t.Fatalf("tester tools: %v", a.Tools)
+	}
+	if !strings.Contains(a.SystemPrompt, "You are the tester") || !strings.Contains(a.UserPrompt, `"command"`) {
+		t.Fatal("tester prompts missing")
+	}
+}
