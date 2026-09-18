@@ -10,6 +10,10 @@
   <strong>A software factory for agent-driven development.</strong>
 </p>
 
+<p align="center">
+  <a href="https://github.com/tyrelh/lathe/actions/workflows/lathe-ci.yml?query=branch%3Amain"><img alt="lathe-ci status" src="https://github.com/tyrelh/lathe/actions/workflows/lathe-ci.yml/badge.svg?branch=main"></a>
+</p>
+
 A Go binary that runs bounded agent workflows against whatever repository you invoke it from, and traces every run to SQLite. One install, not one per project.
 
 ```sh
