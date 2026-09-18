@@ -35,3 +35,5 @@ The tester discovers the test command, then lathe runs it and uses its exit code
 A guard vetoes every `write`, `edit` or `bash` call before it executes, with the tester alone receiving a shell. The shell deny list is a coarse check, not a sandbox.
 
 Agents run on [pi](https://github.com/earendil-works/pi), which needs `MOONSHOT_API_KEY` exported somewhere non-interactive shells see it. Traces go to `$XDG_DATA_HOME/lathe/runs.db`, else `~/.local/share/lathe/runs.db`.
+
+`lathe dash` shows per-phase model, tokens, and cost. Expand phase inputs or event payloads to read them in full; shell commands and tool errors are always visible. The permissions panel records kept and reverted files for each check. New runs record each agent turn’s system prompt, supplied prompt, session ID, and write scope; older traces show when input context was not recorded.

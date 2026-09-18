@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -87,5 +88,15 @@ func TestRoutes(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/runs/nope", nil))
 	if w.Code != 404 {
 		t.Errorf("unknown run: want 404, got %d", w.Code)
+	}
+}
+
+// Exercise pagination, rendering, and state retention in the shipped script.
+func TestClient(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	if out, err := exec.Command("node", "index_test.cjs").CombinedOutput(); err != nil {
+		t.Fatalf("dashboard client: %v\n%s", err, out)
 	}
 }
