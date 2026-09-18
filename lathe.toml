@@ -3,9 +3,8 @@
 
 # Paths no agent may write and no plan may name. An entry ending in "/" is a
 # directory name, matched at any depth; anything else is a glob matched against
-# the basename. Today this gates the planner's file list; the guard extension
-# will check the same list on the resolved path, which is what extends it past
-# the repo boundary.
+# the basename. This gates the planner's file list; the guard checks the same
+# list on the resolved path, extending protection past the repo boundary.
 protected = [".git/", ".env*", "*.pem", "*.key"]
 
 # Commands the guard refuses to run, as Go regexps (JavaScript reads the same
@@ -25,8 +24,8 @@ bash_denied = [
 provider = "moonshotai"
 model    = "kimi-k2.7-code"
 # A request, not a guarantee: kimi-k2.7-code has thinking always on and no dial,
-# and Pi drops the level for models that do not take one. Keep the key so
-# switching to kimi-k3 (which honours low/high/max) is a one-line change.
+# and Pi drops the level for models that do not take one. The roster pins a
+# model per agent below, so this default now only reaches the scout.
 thinking = "medium"
 # No `bash`, no `write`, no `edit`: with no write-capable tool and no shell
 # there is no mechanism by which a v0 run can modify the repo it was pointed at.
@@ -42,7 +41,20 @@ system = "prompts/scout/system.md"
 user   = "prompts/scout/user.md"
 
 # Read the repo and produce the plan the builder implements; change nothing.
+# kimi-k3 for the 1M context: a plan is only as good as how much of the repo the
+# planner got to read, and planning is the cheap phase to spend that on.
 [[agents]]
 name   = "planner"
+model  = "kimi-k3"
 system = "prompts/planner/system.md"
 user   = "prompts/planner/user.md"
+
+# Implement the accepted plan, with no shell. Pinned rather than inherited: the
+# builder is the agent that writes, so which model does that is not a thing a
+# change to [defaults] should be able to swap quietly.
+[[agents]]
+name   = "builder"
+model  = "kimi-k2.7-code"
+system = "prompts/builder/system.md"
+user   = "prompts/builder/user.md"
+tools  = ["read", "grep", "find", "ls", "write", "edit"]

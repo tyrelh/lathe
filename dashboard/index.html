@@ -37,6 +37,10 @@
 const app = document.getElementById('app'), sub = document.getElementById('sub');
 let runID = location.hash.slice(1) || null, after = 0, done = false;
 const PAGE = 500;   // the server's per-poll event cap
+// phase_id -> {model, tokens, cost}, summed from the usage events as they
+// stream past. A phase spends once per attempt, so a corrected phase is the
+// sum of its tries — which is the number worth seeing.
+const spend = new Map();
 
 const esc = s => String(s ?? '').replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]));
 const cls = s => s === 'ok' || s === 'success' ? 'ok' : s === 'running' ? 'running' : 'fail';
@@ -45,7 +49,7 @@ const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 
 addEventListener('hashchange', () => {
   runID = location.hash.slice(1) || null;
-  after = 0; done = false; app.innerHTML = ''; tick();
+  after = 0; done = false; spend.clear(); app.innerHTML = ''; tick();
 });
 
 async function tick() {
@@ -91,6 +95,17 @@ async function detail() {
   const r = d.run;
   sub.textContent = `${r.workflow} · ${r.status} · ${r.tokens} tok · $${r.cost.toFixed(5)}`;
 
+  // Folded in before the phases are drawn, not after: a settled run stops
+  // polling at the end of this pass, so a total added later never gets drawn.
+  for (const e of d.events) {
+    if (e.type !== 'usage' || !e.payload) continue;
+    const s = spend.get(e.phase_id) || { model: '', tokens: 0, cost: 0 };
+    s.tokens += e.payload.tokens || 0;
+    s.cost += e.payload.cost || 0;
+    s.model = e.payload.model || s.model;   // absent on runs traced before it was recorded
+    spend.set(e.phase_id, s);
+  }
+
   // The header and phases are re-rendered every poll; the log is appended, so
   // scrolling through a finished phase is not undone a second later.
   if (!document.getElementById('log')) {
@@ -102,15 +117,23 @@ async function detail() {
   }
   document.getElementById('head').innerHTML =
     `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
-  document.getElementById('phases').innerHTML = d.phases.map(p => `
+  // An engineer phase spends nothing and has no model, so its cells stay empty
+  // rather than reading "0 tok  $0.00000" as though it had been asked.
+  document.getElementById('phases').innerHTML = d.phases.map(p => {
+    const s = spend.get(p.phase_id) || {};
+    return `
     <tr>
       <td class="dim">${p.seq}</td>
       <td>${esc(p.name)}</td>
       <td class="dim">${esc(p.owner)}</td>
+      <td class="dim">${esc(s.model || '')}</td>
       <td class="${cls(p.status)}">${esc(p.status)}</td>
       <td class="dim">${time(p.started_at)}${p.ended_at ? ' → ' + time(p.ended_at) : ''}</td>
+      <td class="dim">${s.tokens ? s.tokens + ' tok' : ''}</td>
+      <td class="dim">${s.cost ? '$' + s.cost.toFixed(5) : ''}</td>
       <td class="wrap">${esc(p.error)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   // A settled run is final: the phases and the log above are the whole of it,
   // so the poll stops rather than re-running three queries every second. A full

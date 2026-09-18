@@ -61,6 +61,13 @@ type Envelope interface {
 	Artifacts() []string
 }
 
+// Failing is an Envelope that can report a terminal outcome — a report that is
+// well-formed but describes a run that cannot succeed, such as a builder naming
+// a file the plan never permitted. It is optional rather than part of Envelope
+// because most envelopes have no such outcome, and Call consults it before any
+// correction so a later reply cannot erase the failure.
+type Failing interface{ Failure() error }
+
 // Gate checks an agent's claims mechanically and returns violations. It never
 // judges the work — only whether what the agent said it did is true.
 type Gate func(Envelope, *Run) []string
@@ -320,6 +327,17 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		}
 
 		violations := decode(res.Text, out)
+		// A terminal failure is not an output-format slip, so it is checked
+		// ahead of Validate: a reply that reports one and also forgets a key
+		// must end the phase, not be corrected into a reply that no longer
+		// reports it. No guard on violations, because decode zeroes out before
+		// it parses — a reply that did not parse reports no failure here.
+		if failed, ok := out.(Failing); ok {
+			if err := failed.Failure(); err != nil {
+				r.db.Event(r.ID, h.phase.ID, "envelope", agent.Name, out)
+				return err
+			}
+		}
 		if len(violations) == 0 {
 			violations = out.Validate()
 		}
@@ -394,9 +412,15 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		// busy_timeout. The fix, if a run ever actually stalls here, is a
 		// channel in front of the tracer rather than anything in this handler.
 		if ev.Type == "tool_execution_end" {
-			r.db.Event(r.ID, h.phase.ID, "tool_call", ev.ToolName, map[string]any{
+			payload := map[string]any{
 				"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError,
-			})
+			}
+			// Keep the reason for a blocked call in the queryable trace. Full
+			// successful tool output remains in raw.jsonl rather than duplicated.
+			if ev.IsError {
+				payload["result"] = ev.Result
+			}
+			r.db.Event(r.ID, h.phase.ID, "tool_call", ev.ToolName, payload)
 			// Ending the read is what ends the turn: killing Pi alone leaves
 			// its own tool children holding the pipe open. The session on disk
 			// keeps the context, so the next prompt resumes it rather than
@@ -414,8 +438,13 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// Spend is real whether or not the call succeeded, so it is recorded first.
 	r.tokens += res.Tokens
 	r.cost += res.Cost
-	r.db.Event(r.ID, h.phase.ID, "usage", a.Name,
-		map[string]any{"attempt": attempt, "tokens": res.Tokens, "cost": res.Cost})
+	// The model rides along with the spend it produced: an agent's model is
+	// resolved per run from flags and the roster, so the trace cannot say which
+	// one a phase actually used unless the phase records it. A payload is
+	// schemaless, so this costs no migration the way a phases column would.
+	r.db.Event(r.ID, h.phase.ID, "usage", a.Name, map[string]any{
+		"attempt": attempt, "tokens": res.Tokens, "cost": res.Cost, "model": a.Model,
+	})
 
 	// Enforced before the envelope is read, and after a failed turn too: the
 	// turn that ended badly is the one most likely to have left something

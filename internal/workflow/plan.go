@@ -99,7 +99,7 @@ func globby(path string) bool {
 
 // Plan reads the repo and produces the plan a builder will implement. Same
 // shape as Scout — one read-only agent, one phase — because that is all it is
-// until Phase 3 gives the plan somewhere to go.
+// when invoked on its own. Build hands the same envelope to the builder.
 func Plan(cfg config.Config, ov config.Overrides, repo, request string) int {
 	r, err := run.New(cfg, ov, "plan", repo, request)
 	if err != nil {
@@ -112,14 +112,7 @@ func Plan(cfg config.Config, ov config.Overrides, repo, request string) int {
 
 	var out PlanOutput
 	if err == nil {
-		err = r.Phase(run.Params{Name: "plan", Kind: "agent", Owner: "planner"},
-			func(ph *run.Handle) error {
-				if err := ph.Call(&out, request,
-					run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(cfg.Protected)); err != nil {
-					return err
-				}
-				return writeResult(r.Dir, "plan.json", &out)
-			})
+		err = planPhase(r, cfg, request, &out)
 	}
 	// The plan is the product of this workflow, so it goes to the terminal as
 	// well as to disk; a failed phase has nothing to print.
@@ -127,6 +120,21 @@ func Plan(cfg config.Config, ov config.Overrides, repo, request string) int {
 		printPlan(r.Out, &out)
 	}
 	return r.Finish(true, "")
+}
+
+// planPhase is the planner's whole contract — its gates and the name it reports
+// under — in one place. `lathe build` runs this same phase before handing the
+// plan to the builder, and a second copy is how the two would start planning
+// under different rules without anything failing to compile.
+func planPhase(r *run.Run, cfg config.Config, request string, out *PlanOutput) error {
+	return r.Phase(run.Params{Name: "plan", Kind: "agent", Owner: "planner"},
+		func(ph *run.Handle) error {
+			if err := ph.Call(out, request,
+				run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(cfg.Protected)); err != nil {
+				return err
+			}
+			return writeResult(r.Dir, "plan.json", out)
+		})
 }
 
 // printPlan renders an envelope Validate has already accepted, so every list is

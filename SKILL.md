@@ -24,8 +24,13 @@ of `lathe` is the trace it leaves behind.
   change the repo it is pointed at.
 - `plan "<request>"` — plan a change: a summary, ordered steps, the files the
   change touches, and the risks. Read-only on the same terms as the scout. The
-  file list is the write scope a builder will later be held to, so a plan that
+  file list is the write scope the builder is held to, so a plan that
   names `.git`, `.env*` or key material is rejected before it is printed.
+
+- `build "<request>"` — plan and implement a change in a clean Git repository.
+  The builder gets write and edit tools, no shell, and may write only the plan's
+  files. Changes remain uncommitted. A missed file ends the run as a failure
+  naming the needed path. Review with `git diff`; tests are not run yet.
 
 ## Writing the request
 
@@ -46,5 +51,6 @@ Before the request, not after:
 
 The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
-prints; `<dir>/raw.jsonl` is the full event stream. `lathe runs` lists recent
+prints; `<dir>/build.json` is the builder's report (also saved when it reports
+needed files); `<dir>/raw.jsonl` is the full event stream. `lathe runs` lists recent
 runs from every repo.
