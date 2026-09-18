@@ -174,6 +174,14 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'usage'`, r.ID); n != 2 {
 		t.Fatalf("agent turns = %d; want 2", n)
 	}
+	// The dashboard reads a phase's model off its usage events, so the spend and
+	// the model that produced it have to travel together. Not pinned to a model
+	// name: the roster is free to change, the pairing is not.
+	if m := scalar[string](t, db,
+		`SELECT json_extract(payload, '$.model') FROM events
+		 WHERE run_id = ? AND type = 'usage' LIMIT 1`, r.ID); m == "" {
+		t.Fatal("a usage event recorded no model; the phases table cannot name one")
+	}
 	if n := scalar[int](t, db,
 		`SELECT count(*) FROM events WHERE run_id = ? AND type = 'envelope' AND payload LIKE '%no fenced%'`,
 		r.ID); n != 1 {

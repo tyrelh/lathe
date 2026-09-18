@@ -22,3 +22,20 @@ func TestEmbeddedAssetsResolveTheRoster(t *testing.T) {
 		t.Fatal("the scout's prompts are not in the binary")
 	}
 }
+
+func TestEmbeddedBuilder(t *testing.T) {
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := cfg.Resolve("builder", config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(a.Tools, ",") != "read,grep,find,ls,write,edit" {
+		t.Fatalf("builder tools: %v", a.Tools)
+	}
+	if !strings.Contains(a.SystemPrompt, "You are the builder") || !strings.Contains(a.UserPrompt, `"needed"`) {
+		t.Fatal("builder prompts missing")
+	}
+}

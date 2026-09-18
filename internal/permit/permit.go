@@ -15,6 +15,12 @@ import (
 	"strings"
 )
 
+// Norm is the one canonical path form every half of the boundary compares in:
+// slash-separated and cleaned, so "./README.md" out of a plan and "README.md"
+// out of git status are the same string. The guard, Enforce and the gates all
+// match by equality, so they must all normalize here rather than each inline.
+func Norm(path string) string { return filepath.ToSlash(filepath.Clean(path)) }
+
 // Denied reports the first protected pattern path matches, if any. Two forms,
 // both stdlib, because the list is short and a matcher is not worth writing:
 //
@@ -26,7 +32,7 @@ import (
 // path is repo-relative and slash-separated by the time it gets here; callers
 // that start from an absolute path resolve it first.
 func Denied(path string, deny []string) (string, bool) {
-	clean := filepath.ToSlash(filepath.Clean(path))
+	clean := Norm(path)
 	segments := strings.Split(clean, "/")
 	for _, pattern := range deny {
 		if dir := strings.TrimSuffix(pattern, "/"); dir != pattern {
@@ -90,14 +96,12 @@ func Guard(dir string) (string, error) {
 // because the builder's allow list and the tester's differ, and the guard
 // re-reads the file per tool call so a rewrite needs no reload.
 func Write(dir string, s Scope) (string, error) {
-	// The guard compares a resolved path against these strings, and Enforce
-	// compares a filepath.Clean'd one, so "./README.md" out of a plan is
-	// writable by one half and not the other. Cleaning here is what keeps the
-	// two reading the same list. A fresh slice, because the caller's is the
-	// plan's and this is not its business to rewrite.
+	// Norm here is what keeps the guard and Enforce reading the same list. A
+	// fresh slice, because the caller's is the plan's and this is not its
+	// business to rewrite.
 	allow := make([]string, len(s.Allow))
 	for i, path := range s.Allow {
-		allow[i] = filepath.ToSlash(filepath.Clean(path))
+		allow[i] = Norm(path)
 	}
 	s.Allow = allow
 	// Marshalling a nil slice gives null, which would crash the guard on
@@ -145,7 +149,7 @@ func Enforce(repo string, s Scope) (kept, reverted []string, err error) {
 	}
 	allowed := map[string]bool{}
 	for _, p := range s.Allow {
-		allowed[filepath.ToSlash(filepath.Clean(p))] = true
+		allowed[Norm(p)] = true
 	}
 	for _, e := range dirty {
 		// Deny always wins, so being allowed is not on its own enough.
@@ -161,6 +165,20 @@ func Enforce(repo string, s Scope) (kept, reverted []string, err error) {
 	return kept, reverted, nil
 }
 
+// Changed lists every uncommitted path, including untracked files and deletions.
+// A rename arrives as both halves, so a caller checking claims sees both paths.
+func Changed(repo string) ([]string, error) {
+	entries, err := status(repo)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		paths = append(paths, e.path)
+	}
+	return paths, nil
+}
+
 // entry is one line of git status: the path, and whether git has ever seen it.
 type entry struct {
 	path      string
@@ -173,10 +191,13 @@ type entry struct {
 // whole directory of out-of-scope files arrives as a path git checkout cannot
 // revert. -z because a path with a space in it comes back quoted and escaped
 // otherwise, and the parser gets it silently wrong for exactly the files you
-// would most want reverted. Ignored files are deliberately absent: build caches
-// and node_modules are not the agent's doing.
+// would most want reverted. --no-renames because a rename is one record holding
+// two NUL-separated paths, which this parser would mis-slice; off, it arrives as
+// "D old" plus "?? new", which revert and the claim gate already cover.
+// Ignored files are deliberately absent: build caches and node_modules are not
+// the agent's doing.
 func status(repo string) ([]entry, error) {
-	cmd := exec.Command("git", "status", "--porcelain=v1", "-z", "-uall")
+	cmd := exec.Command("git", "status", "--porcelain=v1", "-z", "-uall", "--no-renames")
 	cmd.Dir = repo
 	out, err := cmd.Output()
 	if err != nil {
@@ -189,7 +210,7 @@ func status(repo string) ([]entry, error) {
 			continue
 		}
 		entries = append(entries, entry{
-			path:      filepath.ToSlash(filepath.Clean(rec[3:])),
+			path:      Norm(rec[3:]),
 			untracked: rec[:2] == "??",
 		})
 	}

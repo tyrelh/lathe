@@ -23,6 +23,7 @@ usage: lathe <command> [flags] [args]
 commands:
   scout "<request>"   investigate the current repo and report what is there
   plan "<request>"    plan a change to the current repo; write nothing
+  build "<request>"   plan and implement a change; leave it uncommitted
   runs                list recent runs, from every repo
   dash                serve the run dashboard on http://127.0.0.1:4700
   install             link this repo into each agent's skills directory
@@ -47,11 +48,14 @@ func dispatch(args []string) int {
 	}
 	switch cmd := args[0]; cmd {
 	case "scout":
-		return agentCmd("scout", "scout", workflow.Scout,
+		return agentCmd("scout", []string{"scout"}, workflow.Scout,
 			`lathe scout "where does auth live"`, args[1:])
 	case "plan":
-		return agentCmd("plan", "planner", workflow.Plan,
+		return agentCmd("plan", []string{"planner"}, workflow.Plan,
 			`lathe plan "add retry with backoff to the fetch client"`, args[1:])
+	case "build":
+		return agentCmd("build", []string{"planner", "builder"}, workflow.Build,
+			`lathe build "add retry with backoff to the fetch client"`, args[1:])
 	case "runs":
 		return runs(args[1:])
 	case "dash":
@@ -67,11 +71,12 @@ func dispatch(args []string) int {
 	}
 }
 
-// agentCmd is the body both read-only workflows share: same flags, same
-// preflight, different graph. Both roots and the roster are resolved before
-// anything is spawned, so an unknown model or a directory outside a git repo
-// fails in under a second rather than after an agent turn.
-func agentCmd(name, agent string, graph func(config.Config, config.Overrides, string, string) int, example string, args []string) int {
+// agentCmd shares flags and preflight across the workflow graphs. agents is
+// every agent the graph will spawn, named by the caller because the graph is
+// what knows: both roots and the whole roster are resolved before anything is
+// spawned, so an unknown agent or a directory outside a git repo fails in under
+// a second rather than after an agent turn.
+func agentCmd(name string, agents []string, graph func(config.Config, config.Overrides, string, string) int, example string, args []string) int {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	repo := fs.String("repo", "", "repository to act on (default: the git root of the working directory)")
 	ov := overrideFlags(fs)
@@ -104,9 +109,11 @@ func agentCmd(name, agent string, graph func(config.Config, config.Overrides, st
 	}
 	// Resolving now turns an unknown agent, a bad timeout or a missing prompt
 	// into an error before a run row exists.
-	if _, err := cfg.Resolve(agent, *ov); err != nil {
-		fmt.Fprintln(os.Stderr, "lathe:", err)
-		return 1
+	for _, agent := range agents {
+		if _, err := cfg.Resolve(agent, *ov); err != nil {
+			fmt.Fprintln(os.Stderr, "lathe:", err)
+			return 1
+		}
 	}
 	return graph(cfg, *ov, root, request)
 }

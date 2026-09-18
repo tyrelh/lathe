@@ -58,7 +58,7 @@ func TestResolveAppliesDefaultsAndFlags(t *testing.T) {
 
 // An unknown agent fails before anything is spawned, and says what does exist.
 func TestResolveUnknownAgent(t *testing.T) {
-	_, err := assets(t).Resolve("builder", Overrides{})
+	_, err := assets(t).Resolve("unknown-agent", Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "scout") {
 		t.Fatalf("err = %v; want an unknown-agent error listing scout", err)
 	}

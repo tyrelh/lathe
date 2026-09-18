@@ -21,7 +21,14 @@ func stubPi(t *testing.T, replies ...string) {
 	for i, r := range replies {
 		write(t, filepath.Join(dir, fmt.Sprintf("reply%d.jsonl", i)), r)
 	}
-	script := fmt.Sprintf("#!/bin/sh\nn=$(cat %q)\necho $((n+1)) > %q\ncat %q/reply$n.jsonl\n", count, count, dir)
+	onPath(t, dir, fmt.Sprintf("#!/bin/sh\nn=$(cat %q)\necho $((n+1)) > %q\ncat %q/reply$n.jsonl\n", count, count, dir))
+}
+
+// onPath installs script as an executable `pi` in dir and puts dir first on
+// PATH, which is the whole seam a workflow test needs. Every stub differs only
+// in the script, so only the script belongs in one.
+func onPath(t *testing.T, dir, script string) {
+	t.Helper()
 	write(t, filepath.Join(dir, "pi"), script)
 	if err := os.Chmod(filepath.Join(dir, "pi"), 0o755); err != nil {
 		t.Fatal(err)
