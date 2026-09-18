@@ -174,6 +174,17 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'usage'`, r.ID); n != 2 {
 		t.Fatalf("agent turns = %d; want 2", n)
 	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'input'`, r.ID); n != 2 {
+		t.Fatalf("input turns = %d; want original and correction", n)
+	}
+	for _, field := range []string{"system", "prompt", "session_id"} {
+		if value := scalar[string](t, db, `SELECT json_extract(payload, '$.`+field+`') FROM events WHERE run_id = ? AND type = 'input' LIMIT 1`, r.ID); value == "" {
+			t.Errorf("input event missing %s", field)
+		}
+	}
+	if prompt := scalar[string](t, db, `SELECT json_extract(payload, '$.prompt') FROM events WHERE run_id = ? AND type = 'input' ORDER BY event_id DESC LIMIT 1`, r.ID); !strings.Contains(prompt, "no fenced") {
+		t.Errorf("correction input omitted gate failure: %q", prompt)
+	}
 	// The dashboard reads a phase's model off its usage events, so the spend and
 	// the model that produced it have to travel together. Not pinned to a model
 	// name: the roster is free to change, the pairing is not.

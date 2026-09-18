@@ -2,16 +2,36 @@
 <meta charset="utf-8">
 <title>lathe</title>
 <style>
+  /* Catppuccin Macchiato (dark) and Latte (light). */
   :root {
     color-scheme: dark;
-    --bg: #14161a; --panel: #1b1e24; --line: #2b2f37;
-    --fg: #d8dce3; --dim: #838b98;
-    --ok: #5ec27a; --fail: #e2686b; --run: #d8a657;
+    --bg: #24273a; --panel: #363a4f; --line: #494d64;
+    --fg: #cad3f5; --dim: #a5adcb;
+    --ok: #a6da95; --fail: #ed8796; --run: #eed49f; --cost: #c6a0f6;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #eff1f5; --panel: #ccd0da; --line: #bcc0cc;
+      --fg: #4c4f69; --dim: #6c6f85;
+      --ok: #40a02b; --fail: #d20f39; --run: #df8e1d; --cost: #8839ef;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #eff1f5; --panel: #ccd0da; --line: #bcc0cc;
+    --fg: #4c4f69; --dim: #6c6f85;
+    --ok: #40a02b; --fail: #d20f39; --run: #df8e1d; --cost: #8839ef;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  header { padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 8px; }
+  #theme { margin-left: auto; background: none; border: 1px solid var(--line);
+           color: var(--dim); font: inherit; line-height: 1; cursor: pointer;
+           border-radius: 4px; padding: 3px 7px; }
+  #theme:hover { color: var(--fg); background: var(--panel); }
   header b { letter-spacing: .1em; }
   main { padding: 16px; max-width: 1100px; }
   h2 { font-size: 12px; color: var(--dim); text-transform: uppercase;
@@ -24,13 +44,22 @@
   tr.run { cursor: pointer; }
   tr.run:hover td { background: var(--panel); }
   .dim { color: var(--dim); }
+  .cost { color: var(--cost); }
   .ok { color: var(--ok); } .fail { color: var(--fail); } .running { color: var(--run); }
   a { color: var(--fg); cursor: pointer; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
+  summary { cursor: pointer; overflow-wrap: anywhere; }
+  details[open] > summary { margin-bottom: 8px; }
+  details pre { padding: 8px; background: var(--panel); }
+  pre.fail { color: var(--fail); }
+  .phase-input td { white-space: normal; padding-left: 28px; }
+  .phase-input summary { color: var(--dim); }
+  #permits section { border-bottom: 1px solid var(--line); padding: 8px 0; }
   #log td:last-child { white-space: normal; width: 100%; }
 </style>
 
-<header><b>lathe</b> <span class="dim" id="sub"></span></header>
+<header><b>lathe</b> <span class="dim" id="sub"></span>
+  <button id="theme" type="button" title="Theme: follow system">◐</button></header>
 <main id="app"></main>
 
 <script>
@@ -40,24 +69,30 @@ const PAGE = 500;   // the server's per-poll event cap
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per attempt, so a corrected phase is the
 // sum of its tries — which is the number worth seeing.
-const spend = new Map();
+const spend = new Map(), inputs = new Map(), permits = [];
+let generation = 0, polling = false;
 
-const esc = s => String(s ?? '').replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]));
+const esc = s => String(s ?? '').replace(/[<&"']/g, c => ({'<':'&lt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
 const cls = s => s === 'ok' || s === 'success' ? 'ok' : s === 'running' ? 'running' : 'fail';
 const time = s => (s || '').slice(11, 19);
 const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 
 addEventListener('hashchange', () => {
   runID = location.hash.slice(1) || null;
-  after = 0; done = false; spend.clear(); app.innerHTML = ''; tick();
+  generation++;
+  after = 0; done = false; spend.clear(); inputs.clear(); permits.length = 0;
+  app.innerHTML = ''; tick();
 });
 
 async function tick() {
-  if (done) return;
+  if (done || polling) return;
+  polling = true;
   try {
     if (runID) await detail(); else await list();
   } catch (e) {
     sub.textContent = String(e);
+  } finally {
+    polling = false;
   }
 }
 
@@ -68,7 +103,9 @@ async function get(url) {
 }
 
 async function list() {
+  const current = generation;
   const runs = await get('/api/runs?n=50');
+  if (current !== generation) return;
   sub.textContent = runs.length + ' runs';
   const repos = new Map();
   for (const r of runs) {
@@ -85,19 +122,28 @@ async function list() {
         <td class="${cls(r.status)}">${esc(r.status)}</td>
         <td>${esc(r.workflow)}</td>
         <td class="dim">${r.tokens} tok</td>
-        <td class="dim">$${r.cost.toFixed(5)}</td>
+        <td class="cost">$${r.cost.toFixed(5)}</td>
         <td class="wrap">${esc(r.request)}</td>
       </tr>`).join('')}</table>`).join('');
 }
 
 async function detail() {
+  const current = generation;
   const d = await get('/api/runs/' + encodeURIComponent(runID) + '?after=' + after);
+  if (current !== generation) return;
   const r = d.run;
-  sub.textContent = `${r.workflow} · ${r.status} · ${r.tokens} tok · $${r.cost.toFixed(5)}`;
+  sub.innerHTML = `${esc(r.workflow)} · ${esc(r.status)} · ${r.tokens} tok · <span class="cost">$${r.cost.toFixed(5)}</span>`;
 
   // Folded in before the phases are drawn, not after: a settled run stops
   // polling at the end of this pass, so a total added later never gets drawn.
   for (const e of d.events) {
+    if (e.type === 'input' || isCommand(e)) {
+      // Rendered once, on arrival: the phases table is rebuilt every poll, and
+      // re-escaping every system prompt each second is the cost of not doing it.
+      inputs.set(e.phase_id, (inputs.get(e.phase_id) || '') +
+        `<p>${e.type === 'input' ? 'Agent turn' : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
+    }
+    if (e.type === 'permit') permits.push(e);
     if (e.type !== 'usage' || !e.payload) continue;
     const s = spend.get(e.phase_id) || { model: '', tokens: 0, cost: 0 };
     s.tokens += e.payload.tokens || 0;
@@ -113,12 +159,15 @@ async function detail() {
       <p><a href="#">&larr; all runs</a></p>
       <p id="head"></p>
       <h2>phases</h2><table id="phases"></table>
+      <h2>permissions</h2><div id="permits"></div>
       <h2>events</h2><table id="log"></table>`;
   }
   document.getElementById('head').innerHTML =
     `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
   // An engineer phase spends nothing and has no model, so its cells stay empty
   // rather than reading "0 tok  $0.00000" as though it had been asked.
+  const expanded = new Set([...document.querySelectorAll('#phases details[open]')].map(d => d.dataset.phase));
+  const following = innerHeight + scrollY >= document.body.scrollHeight - 40;
   document.getElementById('phases').innerHTML = d.phases.map(p => {
     const s = spend.get(p.phase_id) || {};
     return `
@@ -130,10 +179,21 @@ async function detail() {
       <td class="${cls(p.status)}">${esc(p.status)}</td>
       <td class="dim">${time(p.started_at)}${p.ended_at ? ' → ' + time(p.ended_at) : ''}</td>
       <td class="dim">${s.tokens ? s.tokens + ' tok' : ''}</td>
-      <td class="dim">${s.cost ? '$' + s.cost.toFixed(5) : ''}</td>
+      <td class="cost">${s.cost ? '$' + s.cost.toFixed(5) : ''}</td>
       <td class="wrap">${esc(p.error)}</td>
-    </tr>`;
+    </tr>
+    <tr class="phase-input"><td colspan="9"><details data-phase="${esc(p.phase_id)}" ${expanded.has(p.phase_id) ? 'open' : ''}>
+      <summary>Input context · ${p.seq} ${esc(p.name)}</summary>
+      ${inputs.get(p.phase_id) || '<p class="dim">Input context not recorded.</p>'}
+    </details></td></tr>`;
   }).join('');
+
+  const seq = new Map(d.phases.map(p => [p.phase_id, p.seq]));
+  document.getElementById('permits').innerHTML = permits.map(e => `
+    <section><b>${seq.has(e.phase_id) ? seq.get(e.phase_id) + ' ' : ''}${esc(e.name)}</b> <span class="dim">${time(e.at)}</span>
+      <p>Kept</p><pre>${files(e.payload?.kept)}</pre>
+      <p class="fail">Reverted</p><pre class="fail">${files(e.payload?.reverted)}</pre>
+    </section>`).join('') || '<p class="dim">No permission checks recorded.</p>';
 
   // A settled run is final: the phases and the log above are the whole of it,
   // so the poll stops rather than re-running three queries every second. A full
@@ -143,29 +203,61 @@ async function detail() {
   // Follow the tail, but only for someone already at the bottom: measure
   // before appending, or the new rows have already moved the answer. Scrolling
   // up to read a tool call is how you say "stop following".
-  const following = innerHeight + scrollY >= document.body.scrollHeight - 40;
-
   const log = document.getElementById('log');
   for (const e of d.events) {
     after = e.event_id;
     const row = log.insertRow();
     row.innerHTML = `
       <td class="dim">${time(e.at)}</td>
-      <td class="${e.type === 'error' ? 'fail' : ''}">${esc(e.type)}</td>
+      <td class="${failed(e) ? 'fail' : ''}">${esc(e.type)}</td>
       <td>${esc(e.name)}</td>
-      <td><pre>${esc(payload(e.payload))}</pre></td>`;
+      <td>${eventPayload(e)}</td>`;
   }
   if (d.events.length && following) scrollTo(0, document.body.scrollHeight);
 }
 
-// One line per event: the whole payload if it is short, its shape if not. The
-// run directory has the full transcript; this is a tail, not a viewer.
-function payload(p) {
-  if (p === null || p === undefined) return '';
-  const s = typeof p === 'string' ? p : JSON.stringify(p);
-  return s.length > 300 ? s.slice(0, 300) + '…' : s;
+const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);
+const isCommand = e => e.type === 'log' && e.name === 'command';
+// Indented for a panel, compact for a one-line preview; one dispatch either way.
+const text = (p, indent) => p == null ? '' : typeof p === 'string' ? p : JSON.stringify(p, null, indent);
+const files = xs => esc((xs || []).join('\n') || 'None');
+
+function eventPayload(e) {
+  // Commands and failures stay visible in full, including a blocked call's reason.
+  const whole = failed(e) || isCommand(e) || (e.type === 'tool_call' && e.name === 'bash');
+  const body = esc(text(e.payload, 2)), bad = failed(e) ? ' class="fail"' : '';
+  const s = text(e.payload);
+  const head = whole ? body : esc(s.length > 300 ? s.slice(0, 300) + '…' : s);
+  // Nothing hidden means nothing to disclose: a triangle that expands to the
+  // same text is a control that does nothing.
+  return head === body ? `<pre${bad}>${body}</pre>`
+    : `<details><summary><pre${bad}>${head}</pre></summary><pre>${body}</pre></details>`;
 }
 
 tick();
 setInterval(tick, 1000);
+</script>
+
+<script>
+// Theme: auto follows the OS (the CSS media query does that on its own, live),
+// light and dark pin it. ponytail: three states in one button, no settings pane.
+(() => {
+  const ICON = {auto: '◐', light: '☀', dark: '☾'}, ORDER = ['auto', 'light', 'dark'];
+  const button = document.getElementById('theme');
+  let mode = 'auto';
+  try { mode = localStorage.getItem('lathe-theme') || 'auto'; } catch {}
+  if (!ORDER.includes(mode)) mode = 'auto';
+  const apply = () => {
+    if (mode === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', mode);
+    button.textContent = ICON[mode];
+    button.title = mode === 'auto' ? 'Theme: follow system' : `Theme: ${mode}`;
+  };
+  button.addEventListener('click', () => {
+    mode = ORDER[(ORDER.indexOf(mode) + 1) % ORDER.length];
+    try { localStorage.setItem('lathe-theme', mode); } catch {}
+    apply();
+  });
+  apply();
+})();
 </script>

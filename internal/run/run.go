@@ -409,7 +409,8 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
 	// Rewritten before every spawn rather than once per run: each agent's allow
 	// list differs, and the guard re-reads the file per tool call.
-	scopeFile, err := permit.Write(r.Dir, h.permit())
+	scope := h.permit()
+	scopeFile, err := permit.Write(r.Dir, scope)
 	if err != nil {
 		return pi.Result{}, err
 	}
@@ -423,7 +424,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	}
 	calls := 0
 
-	res, err := pi.Run(ctx, pi.Options{
+	opts := pi.Options{
 		Bin:          r.PiBin,
 		Dir:          r.Repo,
 		Provider:     a.Provider,
@@ -439,7 +440,17 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
 		},
-	}, prompt, func(ev pi.Event) bool {
+	}
+
+	// Recorded off the options actually passed to Pi, so the trace cannot drift
+	// from what was sent. Session history stays in Pi's transcript; this is the
+	// input we supply, including corrections and resumed fix prompts.
+	r.db.Event(r.ID, h.phase.ID, "input", a.Name, map[string]any{
+		"attempt": attempt, "system": opts.SystemPrompt, "prompt": prompt,
+		"session_id": opts.SessionID, "allow": scope.Allow,
+	})
+
+	res, err := pi.Run(ctx, opts, prompt, func(ev pi.Event) bool {
 		// ponytail: this writes to SQLite while Pi's stdout is not being read,
 		// so a contended database back-pressures the agent for up to
 		// busy_timeout. The fix, if a run ever actually stalls here, is a
