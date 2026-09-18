@@ -17,15 +17,25 @@
 A Go binary that runs bounded agent workflows against whatever repository you invoke it from, and traces every run to SQLite. One install, not one per project.
 
 ```sh
-make install     # build to ~/.local/bin/lathe, link it into ~/.claude, ~/.codex and ~/.pi/agent skills
+# build to ~/.local/bin/lathe, link it into ~/.claude, ~/.codex and ~/.pi/agent skills
+make install
 ```
 
 ```sh
-lathe scout "where is authentication handled and what calls it"   # investigate; writes nothing
-lathe plan  "add retry with backoff to the fetch client"          # plan a change; writes nothing
-lathe build "add retry with backoff to the fetch client"          # plan, implement, test, and fix failures
-lathe runs                                                        # recent runs, every repo
-lathe dash                                                        # http://127.0.0.1:4700, live
+# investigate; writes nothing
+lathe scout "where is authentication handled and what calls it"
+
+# plan a change; writes nothing
+lathe plan  "add retry with backoff to the fetch client"
+
+# plan, implement, test, and fix failures
+lathe build "add retry with backoff to the fetch client"
+
+# recent runs, every repo
+lathe runs
+
+# http://127.0.0.1:4700, live observability dashboard
+lathe dash
 ```
 
 `build` needs a clean working tree. The builder may write only the files its own plan named; review the result with `git diff` and commit it yourself.
