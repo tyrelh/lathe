@@ -1,5 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lathe</title>
 <style>
   /* Catppuccin Macchiato (dark) and Latte (light). */
@@ -24,73 +25,213 @@
     --ok: #40a02b; --fail: #d20f39; --run: #df8e1d; --cost: #8839ef;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  header { padding: 10px 16px; border-bottom: 1px solid var(--line);
-           display: flex; align-items: center; gap: 8px; }
+
+  /* The shell: bars span the viewport, the rail sits between them, and only
+     the main pane scrolls — so navigation and status never leave the screen. */
+  body {
+    margin: 0; height: 100vh; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    --rail: 190px;
+    display: grid;
+    grid-template-columns: var(--rail) 1fr;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "top top" "nav main" "bottom bottom";
+  }
+  body[data-nav="collapsed"] { --rail: 46px; }
+
+  header { grid-area: top; padding: 8px 14px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 10px; }
+  header b { letter-spacing: .1em; }
+  #version { color: var(--dim); }
   #theme { margin-left: auto; background: none; border: 1px solid var(--line);
            color: var(--dim); font: inherit; line-height: 1; cursor: pointer;
            border-radius: 4px; padding: 3px 7px; }
   #theme:hover { color: var(--fg); background: var(--panel); }
-  header b { letter-spacing: .1em; }
-  main { padding: 16px; max-width: 1100px; }
+
+  nav { grid-area: nav; border-right: 1px solid var(--line); padding: 8px 6px;
+        display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+  nav a, #collapse {
+    display: flex; align-items: center; gap: 10px; padding: 5px 8px;
+    color: var(--dim); text-decoration: none; border-radius: 4px;
+    border: none; background: none; font: inherit; cursor: pointer;
+    white-space: nowrap; width: 100%; text-align: left;
+  }
+  nav a:hover, #collapse:hover { background: var(--panel); color: var(--fg); }
+  nav a[aria-current="page"] { background: var(--panel); color: var(--fg);
+                               box-shadow: inset 2px 0 0 var(--cost); }
+  nav svg { flex: none; width: 14px; height: 14px; }
+  #collapse { margin-top: auto; }
+  body[data-nav="collapsed"] .label { display: none; }
+
+  main { grid-area: main; overflow: auto; padding: 16px; }
+  footer { grid-area: bottom; border-top: 1px solid var(--line);
+           padding: 4px 14px; color: var(--dim); display: flex; gap: 14px;
+           white-space: nowrap; overflow: hidden; }
+  #note { margin-left: auto; }
+  #note.stale { color: var(--run); }
+
   h2 { font-size: 12px; color: var(--dim); text-transform: uppercase;
        letter-spacing: .1em; margin: 24px 0 8px; }
   h2:first-child { margin-top: 0; }
   table { width: 100%; border-collapse: collapse; }
-  td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line);
-       vertical-align: top; white-space: nowrap; }
+  td, th { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line);
+           vertical-align: top; white-space: nowrap; text-align: left;
+           font-weight: normal; }
+  th { color: var(--dim); }
   td.wrap { white-space: normal; color: var(--dim); width: 100%; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   tr.run { cursor: pointer; }
   tr.run:hover td { background: var(--panel); }
   .dim { color: var(--dim); }
-  .cost { color: var(--cost); }
+  .cost { color: var(--cost); font-variant-numeric: tabular-nums; }
   .ok { color: var(--ok); } .fail { color: var(--fail); } .running { color: var(--run); }
   a { color: var(--fg); cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--cost); outline-offset: 1px; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
   summary { cursor: pointer; overflow-wrap: anywhere; }
   details[open] > summary { margin-bottom: 8px; }
   details pre { padding: 8px; background: var(--panel); }
   pre.fail { color: var(--fail); }
-  .phase-input td { white-space: normal; padding-left: 28px; }
-  .phase-input summary { color: var(--dim); }
+  /* One line per phase, and the line itself is the disclosure control. A
+     table cannot hold a <details>, so phases are a grid instead — and fixed
+     ch columns line up exactly in a monospace face, which a table's
+     content-derived widths do not do across a rebuild. */
+  #phases { border-bottom: 1px solid var(--line); }
+  .phase { border-top: 1px solid var(--line); }
+  .phase > summary {
+    display: grid; align-items: baseline; gap: 0 10px; padding: 4px 0;
+    grid-template-columns: 2ch 3ch 8ch 9ch 17ch 8ch 19ch 11ch 10ch minmax(0, 1fr);
+    white-space: nowrap; list-style: none; cursor: pointer;
+  }
+  .phase > summary::-webkit-details-marker { display: none; }
+  .phase > summary::before { content: '\25b8'; color: var(--dim); }
+  .phase[open] > summary::before { content: '\25be'; }
+  .phase > summary:hover { background: var(--panel); }
+  .phase > summary > span { overflow: hidden; text-overflow: ellipsis; }
+  .phase-panel { padding: 4px 0 12px 2ch; }
+  .phase-panel p { margin: 8px 0 4px; }
   #permits section { border-bottom: 1px solid var(--line); padding: 8px 0; }
   #log td:last-child { white-space: normal; width: 100%; }
+
+  /* Two compact lifetime totals, then the rankings side by side. */
+  .totals { display: flex; gap: 40px; margin-bottom: 8px; }
+  .totals b { display: block; font-size: 20px; font-weight: normal;
+              font-variant-numeric: tabular-nums; }
+  .totals .cost b { color: var(--cost); }
+  .totals span { color: var(--dim); font-size: 12px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 32px; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) {
+    body { --rail: 46px; }
+    .label { display: none; }
+    .totals { gap: 20px; }
+    .lo { display: none; }
+  }
 </style>
 
-<header><b>lathe</b> <span class="dim" id="sub"></span>
-  <button id="theme" type="button" title="Theme: follow system">◐</button></header>
+<header>
+  <b>lathe</b> <span id="version" class="dim">…</span>
+  <button id="theme" type="button" title="Theme: follow system">◐</button>
+</header>
+
+<nav>
+  <a id="nav-overview" href="#/overview" title="Overview">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="5" height="5"/><rect x="9.5" y="1.5" width="5" height="5"/>
+      <rect x="1.5" y="9.5" width="5" height="5"/><rect x="9.5" y="9.5" width="5" height="5"/>
+    </svg><span class="label">Overview</span>
+  </a>
+  <a id="nav-runs" href="#/runs" title="Runs">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+      <path d="M1.5 3.5h13M1.5 8h13M1.5 12.5h13"/>
+    </svg><span class="label">Runs</span>
+  </a>
+  <button id="collapse" type="button" aria-expanded="true" title="Collapse navigation">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+      <path d="M10 3.5 5.5 8l4.5 4.5"/>
+    </svg><span class="label">Collapse</span>
+  </button>
+</nav>
+
 <main id="app"></main>
 
+<footer>
+  <span id="status"></span>
+  <span id="note"></span>
+</footer>
+
 <script>
-const app = document.getElementById('app'), sub = document.getElementById('sub');
-let runID = location.hash.slice(1) || null, after = 0, done = false;
+const $ = id => document.getElementById(id);
+const app = $('app'), bar = $('status'), note = $('note');
 const PAGE = 500;   // the server's per-poll event cap
+// How often each page asks for fresh data. Overview aggregates the whole
+// database and changes slowly; a live run's log does not.
+const POLL = {overview: 5000, runs: 2000, run: 1000, missing: 0};
+
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
-// stream past. A phase spends once per attempt, so a corrected phase is the
-// sum of its tries — which is the number worth seeing.
+// stream past. A phase spends once per model response, so a corrected phase is
+// the sum of every response in every try — which is the number worth seeing.
 const spend = new Map(), inputs = new Map(), permits = [];
-let generation = 0, polling = false;
+let after = 0, done = false;
+let generation = 0, polling = false, fresh = 0, failure = '';
+let view = route();
 
 const esc = s => String(s ?? '').replace(/[<&"']/g, c => ({'<':'&lt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
 const cls = s => s === 'ok' || s === 'success' ? 'ok' : s === 'running' ? 'running' : 'fail';
 const time = s => (s || '').slice(11, 19);
 const base = p => (p || '').split('/').filter(Boolean).pop() || p;
+const money = n => '$' + (n || 0).toFixed(5);
+const count = n => (n || 0).toLocaleString('en-US');
+const pct = n => (100 * (n || 0)).toFixed(1) + '%';
 
-addEventListener('hashchange', () => {
-  runID = location.hash.slice(1) || null;
+// route maps the hash to a page. `#/overview` is the landing page and an empty
+// hash means the same; `#<run-id>` without a slash is the deep link shape
+// earlier versions handed out, and still opens that run.
+function route() {
+  const h = location.hash.slice(1);
+  if (h === '' || h === '/' || h === '/overview') return {page: 'overview'};
+  if (h === '/runs') return {page: 'runs'};
+  if (h.startsWith('/runs/')) return {page: 'run', id: h.slice(6)};
+  if (!h.startsWith('/')) return {page: 'run', id: h};
+  return {page: 'missing'};
+}
+
+// Every page's fetch carries the generation it started in, so a reply that
+// lands after the reader has navigated away is dropped instead of drawn onto
+// whatever page is now on screen.
+function navigate() {
+  view = route();
   generation++;
-  after = 0; done = false; spend.clear(); inputs.clear(); permits.length = 0;
-  app.innerHTML = ''; tick();
-});
+  after = 0; done = false; failure = '';
+  spend.clear(); inputs.clear(); permits.length = 0;
+  app.innerHTML = '';
+  for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs']]) {
+    const on = view.page === page || (page === 'runs' && view.page === 'run');
+    // Runs stays selected while a single run is open: a run is something
+    // inside Runs, not a third place to be.
+    if (on) $(id).setAttribute('aria-current', 'page');
+    else $(id).removeAttribute('aria-current');
+  }
+  tick();
+}
+addEventListener('hashchange', navigate);
 
 async function tick() {
   if (done || polling) return;
   polling = true;
+  const current = generation;
   try {
-    if (runID) await detail(); else await list();
+    if (view.page === 'overview') await overview(current);
+    else if (view.page === 'runs') await list(current);
+    else if (view.page === 'run') await detail(current);
+    else missing();
+    if (current === generation) { failure = ''; fresh = Date.now(); }
   } catch (e) {
-    sub.textContent = String(e);
+    // The last good values stay on screen; only the freshness note changes.
+    // Replacing them with zeroes would read as "you have spent nothing".
+    if (current === generation) failure = String(e);
+    stamp();
   } finally {
     polling = false;
   }
@@ -99,16 +240,105 @@ async function tick() {
 async function get(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return {body: await r.json(), total: Number(r.headers?.get?.('X-Total-Runs'))};
 }
 
-async function list() {
-  const current = generation;
-  const runs = await get('/api/runs?n=50');
+// stamp writes the right-hand half of the bottom bar: how old what you are
+// looking at is, or why it stopped updating.
+function stamp() {
+  if (failure) {
+    note.className = 'stale';
+    note.textContent = fresh ? 'stale · ' + ago() + ' · ' + failure : failure;
+    return;
+  }
+  note.className = '';
+  note.textContent = done ? 'final' : 'updated ' + ago();
+}
+const ago = () => {
+  const s = Math.max(0, Math.round((Date.now() - fresh) / 1000));
+  return s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago';
+};
+
+function missing() {
+  app.innerHTML = `<h2>not found</h2><p class="dim">No page at <code>${esc(location.hash)}</code>.</p>
+    <p><a href="#/overview">Overview</a> · <a href="#/runs">Runs</a></p>`;
+  bar.textContent = 'Page not found';
+  fresh = Date.now();
+}
+
+async function overview(current) {
+  const {body: o} = await get('/api/overview');
   if (current !== generation) return;
-  sub.textContent = runs.length + ' runs';
+
+  const runRow = (r, i) => `
+    <tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
+      <td class="dim">${i + 1}</td>
+      <td>${esc(r.workflow)}</td>
+      <td class="dim lo">${esc(base(r.repo))}</td>
+      <td class="${cls(r.status)}">${esc(r.status)}</td>
+      <td class="num cost">${money(r.cost)}</td>
+      <td class="wrap lo">${esc(r.request)}</td>
+    </tr>`;
+  const modelRow = (m, i) => `
+    <tr>
+      <td class="dim">${i + 1}</td>
+      <td>${esc((m.provider || 'unknown') + '/' + (m.model || 'unknown'))}</td>
+      <td class="num cost">${money(m.cost)}</td>
+      <td class="num dim">${pct(m.share)}</td>
+      <td class="num dim lo">${count(m.phases)} phase${m.phases === 1 ? '' : 's'}</td>
+    </tr>`;
+  const empty = what => `<tr><td class="dim">No ${what} recorded yet.</td></tr>`;
+
+  app.innerHTML = `
+    <div class="totals">
+      <div><b>${count(o.runs)}</b><span>runs recorded</span></div>
+      <div class="cost"><b>${money(o.cost)}</b><span>recorded spend</span></div>
+    </div>
+    <p class="dim">Every run in every repository, for all time.
+      Spend updates after each model response.</p>
+    <div class="cols">
+      <div>
+        <h2>top runs by spend</h2>
+        <table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>
+      </div>
+      <div>
+        <h2>top models by spend</h2>
+        <table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table>
+        <p class="dim">${attribution(o)}</p>
+      </div>
+    </div>`;
+
+  bar.innerHTML = 'Overview · all repositories · all time'
+    + `<span class="lo"> · ${count(o.tokens)} tok</span>`;
+  stamp();
+}
+
+// attribution says what the model ranking cannot account for. Shares are of
+// total recorded spend, so ten rows are not expected to reach 100%.
+function attribution(o) {
+  // Counted per phase, not per run: a phase runs on one model, while a run
+  // moves between agents and spends on several.
+  const parts = [`Share is of ${money(o.cost)} total recorded spend, counted per
+    phase — one run's phases can each name a different model.`];
+  if (o.unattributed > 0) {
+    parts.push(`${money(o.unattributed)} of recorded spend names no model and is
+      excluded from this ranking, while still counting toward the total.`);
+  }
+  if (o.unexplained_runs) {
+    parts.push(`${count(o.unexplained_runs)} run(s) reconciled to a difference
+      between their stored total and their usage events.`);
+  }
+  if (o.malformed_usage) parts.push(`${count(o.malformed_usage)} usage event(s) could not be read.`);
+  return esc(parts.join(' ').replace(/\s+/g, ' '));
+}
+
+async function list(current) {
+  const {body: runs, total} = await get('/api/runs?n=50');
+  if (current !== generation) return;
   const repos = new Map();
+  let cost = 0, tokens = 0;
   for (const r of runs) {
+    cost += r.cost; tokens += r.tokens;
     const k = base(r.repo);
     if (!repos.has(k)) repos.set(k, []);
     repos.get(k).push(r);
@@ -117,22 +347,28 @@ async function list() {
   app.innerHTML = [...repos].map(([repo, rows]) => `
     <h2>${esc(repo)}</h2>
     <table>${rows.map(r => `
-      <tr class="run" onclick="location.hash='${esc(r.run_id)}'">
+      <tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
         <td class="dim">${esc(r.started_at.replace('T', ' ').replace('Z', ''))}</td>
         <td class="${cls(r.status)}">${esc(r.status)}</td>
         <td>${esc(r.workflow)}</td>
-        <td class="dim">${r.tokens} tok</td>
-        <td class="cost">$${r.cost.toFixed(5)}</td>
+        <td class="num dim">${count(r.tokens)} tok</td>
+        <td class="num cost">${money(r.cost)}</td>
         <td class="wrap">${esc(r.request)}</td>
-      </tr>`).join('')}</table>`).join('');
+      </tr>`).join('')}</table>`).join('')
+    || '<p class="dim">No runs yet. Start one with <code>lathe scout</code>.</p>';
+
+  // Explicitly "displayed", because these are the 50 most recent and the
+  // database holds more.
+  const shown = total ? `${count(runs.length)} of ${count(total)} runs` : `${count(runs.length)} runs`;
+  bar.innerHTML = `Runs · showing ${shown}`
+    + `<span class="lo"> · displayed: ${count(tokens)} tok · <span class="cost">${money(cost)}</span></span>`;
+  stamp();
 }
 
-async function detail() {
-  const current = generation;
-  const d = await get('/api/runs/' + encodeURIComponent(runID) + '?after=' + after);
+async function detail(current) {
+  const {body: d} = await get('/api/runs/' + encodeURIComponent(view.id) + '?after=' + after);
   if (current !== generation) return;
   const r = d.run;
-  sub.innerHTML = `${esc(r.workflow)} · ${esc(r.status)} · ${r.tokens} tok · <span class="cost">$${r.cost.toFixed(5)}</span>`;
 
   // Folded in before the phases are drawn, not after: a settled run stops
   // polling at the end of this pass, so a total added later never gets drawn.
@@ -154,42 +390,46 @@ async function detail() {
 
   // The header and phases are re-rendered every poll; the log is appended, so
   // scrolling through a finished phase is not undone a second later.
-  if (!document.getElementById('log')) {
+  if (!$('log')) {
     app.innerHTML = `
-      <p><a href="#">&larr; all runs</a></p>
+      <p><a href="#/runs">&larr; all runs</a></p>
       <p id="head"></p>
-      <h2>phases</h2><table id="phases"></table>
+      <h2>phases</h2><div id="phases"></div>
       <h2>permissions</h2><div id="permits"></div>
       <h2>events</h2><table id="log"></table>`;
   }
-  document.getElementById('head').innerHTML =
+  $('head').innerHTML =
     `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
   // An engineer phase spends nothing and has no model, so its cells stay empty
   // rather than reading "0 tok  $0.00000" as though it had been asked.
-  const expanded = new Set([...document.querySelectorAll('#phases details[open]')].map(d => d.dataset.phase));
-  const following = innerHeight + scrollY >= document.body.scrollHeight - 40;
-  document.getElementById('phases').innerHTML = d.phases.map(p => {
+  const expanded = new Set([...document.querySelectorAll('#phases details[open]')].map(x => x.dataset.phase));
+  const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
+  $('phases').innerHTML = d.phases.map(p => {
     const s = spend.get(p.phase_id) || {};
+    // The error is truncated to keep the line to one row; the panel below
+    // carries it in full, so nothing is only available on hover.
     return `
-    <tr>
-      <td class="dim">${p.seq}</td>
-      <td>${esc(p.name)}</td>
-      <td class="dim">${esc(p.owner)}</td>
-      <td class="dim">${esc(s.model || '')}</td>
-      <td class="${cls(p.status)}">${esc(p.status)}</td>
-      <td class="dim">${time(p.started_at)}${p.ended_at ? ' → ' + time(p.ended_at) : ''}</td>
-      <td class="dim">${s.tokens ? s.tokens + ' tok' : ''}</td>
-      <td class="cost">${s.cost ? '$' + s.cost.toFixed(5) : ''}</td>
-      <td class="wrap">${esc(p.error)}</td>
-    </tr>
-    <tr class="phase-input"><td colspan="9"><details data-phase="${esc(p.phase_id)}" ${expanded.has(p.phase_id) ? 'open' : ''}>
-      <summary>Input context · ${p.seq} ${esc(p.name)}</summary>
-      ${inputs.get(p.phase_id) || '<p class="dim">Input context not recorded.</p>'}
-    </details></td></tr>`;
+    <details class="phase" data-phase="${esc(p.phase_id)}" ${expanded.has(p.phase_id) ? 'open' : ''}>
+      <summary title="${esc(p.error || p.name)}">
+        <span class="dim">${p.seq}</span>
+        <span>${esc(p.name)}</span>
+        <span class="dim">${esc(p.owner)}</span>
+        <span class="dim">${esc(s.model || '')}</span>
+        <span class="${cls(p.status)}">${esc(p.status)}</span>
+        <span class="dim">${time(p.started_at)}${p.ended_at ? ' → ' + time(p.ended_at) : ''}</span>
+        <span class="num dim">${s.tokens ? count(s.tokens) + ' tok' : ''}</span>
+        <span class="num cost">${s.cost ? money(s.cost) : ''}</span>
+        <span class="fail">${esc(p.error)}</span>
+      </summary>
+      <div class="phase-panel">
+        ${p.error ? `<p class="fail">Error</p><pre class="fail">${esc(p.error)}</pre>` : ''}
+        ${inputs.get(p.phase_id) || '<p class="dim">Input context not recorded.</p>'}
+      </div>
+    </details>`;
   }).join('');
 
   const seq = new Map(d.phases.map(p => [p.phase_id, p.seq]));
-  document.getElementById('permits').innerHTML = permits.map(e => `
+  $('permits').innerHTML = permits.map(e => `
     <section><b>${seq.has(e.phase_id) ? seq.get(e.phase_id) + ' ' : ''}${esc(e.name)}</b> <span class="dim">${time(e.at)}</span>
       <p>Kept</p><pre>${files(e.payload?.kept)}</pre>
       <p class="fail">Reverted</p><pre class="fail">${files(e.payload?.reverted)}</pre>
@@ -200,10 +440,15 @@ async function detail() {
   // page means the server capped this poll and there is more to fetch first.
   if (r.status !== 'running' && d.events.length < PAGE) done = true;
 
+  bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
+    + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
+    + ` · ${elapsed(r)}<span class="lo"> · ${esc(base(r.repo))} · ${esc(r.run_id)}</span>`;
+  stamp();
+
   // Follow the tail, but only for someone already at the bottom: measure
   // before appending, or the new rows have already moved the answer. Scrolling
   // up to read a tool call is how you say "stop following".
-  const log = document.getElementById('log');
+  const log = $('log');
   for (const e of d.events) {
     after = e.event_id;
     const row = log.insertRow();
@@ -213,7 +458,16 @@ async function detail() {
       <td>${esc(e.name)}</td>
       <td>${eventPayload(e)}</td>`;
   }
-  if (d.events.length && following) scrollTo(0, document.body.scrollHeight);
+  if (d.events.length && following) app.scrollTop = app.scrollHeight;
+}
+
+// elapsed is how long a run took, or how long it has been going.
+function elapsed(r) {
+  const start = Date.parse(r.started_at), end = r.ended_at ? Date.parse(r.ended_at) : Date.now();
+  if (!start || !(end >= start)) return '';
+  const s = Math.round((end - start) / 1000);
+  const label = s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+  return r.ended_at ? label : label + ' elapsed';
 }
 
 const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);
@@ -234,18 +488,40 @@ function eventPayload(e) {
     : `<details><summary><pre${bad}>${head}</pre></summary><pre>${body}</pre></details>`;
 }
 
-tick();
-setInterval(tick, 1000);
+// The version is the serving binary's, asked for once. It is not in the HTML,
+// so an old page cached in a browser cannot claim to be a new one.
+function meta() {
+  get('/api/meta').then(({body}) => { $('version').textContent = body.version; })
+                  .catch(() => { $('version').textContent = '?'; });
+}
+
+// One timer for every page, because only one page is ever on screen. It ticks
+// faster than the slowest page refreshes so the "updated Ns ago" note keeps
+// counting between fetches.
+let last = 0;
+setInterval(() => {
+  stamp();
+  const wait = POLL[view.page];
+  if (wait && Date.now() - last >= wait) { last = Date.now(); tick(); }
+}, 500);
+
+meta();
+navigate();
 </script>
 
 <script>
-// Theme: auto follows the OS (the CSS media query does that on its own, live),
-// light and dark pin it. ponytail: three states in one button, no settings pane.
+// Theme and the navigation rail: two preferences, one place, both surviving a
+// browser that refuses localStorage. ponytail: three theme states in one
+// button, no settings pane.
 (() => {
   const ICON = {auto: '◐', light: '☀', dark: '☾'}, ORDER = ['auto', 'light', 'dark'];
+  const read = (key, fallback) => {
+    try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+  };
+  const write = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+
   const button = document.getElementById('theme');
-  let mode = 'auto';
-  try { mode = localStorage.getItem('lathe-theme') || 'auto'; } catch {}
+  let mode = read('lathe-theme', 'auto');
   if (!ORDER.includes(mode)) mode = 'auto';
   const apply = () => {
     if (mode === 'auto') document.documentElement.removeAttribute('data-theme');
@@ -255,9 +531,24 @@ setInterval(tick, 1000);
   };
   button.addEventListener('click', () => {
     mode = ORDER[(ORDER.indexOf(mode) + 1) % ORDER.length];
-    try { localStorage.setItem('lathe-theme', mode); } catch {}
+    write('lathe-theme', mode);
     apply();
   });
   apply();
+
+  const collapse = document.getElementById('collapse');
+  let nav = read('lathe-nav', 'expanded') === 'collapsed';
+  const showNav = () => {
+    document.body.dataset.nav = nav ? 'collapsed' : 'expanded';
+    collapse.setAttribute('aria-expanded', String(!nav));
+    collapse.title = nav ? 'Expand navigation' : 'Collapse navigation';
+    collapse.querySelector('svg').style.transform = nav ? 'rotate(180deg)' : '';
+  };
+  collapse.addEventListener('click', () => {
+    nav = !nav;
+    write('lathe-nav', nav ? 'collapsed' : 'expanded');
+    showNav();
+  });
+  showNav();
 })();
 </script>

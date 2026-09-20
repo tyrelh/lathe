@@ -27,6 +27,7 @@ commands:
   runs                list recent runs, from every repo
   dash                serve the run dashboard on http://127.0.0.1:4700
   install             link this repo into each agent's skills directory
+  version             print the version of this binary
   help                show this message
 
 flags (before the request, as Go's flag package stops at the first argument):
@@ -38,6 +39,10 @@ flags (before the request, as Go's flag package stops at the first argument):
 Run install from a checkout of the lathe repo; it links the checkout itself,
 so SKILL.md stays discoverable.
 `
+
+// version is stamped by the release build with -ldflags "-X main.version=...".
+// An ordinary `go build` leaves it at dev, which is what the dashboard shows.
+var version = "dev"
 
 func main() { os.Exit(dispatch(os.Args[1:])) }
 
@@ -62,6 +67,9 @@ func dispatch(args []string) int {
 		return dash()
 	case "install":
 		return installCmd()
+	case "version", "--version":
+		fmt.Println(version)
+		return 0
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -162,7 +170,7 @@ func runs(args []string) int {
 func dash() int {
 	dataRoot, err := trace.DataRoot()
 	if err == nil {
-		err = dashboard.Serve(dataRoot, os.Stdout)
+		err = dashboard.Serve(dataRoot, version, os.Stdout)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lathe dash:", err)

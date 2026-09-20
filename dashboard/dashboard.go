@@ -26,7 +26,14 @@ const Addr = "127.0.0.1:4700"
 // Serve blocks until the process is interrupted. The database is opened
 // read-only once and shared: SQLite in WAL mode lets this reader in while a
 // run in another terminal is writing.
-func Serve(dataRoot string, out io.Writer) error {
+func Serve(dataRoot, version string, out io.Writer) error {
+	// Migrations need a writer, and the serving connection is not one. Doing it
+	// here in its own step means a database written by an older lathe — or no
+	// database at all — opens as a dashboard rather than as an error telling
+	// you to go start an agent run first.
+	if err := trace.Init(dataRoot); err != nil {
+		return err
+	}
 	db, err := trace.OpenRO(dataRoot)
 	if err != nil {
 		return err
@@ -34,19 +41,31 @@ func Serve(dataRoot string, out io.Writer) error {
 	defer db.Close()
 
 	fmt.Fprintf(out, "lathe dash: http://%s  (Ctrl-C to stop)\n", Addr)
-	return http.ListenAndServe(Addr, handler(db))
+	return http.ListenAndServe(Addr, handler(db, version))
 }
 
 // handler is the whole server minus the listener, which is what lets a test
 // exercise the routes without binding a port.
-func handler(db *trace.DB) http.Handler {
+func handler(db *trace.DB, version string) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/meta", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]string{"version": version}, nil)
+	})
+	mux.HandleFunc("GET /api/overview", func(w http.ResponseWriter, r *http.Request) {
+		o, err := db.Overview()
+		writeJSON(w, o, err)
+	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
 	})
 	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Recent(intParam(r, "n", 50))
+		// The total rides in a header rather than wrapping the array: the body
+		// stays exactly the list every existing consumer already reads.
+		if total, terr := db.Total(); terr == nil {
+			w.Header().Set("X-Total-Runs", strconv.Itoa(total))
+		}
 		writeJSON(w, rows, err)
 	})
 	mux.HandleFunc("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request) {

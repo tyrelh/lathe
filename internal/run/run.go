@@ -228,7 +228,7 @@ func (r *Run) Finish(accepted bool, reason string) int {
 	case !accepted:
 		status, code = "fail", 1
 	}
-	if err := r.db.RunFinish(r.ID, status, r.tokens, r.cost); err != nil {
+	if err := r.db.RunFinish(r.ID, status); err != nil {
 		fmt.Fprintln(r.Out, "lathe: recording the run's end failed:", err)
 	}
 	r.raw.Close()
@@ -450,11 +450,33 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		"session_id": opts.SessionID, "allow": scope.Allow,
 	})
 
+	// Spend is persisted per completed model response rather than per attempt,
+	// so an interrupted run keeps what it already spent and the dashboard sees
+	// a live run's cost move. seq is assigned before the write and never
+	// reused, which is what makes the response's identity stable.
+	seq := 0
+	var usageErr error
 	res, err := pi.Run(ctx, opts, prompt, func(ev pi.Event) bool {
 		// ponytail: this writes to SQLite while Pi's stdout is not being read,
 		// so a contended database back-pressures the agent for up to
 		// busy_timeout. The fix, if a run ever actually stalls here, is a
 		// channel in front of the tracer rather than anything in this handler.
+		if ev.Type == "message_end" {
+			// Streaming partial updates are message_update, not message_end, so
+			// they never reach here; a response that ended in a tool call does,
+			// and it spent real money.
+			if m, err := ev.DecodeMessage(); err == nil && m.Role == "assistant" && m.Usage != nil {
+				seq++
+				if err := r.db.RecordUsage(trace.Usage{
+					RunID: r.ID, PhaseID: h.phase.ID, Agent: a.Name,
+					Attempt: attempt, Seq: seq,
+					Provider: a.Provider, Model: a.Model,
+					Tokens: m.Usage.TotalTokens, Cost: m.Usage.Cost.Total,
+				}); err != nil {
+					usageErr = errors.Join(usageErr, err)
+				}
+			}
+		}
 		if ev.Type == "tool_execution_end" {
 			payload := map[string]any{
 				"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError,
@@ -479,16 +501,11 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		return true
 	})
 
-	// Spend is real whether or not the call succeeded, so it is recorded first.
+	// The stream's own totals stay the CLI's accounting and a consistency check
+	// against what was persisted; the database was charged response by response
+	// as the stream ran, so nothing is written here.
 	r.tokens += res.Tokens
 	r.cost += res.Cost
-	// The model rides along with the spend it produced: an agent's model is
-	// resolved per run from flags and the roster, so the trace cannot say which
-	// one a phase actually used unless the phase records it. A payload is
-	// schemaless, so this costs no migration the way a phases column would.
-	r.db.Event(r.ID, h.phase.ID, "usage", a.Name, map[string]any{
-		"attempt": attempt, "tokens": res.Tokens, "cost": res.Cost, "model": a.Model,
-	})
 
 	// Enforced before the envelope is read, and after a failed turn too: the
 	// turn that ended badly is the one most likely to have left something
@@ -502,6 +519,10 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 			a.Name, strings.Join(reverted, ", "))
 	case enforceErr != nil:
 		return res, enforceErr
+	// Losing a write is losing money from the record, so it fails the phase
+	// rather than leaving the dashboard quietly short.
+	case usageErr != nil:
+		return res, fmt.Errorf("recording %s spend: %w", a.Name, usageErr)
 	}
 
 	// A killed Pi reports as a failed command, so the budget has to claim its
