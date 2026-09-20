@@ -136,7 +136,7 @@ func TestScanStreamsToolCallsToDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Scan(openSample(t, "pi-sample.jsonl"), nil, func(ev Event) bool {
+	_, err = Scan(openSample(t, "pi-sample.jsonl"), nil, func(ev Event) bool {
 		if ev.Type != "tool_execution_end" {
 			return true
 		}
@@ -153,7 +153,7 @@ func TestScanStreamsToolCallsToDB(t *testing.T) {
 	if err := db.PhaseUpsert(ph); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RunFinish(runID, "ok", res.Tokens, res.Cost); err != nil {
+	if err := db.RunFinish(runID, "ok"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -282,7 +282,7 @@ func TestLiveScout(t *testing.T) {
 	if err := db.PhaseUpsert(ph); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RunFinish(runID, "ok", res.Tokens, res.Cost); err != nil {
+	if err := db.RunFinish(runID, "ok"); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("run %s: %d events, %d tokens, $%.5f\n%s", runID, res.Events, res.Tokens, res.Cost, res.Text)

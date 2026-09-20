@@ -626,3 +626,108 @@ func TestALaterPhaseKeepsAnEarlierPhasesWork(t *testing.T) {
 	}
 	r.Finish(true, "")
 }
+
+// multiResponse is one attempt that answers across several model responses: a
+// streaming partial update, a response that ended in a tool call, the tool's
+// own result message, and finally the reply carrying the envelope.
+func multiResponse(t *testing.T, text string) string {
+	t.Helper()
+	line := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b) + "\n"
+	}
+	usage := func(tokens int, cost float64) map[string]any {
+		return map[string]any{"totalTokens": tokens, "cost": map[string]any{"total": cost}}
+	}
+	msg := func(role, stop string, u map[string]any, body string) string {
+		m := map[string]any{"role": role, "usage": u,
+			"content": []map[string]string{{"type": "text", "text": body}}}
+		if stop != "" {
+			m["stopReason"] = stop
+		}
+		return line(map[string]any{"type": "message_end", "message": m})
+	}
+	return line(map[string]any{"type": "message_update", "usage": usage(9, 0.9)}) +
+		msg("assistant", "toolUse", usage(60, 0.006), "let me read that") +
+		line(map[string]any{"type": "tool_execution_start", "toolCallId": "t1", "toolName": "read", "args": map[string]string{"path": "main.go"}}) +
+		line(map[string]any{"type": "tool_execution_end", "toolCallId": "t1", "toolName": "read"}) +
+		msg("toolResult", "", usage(500, 0.5), "file contents") +
+		msg("assistant", "stop", usage(40, 0.004), text)
+}
+
+// Spend lands per completed model response, while the attempt is still
+// running: each assistant response that reports usage is charged once, tool
+// results and streaming partials are not, and the attempt's own end adds
+// nothing on top.
+func TestSpendIsRecordedPerResponse(t *testing.T) {
+	bin, _ := stubPi(t, multiResponse(t, envelope("main.go dispatches subcommands")))
+	r := newRun(t, bin)
+
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+		func(h *Handle) error { return h.Call(&out, "what is here") }); err != nil {
+		t.Fatal(err)
+	}
+	if code := r.Finish(true, ""); code != 0 {
+		t.Fatalf("exit code = %d; want 0", code)
+	}
+
+	db := readDB(t)
+	// Two responses, not one per attempt and not one per message.
+	if n := scalar[int](t, db, `SELECT count(*) FROM usage WHERE run_id = ?`, r.ID); n != 2 {
+		t.Fatalf("usage records = %d; want 2 — partial updates and tool results must not count", n)
+	}
+	if seqs := scalar[string](t, db,
+		`SELECT group_concat(response_seq) FROM (SELECT response_seq FROM usage WHERE run_id = ? ORDER BY response_seq)`,
+		r.ID); seqs != "1,2" {
+		t.Fatalf("response sequence = %q; want 1,2", seqs)
+	}
+	// The run total is the sum of the responses, and RunFinish did not add the
+	// attempt's total again on top of it.
+	tokens := scalar[int](t, db, `SELECT tokens FROM runs WHERE run_id = ?`, r.ID)
+	cost := scalar[float64](t, db, `SELECT cost FROM runs WHERE run_id = ?`, r.ID)
+	if tokens != 100 || cost < 0.0099 || cost > 0.0101 {
+		t.Fatalf("run total = %d tok $%v; want 100 $0.01", tokens, cost)
+	}
+	if tokens != r.Tokens() {
+		t.Fatalf("stored %d tokens, the stream totalled %d", tokens, r.Tokens())
+	}
+	// The provider and the model come from the options actually passed to Pi.
+	if p := scalar[string](t, db, `SELECT provider FROM usage WHERE run_id = ? LIMIT 1`, r.ID); p == "" {
+		t.Error("usage recorded no provider")
+	}
+	if m := scalar[string](t, db, `SELECT model FROM usage WHERE run_id = ? LIMIT 1`, r.ID); m == "" {
+		t.Error("usage recorded no model")
+	}
+	// The first response was charged while the attempt was still running: its
+	// event sits before the tool call that came after it in the stream.
+	first := scalar[int64](t, db, `SELECT min(event_id) FROM events WHERE run_id = ? AND type = 'usage'`, r.ID)
+	tool := scalar[int64](t, db, `SELECT min(event_id) FROM events WHERE run_id = ? AND type = 'tool_call'`, r.ID)
+	if !(first < tool) {
+		t.Fatalf("usage event %d is not before the tool call %d it preceded in the stream", first, tool)
+	}
+	// A later lathe opening the same database backfills it again; a run whose
+	// spend was recorded response by response has nothing left to explain and
+	// nothing to re-charge.
+	root, err := trace.DataRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.Close()
+	if d := scalar[float64](t, db, `SELECT difference FROM usage_reconcile WHERE run_id = ?`, r.ID); d != 0 {
+		t.Fatalf("a v0.2 run reconciled to a difference of $%v", d)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM usage WHERE run_id = ?`, r.ID); n != 2 {
+		t.Fatalf("the second backfill duplicated usage records: %d", n)
+	}
+	if again := scalar[int](t, db, `SELECT tokens FROM runs WHERE run_id = ?`, r.ID); again != tokens {
+		t.Fatalf("the second backfill changed the run total: %d then %d", tokens, again)
+	}
+}

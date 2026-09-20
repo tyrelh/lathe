@@ -99,7 +99,29 @@ func Open(dataRoot string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	return &DB{sql: db}, nil
+	d := &DB{sql: db}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Repeatable by design, so every writable open is a chance to settle a
+	// trace written by an older lathe. It is a no-op once a run is reconciled.
+	if err := d.Backfill(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill: %w", err)
+	}
+	return d, nil
+}
+
+// Init creates and migrates the database, then closes it. lathe dash calls it
+// before opening its read-only connection, so viewing old traces neither
+// requires starting an agent run nor leaves a writable handle open all day.
+func Init(dataRoot string) error {
+	db, err := Open(dataRoot)
+	if err != nil {
+		return err
+	}
+	return db.Close()
 }
 
 func (d *DB) Close() error { return d.sql.Close() }
@@ -156,11 +178,13 @@ func (d *DB) RunStart(runID, workflow, repo, request string) error {
 	return err
 }
 
-// RunFinish settles a run's status and its accumulated spend.
-func (d *DB) RunFinish(runID, status string, tokens int, cost float64) error {
+// RunFinish settles a run's lifecycle. It does not touch tokens or cost:
+// every response has already been charged transactionally as it arrived, so
+// writing the in-memory total here would charge the whole run a second time.
+func (d *DB) RunFinish(runID, status string) error {
 	_, err := d.sql.Exec(
-		`UPDATE runs SET status = ?, ended_at = ?, tokens = ?, cost = ? WHERE run_id = ?`,
-		status, nowUTC(), tokens, cost, runID)
+		`UPDATE runs SET status = ?, ended_at = ? WHERE run_id = ?`,
+		status, nowUTC(), runID)
 	return err
 }
 
@@ -235,19 +259,7 @@ func (d *DB) Recent(n int) ([]Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := []Row{}
-	for rows.Next() {
-		var r Row
-		var ended sql.NullString
-		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status, &r.Started, &ended, &r.Tokens, &r.Cost); err != nil {
-			return nil, err
-		}
-		r.Ended = ended.String
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(rows)
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }

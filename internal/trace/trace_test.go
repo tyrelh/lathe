@@ -37,7 +37,17 @@ func TestWriteFakeRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.RunFinish(runID, "ok", 4119, 0.0031); err != nil {
+	// Spend reaches the run through the usage path now, one record per model
+	// response; RunFinish only settles the lifecycle.
+	for _, u := range []Usage{
+		{RunID: runID, PhaseID: runID + "_01_scout", Agent: "scout", Seq: 1, Provider: "moonshotai", Model: "kimi", Tokens: 4000, Cost: 0.0030},
+		{RunID: runID, PhaseID: runID + "_01_scout", Agent: "scout", Seq: 2, Provider: "moonshotai", Model: "kimi", Tokens: 119, Cost: 0.0001},
+	} {
+		if err := db.RecordUsage(u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.RunFinish(runID, "ok"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,6 +96,8 @@ func TestWriteFakeRun(t *testing.T) {
 		`tool_call/read/{"path":"main.go"}`,
 		"phase_start/scout/",
 		`tool_call/read/{"path":"main.go"}`,
+		`usage/scout/{"attempt":0,"cost":0.003,"model":"kimi","provider":"moonshotai","seq":1,"tokens":4000}`,
+		`usage/scout/{"attempt":0,"cost":0.0001,"model":"kimi","provider":"moonshotai","seq":2,"tokens":119}`,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("events = %v; want %v", got, want)
