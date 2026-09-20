@@ -1,16 +1,15 @@
-name: lathe-ci
+name: build
 
 on:
+  workflow_call:
   pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -22,10 +21,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-
-      - name: Run tests
-        run: make test
+      - name: Build
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          make build
