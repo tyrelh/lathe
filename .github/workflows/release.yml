@@ -1,0 +1,49 @@
+name: release
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Work out the next version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Latest semver tag, or v0.0.0 for the very first release.
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          last=${last:-v0.0.0}
+          IFS=. read -r major minor patch <<<"${last#v}"
+
+          # The PR this commit landed from decides which number moves.
+          labels=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].labels[]?.name' 2>/dev/null || true)
+
+          if grep -qx 'release:major' <<<"$labels"; then
+            major=$((major + 1)); minor=0; patch=0
+          elif grep -qx 'release:minor' <<<"$labels"; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          echo "tag=v${major}.${minor}.${patch}" >>"$GITHUB_OUTPUT"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.version.outputs.tag }}" --target "$GITHUB_SHA" --generate-notes
