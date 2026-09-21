@@ -5,13 +5,29 @@ package workflow
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/run"
 )
+
+// Graphs is every workflow by name: what the worker executes, and the list a
+// submission validates a command against.
+var Graphs = map[string]func(*run.Run) int{
+	"scout": Scout,
+	"plan":  Plan,
+	"build": Build,
+}
+
+// Agents is every agent each graph will spawn. Submission resolves all of
+// them before recording a run, so an unknown agent or a bad prompt fails in
+// under a second rather than after an agent turn — and the resolved roster is
+// what the run executes from.
+var Agents = map[string][]string{
+	"scout": {"scout"},
+	"plan":  {"planner"},
+	"build": {"planner", "builder", "tester"},
+}
 
 // ScoutOutput is what the scout must return. Required fields are pointers
 // because encoding/json zero-fills anything absent — a plain string cannot
@@ -51,19 +67,15 @@ func (s *ScoutOutput) Artifacts() []string {
 	return *s.Wrote
 }
 
-// Scout investigates repo and reports. It returns the process exit code:
-// Finish settles the database status, the banner and the code together so the
+// Scout investigates the run's repository and reports. It returns the exit
+// code: Finish settles the status, the banner and the code together so the
 // three cannot disagree.
-func Scout(cfg config.Config, ov config.Overrides, repo, request string) int {
-	r, err := run.New(cfg, ov, "scout", repo, request)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "lathe:", err)
-		return 1
-	}
+func Scout(r *run.Run) int {
+	request := r.Request
 
 	// The request is a phase so the trace starts with what was asked, in the
 	// same table as everything that followed from it.
-	err = r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"},
+	err := r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"},
 		func(ph *run.Handle) error { return ph.Log("request", request) })
 
 	// A failed phase does not stop a run on its own; with two phases the

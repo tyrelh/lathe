@@ -3,11 +3,15 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/run"
+	"github.com/tyrelh/lathe/internal/trace"
 )
 
 // stubPi puts a fake `pi` on PATH that serves replies[n] on its nth
@@ -69,6 +73,50 @@ func piReply(t *testing.T, text string) string {
 	return string(b) + "\n"
 }
 
+// execute takes a request through the whole production path a workflow test
+// cares about: submission records it, dispatch and claim hand it to a worker,
+// and the graph runs against the claimed run. The attempt directory is left
+// as the run directory, because where raw.jsonl sits is the worker's business
+// and not this package's.
+func execute(t *testing.T, cfg config.Config, name, repo, request string) int {
+	t.Helper()
+	roster, err := cfg.Capture(Agents[name], config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataRoot := filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe")
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(trace.Request{Workflow: name, Repo: repo, Request: request, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := trace.NewAttemptID(id)
+	if err := db.Reserve(id, attempt, ""); err != nil {
+		t.Fatal(err)
+	}
+	token := trace.NewClaimToken()
+	if _, err := db.Claim(attempt, token, "host", os.Getpid(), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Open(run.Options{
+		ID: id, Workflow: name, Request: request, Repo: repo,
+		Dir: filepath.Join(dataRoot, "runs", id), Snapshot: roster, DB: db,
+		Out: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := Graphs[name](r)
+	if err := db.Complete(id, attempt, token, r.Status(), r.Reason()); err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
 func load(t *testing.T) (config.Config, string) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -84,7 +132,7 @@ func TestScoutWritesResult(t *testing.T) {
 	stubPi(t, reply(t, ""))
 	cfg, repo := load(t)
 
-	if code := Scout(cfg, config.Overrides{}, repo, "what is here"); code != 0 {
+	if code := execute(t, cfg, "scout", repo, "what is here"); code != 0 {
 		t.Fatalf("exit code = %d; want 0", code)
 	}
 
@@ -110,7 +158,7 @@ func TestScoutFailsOnGateViolation(t *testing.T) {
 	stubPi(t, reply(t, `"invented.md"`), reply(t, `"invented.md"`), reply(t, `"invented.md"`))
 	cfg, repo := load(t)
 
-	if code := Scout(cfg, config.Overrides{}, repo, "what is here"); code != 1 {
+	if code := execute(t, cfg, "scout", repo, "what is here"); code != 1 {
 		t.Fatalf("exit code = %d; want 1", code)
 	}
 	if _, err := os.Stat(filepath.Join(latestRunDir(t), "result.json")); err == nil {

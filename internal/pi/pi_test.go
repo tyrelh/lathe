@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tyrelh/lathe/internal/trace"
 )
@@ -127,8 +126,9 @@ func TestScanStreamsToolCallsToDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	const runID = "20260916T120000Z_scout"
-	if err := db.RunStart(runID, "scout", "/Users/tyrel/Projects/lathe", "what is here"); err != nil {
+	runID, err := db.Submit(trace.Request{
+		Workflow: "scout", Repo: "/Users/tyrel/Projects/lathe", Request: "what is here"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	ph := trace.NewPhase(runID, 1, "scout", "agent", "scout")
@@ -153,11 +153,8 @@ func TestScanStreamsToolCallsToDB(t *testing.T) {
 	if err := db.PhaseUpsert(ph); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RunFinish(runID, "ok"); err != nil {
-		t.Fatal(err)
-	}
 
-	ro, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, "runs.db")+"?mode=ro")
+	ro, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, "lathe.db")+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,8 +241,8 @@ func TestLiveScout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := "live_" + time.Now().UTC().Format("20060102T150405Z")
-	if err := db.RunStart(runID, "scout", repo, "live phase 3 check"); err != nil {
+	runID, err := db.Submit(trace.Request{Workflow: "scout", Repo: repo, Request: "live phase 3 check"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	ph := trace.NewPhase(runID, 1, "scout", "agent", "scout")
@@ -280,9 +277,6 @@ func TestLiveScout(t *testing.T) {
 	}
 	ph.Finish("success", "")
 	if err := db.PhaseUpsert(ph); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.RunFinish(runID, "ok"); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("run %s: %d events, %d tokens, $%.5f\n%s", runID, res.Events, res.Tokens, res.Cost, res.Text)

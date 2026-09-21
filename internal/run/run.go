@@ -11,13 +11,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
-	"syscall"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
@@ -83,22 +80,22 @@ type Gate func(Envelope, *Run) []string
 type Run struct {
 	ID       string
 	Workflow string
+	Request  string
 	Repo     string // absolute target root: what makes one global database legible
-	Dir      string // per-run directory in the data root; raw.jsonl and the Pi session live here
+	Dir      string // per-run directory in the data root; the structured reports live here
+	Work     string // per-attempt directory: raw.jsonl, the guard, the scope and the Pi session
 
 	// PiBin overrides the `pi` found on PATH. Tests set it; production does not.
 	PiBin string
 	// Out is where the closing banner goes.
 	Out io.Writer
 
-	cfg        config.Config
-	ov         config.Overrides
-	db         *trace.DB
-	raw        *os.File
-	guard      string // the extension, written once and passed to every spawn
-	clean      bool   // EnsureClean passed, which is what licenses a revert
-	commandMu  sync.Mutex
-	commandPID int // isolated verify process group, killed on interruption
+	cfg   config.Snapshot
+	ctx   context.Context
+	db    *trace.DB
+	raw   *os.File
+	guard string // the extension, written once and passed to every spawn
+	clean bool   // EnsureClean passed, which is what licenses a revert
 	// accepted is every path an earlier phase was allowed to leave behind.
 	// Enforce is handed the whole dirty tree, so without carrying this forward
 	// the tester's empty allow list would revert the builder's work and then
@@ -108,39 +105,64 @@ type Run struct {
 	seq      int
 	tokens   int
 	cost     float64
-	err      error // the first phase failure, which decides the run's status
+	err      error  // the first phase failure, which decides the run's status
+	status   string // settled by Finish; the worker records it
+	reason   string
 }
 
-// New creates the run's directory, opens the trace, and records the run as
-// running. The caller must reach Finish, which closes both.
-func New(cfg config.Config, ov config.Overrides, workflow, repo, request string) (*Run, error) {
-	dataRoot, err := trace.DataRoot()
-	if err != nil {
-		return nil, err
-	}
-	id := trace.NewRunID(workflow)
+// Options is everything a Run needs from the process that owns it. The run
+// row already exists: submission recorded it and a worker claimed it, so this
+// only attaches execution to it. Ctx carries cancellation and database-loss
+// shutdown in from the caller, which is what lets signal handling live in the
+// command rather than in here.
+type Options struct {
+	ID       string
+	Workflow string
+	Request  string
+	Repo     string
+	Dir      string
+	Work     string
+	Snapshot config.Snapshot
+	DB       *trace.DB
+	Ctx      context.Context
+	Out      io.Writer
+	PiBin    string
+}
+
+// Open prepares the run directory, the raw stream and the guard for an
+// already-recorded run. The caller owns the database handle and the run's
+// terminal state; Finish settles the banner and the exit code only.
+func Open(o Options) (*Run, error) {
 	r := &Run{
-		ID:       id,
-		Workflow: workflow,
-		Repo:     repo,
-		Dir:      filepath.Join(dataRoot, "runs", id),
-		Out:      os.Stdout,
-		cfg:      cfg,
-		ov:       ov,
+		ID:       o.ID,
+		Workflow: o.Workflow,
+		Request:  o.Request,
+		Repo:     o.Repo,
+		Dir:      o.Dir,
+		Work:     o.Work,
+		PiBin:    o.PiBin,
+		Out:      o.Out,
+		cfg:      o.Snapshot,
+		ctx:      o.Ctx,
+		db:       o.DB,
+	}
+	if r.Out == nil {
+		r.Out = os.Stdout
+	}
+	if r.ctx == nil {
+		r.ctx = context.Background()
+	}
+	if r.Work == "" {
+		r.Work = r.Dir
+	}
+	if err := os.MkdirAll(r.Work, 0o755); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	if r.raw, err = os.Create(filepath.Join(r.Dir, "raw.jsonl")); err != nil {
-		return nil, err
-	}
-	if r.db, err = trace.Open(dataRoot); err != nil {
-		r.raw.Close()
-		return nil, err
-	}
-	if err := r.db.RunStart(r.ID, workflow, repo, request); err != nil {
-		r.raw.Close()
-		r.db.Close()
+	var err error
+	if r.raw, err = os.Create(filepath.Join(r.Work, "raw.jsonl")); err != nil {
 		return nil, err
 	}
 	// Every agent runs behind the guard, including the read-only ones: their
@@ -148,35 +170,11 @@ func New(cfg config.Config, ov config.Overrides, workflow, repo, request string)
 	// tool layer enforces rather than a consequence of the tool list, and the
 	// --no-extensions that comes with it is what stops the target repo loading
 	// its own extension into the agent reading it.
-	if r.guard, err = permit.Guard(r.Dir); err != nil {
+	if r.guard, err = permit.Guard(r.Work); err != nil {
 		r.raw.Close()
-		r.db.Close()
 		return nil, err
 	}
-	r.onSignal()
 	return r, nil
-}
-
-// onSignal settles the run row on Ctrl-C. Finish is an ordinary call at the
-// end of a workflow, so without this a signal leaves the run 'running'
-// forever — which the dashboard is what makes visible. Pi is in the same
-// process group and takes the signal itself.
-func (r *Run) onSignal() {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sig
-		r.commandMu.Lock()
-		if r.commandPID != 0 {
-			_ = syscall.Kill(-r.commandPID, syscall.SIGKILL)
-		}
-		r.commandMu.Unlock()
-		if err := r.db.RunInterrupt(r.ID); err != nil {
-			fmt.Fprintln(r.Out, "lathe: recording the interrupt failed:", err)
-		}
-		fmt.Fprintf(r.Out, "\nlathe %s %s: interrupted\n  %s\n", r.Workflow, r.ID, r.Dir)
-		os.Exit(130)
-	}()
 }
 
 // Phase runs fn as a traced phase. The phase exists at status 'fail' from the
@@ -213,26 +211,26 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 	return fn(&Handle{run: r, phase: ph, params: p})
 }
 
-// Finish settles the database status, the banner and the exit code in one
-// call, so the three cannot disagree. accepted is "the run produced an
-// acceptable result", which is a different question from "every phase worked";
-// A red verify phase is recoverable; the workflow passes false if fixes run out.
+// Finish settles the status, the banner and the exit code in one call, so the
+// three cannot disagree. accepted is "the run produced an acceptable result",
+// which is a different question from "every phase worked": a red verify phase
+// is recoverable, and the workflow passes false if fixes run out.
+//
+// It does not write the run's terminal state. That write is bound to the
+// worker's claim, so the worker makes it — reading Status and Reason here.
 func (r *Run) Finish(accepted bool, reason string) int {
-	status, code := "ok", 0
+	status, code := trace.StatusOK, 0
 	switch {
 	case r.err != nil:
-		status, code = "fail", 1
+		status, code = trace.StatusFail, 1
 		if reason == "" {
 			reason = r.err.Error()
 		}
 	case !accepted:
-		status, code = "fail", 1
+		status, code = trace.StatusFail, 1
 	}
-	if err := r.db.RunFinish(r.ID, status); err != nil {
-		fmt.Fprintln(r.Out, "lathe: recording the run's end failed:", err)
-	}
+	r.status, r.reason = status, reason
 	r.raw.Close()
-	r.db.Close()
 
 	fmt.Fprintf(r.Out, "\nlathe %s %s: %s  %d tokens  $%.5f\n  %s\n",
 		r.Workflow, r.ID, status, r.tokens, r.cost, r.Dir)
@@ -241,6 +239,10 @@ func (r *Run) Finish(accepted bool, reason string) int {
 	}
 	return code
 }
+
+// Status and Reason are what Finish settled on, for the worker to record.
+func (r *Run) Status() string { return r.status }
+func (r *Run) Reason() string { return r.reason }
 
 // EnsureClean refuses to start when the target root has uncommitted changes,
 // and records that it passed. The check and the record are one call because
@@ -285,6 +287,10 @@ func (r *Run) enforce(h *Handle) ([]string, error) {
 	}
 	return reverted, nil
 }
+
+// Protected is the roster's deny list, which the plan gate checks a file list
+// against before a builder is ever handed one.
+func (r *Run) Protected() []string { return r.cfg.Protected }
 
 // Tokens and Cost are what the run has spent so far.
 func (r *Run) Tokens() int   { return r.tokens }
@@ -340,7 +346,7 @@ func (h *Handle) Log(name, payload string) error {
 // its output rather than redoing the investigation.
 func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 	r := h.run
-	agent, err := r.cfg.Resolve(h.phase.Owner, r.ov)
+	agent, err := r.cfg.Resolve(h.phase.Owner)
 	if err != nil {
 		return err
 	}
@@ -410,12 +416,12 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// Rewritten before every spawn rather than once per run: each agent's allow
 	// list differs, and the guard re-reads the file per tool call.
 	scope := h.permit()
-	scopeFile, err := permit.Write(r.Dir, scope)
+	scopeFile, err := permit.Write(r.Work, scope)
 	if err != nil {
 		return pi.Result{}, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(r.ctx)
 	defer cancel()
 	if a.Deadline > 0 {
 		var stop context.CancelFunc
@@ -433,7 +439,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		Tools:        a.Tools,
 		SystemPrompt: a.SystemPrompt,
 		SessionID:    h.SessionID(),
-		SessionDir:   r.Dir, // the session is thrown away with the run that made it
+		SessionDir:   r.Work, // the session is thrown away with the attempt that made it
 		Extension:    r.guard,
 		Env:          []string{"LATHE_PERMIT=" + scopeFile},
 		Raw:          r.raw,

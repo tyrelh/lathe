@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
 )
 
@@ -47,7 +46,7 @@ esac
 			if greenAt == 3 {
 				wantCode, fixes = 1, 2
 			}
-			if code := Build(cfg, config.Overrides{}, repo, "change greeting"); code != wantCode {
+			if code := execute(t, cfg, "build", repo, "change greeting"); code != wantCode {
 				t.Fatalf("code %d want %d", code, wantCode)
 			}
 			count, _ := os.ReadFile(filepath.Join(dir, "count"))

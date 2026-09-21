@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/tyrelh/lathe/internal/config"
 )
 
 // planReply is one Pi stream carrying a planner's whole answer. files is raw
@@ -25,7 +23,7 @@ func TestPlanWritesPlanJSON(t *testing.T) {
 	stubPi(t, planReply(t, `"fetch.go", "fetch_test.go"`))
 	cfg, repo := load(t)
 
-	if code := Plan(cfg, config.Overrides{}, repo, "add retry to the fetch client"); code != 0 {
+	if code := execute(t, cfg, "plan", repo, "add retry to the fetch client"); code != 0 {
 		t.Fatalf("exit code = %d; want 0", code)
 	}
 
@@ -49,7 +47,7 @@ func TestPlanRejectsProtectedPath(t *testing.T) {
 	stubPi(t, bad, bad, bad)
 	cfg, repo := load(t)
 
-	if code := Plan(cfg, config.Overrides{}, repo, "add retry to the fetch client"); code != 1 {
+	if code := execute(t, cfg, "plan", repo, "add retry to the fetch client"); code != 1 {
 		t.Fatalf("exit code = %d; want 1", code)
 	}
 	if _, err := os.Stat(filepath.Join(latestRunDir(t), "plan.json")); err == nil {

@@ -165,3 +165,46 @@ func pick(vals ...string) string {
 	}
 	return ""
 }
+
+// Snapshot is the effective roster captured at submission: every agent the
+// workflow will spawn, already resolved against the roster, the defaults and
+// the run's flags. It is what a worker executes from, so editing lathe.toml or
+// a prompt cannot change work that is already queued.
+type Snapshot struct {
+	Version    int                 `json:"version"`
+	Protected  []string            `json:"protected"`
+	BashDenied []string            `json:"bash_denied"`
+	Agents     map[string]Resolved `json:"agents"`
+}
+
+// SnapshotVersion is stamped into every captured specification. A worker that
+// does not recognise it refuses the run rather than guessing.
+const SnapshotVersion = 1
+
+// Capture resolves every named agent now and freezes the result.
+func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
+	s := Snapshot{
+		Version:    SnapshotVersion,
+		Protected:  c.Protected,
+		BashDenied: c.BashDenied,
+		Agents:     map[string]Resolved{},
+	}
+	for _, name := range agents {
+		r, err := c.Resolve(name, ov)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		s.Agents[name] = r
+	}
+	return s, nil
+}
+
+// Resolve returns a captured agent. Unlike Config.Resolve it reads no files
+// and applies no overrides: both happened at submission.
+func (s Snapshot) Resolve(name string) (Resolved, error) {
+	r, ok := s.Agents[name]
+	if !ok {
+		return Resolved{}, fmt.Errorf("agent %q is not in this run's captured roster", name)
+	}
+	return r, nil
+}

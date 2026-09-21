@@ -60,11 +60,13 @@ func (h *Handle) Command(command string) (string, error) {
 			return "", fmt.Errorf("the command matches the deny rule %s and will not be run", rule)
 		}
 	}
-	agent, err := r.cfg.Resolve("tester", r.ov)
+	agent, err := r.cfg.Resolve("tester")
 	if err != nil {
 		return "", err
 	}
-	ctx := context.Background()
+	// Derived from the run's context, so a cancelled run kills the suite and
+	// its whole process group rather than waiting for it.
+	ctx := r.ctx
 	cancel := func() {}
 	if agent.Deadline > 0 {
 		ctx, cancel = context.WithTimeout(ctx, agent.Deadline)
@@ -77,19 +79,11 @@ func (h *Handle) Command(command string) (string, error) {
 	cmd.WaitDelay = time.Second
 	var output tailWriter
 	cmd.Stdout, cmd.Stderr = &output, &output
-	r.commandMu.Lock()
 	runErr := cmd.Start()
 	if runErr == nil {
-		r.commandPID = cmd.Process.Pid
-	}
-	r.commandMu.Unlock()
-	if runErr == nil {
 		runErr = cmd.Wait()
-		r.commandMu.Lock()
 		// Stop any surviving children before enforcement inspects the tree.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		r.commandPID = 0
-		r.commandMu.Unlock()
 	}
 	tail := string(output.data)
 	logErr := h.Log("output", tail)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
@@ -99,7 +100,9 @@ func stubPi(t *testing.T, replies ...string) (bin, argsFile string) {
 }
 
 // newRun points the data root at a temp directory so no test ever writes to
-// the real global database, and loads the real roster and real prompts.
+// the real global database, loads the real roster and real prompts, and takes
+// the run through submission, dispatch and claim the way the CLI, the manager
+// and a worker do.
 func newRun(t *testing.T, bin string) *Run {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -107,11 +110,41 @@ func newRun(t *testing.T, bin string) *Run {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := New(cfg, config.Overrides{}, "scout", t.TempDir(), "what is here")
+	roster, err := cfg.Capture([]string{"scout", "planner", "builder", "tester"}, config.Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.PiBin, r.Out = bin, io.Discard
+	dataRoot, err := trace.DataRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	repo := t.TempDir()
+	id, err := db.Submit(trace.Request{Workflow: "scout", Repo: repo, Request: "what is here"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := trace.NewAttemptID(id)
+	if err := db.Reserve(id, attempt, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Claim(attempt, trace.NewClaimToken(), "host", os.Getpid(), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(Options{
+		ID: id, Workflow: "scout", Request: "what is here", Repo: repo,
+		Dir:      filepath.Join(dataRoot, "runs", id),
+		Work:     filepath.Join(dataRoot, "runs", id, attempt),
+		Snapshot: roster, DB: db, Out: io.Discard, PiBin: bin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return r
 }
 
@@ -124,7 +157,7 @@ func readDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(root, "runs.db")+"?mode=ro")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(root, "lathe.db")+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +235,9 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	if r.Tokens() != 200 {
 		t.Fatalf("tokens = %d; want 200 (both turns)", r.Tokens())
 	}
-	if s := scalar[string](t, db, `SELECT status FROM runs WHERE run_id = ?`, r.ID); s != "ok" {
+	// The terminal state is the worker's write, bound to its claim, so what
+	// Finish settles is what it hands back rather than a row it updates.
+	if s := r.Status(); s != "ok" {
 		t.Fatalf("run status = %q; want ok", s)
 	}
 
@@ -222,7 +257,7 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 		}
 	}
 	// The raw stream is the authoritative record, and both turns are in it.
-	raw, err := os.ReadFile(filepath.Join(r.Dir, "raw.jsonl"))
+	raw, err := os.ReadFile(filepath.Join(r.Work, "raw.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +287,7 @@ func TestCallGivesUpAfterMaxCorrections(t *testing.T) {
 	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'usage'`, r.ID); n != 1+maxCorrections {
 		t.Fatalf("agent turns = %d; want %d", n, 1+maxCorrections)
 	}
-	if s := scalar[string](t, db, `SELECT status FROM runs WHERE run_id = ?`, r.ID); s != "fail" {
+	if s := r.Status(); s != "fail" {
 		t.Fatalf("run status = %q; want fail", s)
 	}
 }
@@ -344,14 +379,8 @@ func TestLiveCorrection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(os.DirFS(repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := New(cfg, config.Overrides{}, "scout", repo, "live phase 4 check")
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := newRun(t, "")
+	r.Repo = repo
 
 	var out scoutOutput
 	err = r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
@@ -571,12 +600,12 @@ func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := filepath.Join(r.Dir, permit.GuardFile)
+	guard := filepath.Join(r.Work, permit.GuardFile)
 	if want := "--no-extensions\n-e\n" + guard + "\n"; !strings.Contains(string(args), want) {
 		t.Fatalf("args missing %q:\n%s", want, args)
 	}
 	// An empty allow list, and the roster's deny lists rather than the caller's.
-	scope, err := os.ReadFile(filepath.Join(r.Dir, permit.ScopeFile))
+	scope, err := os.ReadFile(filepath.Join(r.Work, permit.ScopeFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,8 +714,8 @@ func TestSpendIsRecordedPerResponse(t *testing.T) {
 		r.ID); seqs != "1,2" {
 		t.Fatalf("response sequence = %q; want 1,2", seqs)
 	}
-	// The run total is the sum of the responses, and RunFinish did not add the
-	// attempt's total again on top of it.
+	// The run total is the sum of the responses; finishing adds nothing on
+	// top of it.
 	tokens := scalar[int](t, db, `SELECT tokens FROM runs WHERE run_id = ?`, r.ID)
 	cost := scalar[float64](t, db, `SELECT cost FROM runs WHERE run_id = ?`, r.ID)
 	if tokens != 100 || cost < 0.0099 || cost > 0.0101 {
@@ -708,26 +737,5 @@ func TestSpendIsRecordedPerResponse(t *testing.T) {
 	tool := scalar[int64](t, db, `SELECT min(event_id) FROM events WHERE run_id = ? AND type = 'tool_call'`, r.ID)
 	if !(first < tool) {
 		t.Fatalf("usage event %d is not before the tool call %d it preceded in the stream", first, tool)
-	}
-	// A later lathe opening the same database backfills it again; a run whose
-	// spend was recorded response by response has nothing left to explain and
-	// nothing to re-charge.
-	root, err := trace.DataRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next.Close()
-	if d := scalar[float64](t, db, `SELECT difference FROM usage_reconcile WHERE run_id = ?`, r.ID); d != 0 {
-		t.Fatalf("a v0.2 run reconciled to a difference of $%v", d)
-	}
-	if n := scalar[int](t, db, `SELECT count(*) FROM usage WHERE run_id = ?`, r.ID); n != 2 {
-		t.Fatalf("the second backfill duplicated usage records: %d", n)
-	}
-	if again := scalar[int](t, db, `SELECT tokens FROM runs WHERE run_id = ?`, r.ID); again != tokens {
-		t.Fatalf("the second backfill changed the run total: %d then %d", tokens, again)
 	}
 }

@@ -3,10 +3,8 @@ package workflow
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
-	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/run"
 )
@@ -105,13 +103,9 @@ const maxFixRounds = 2
 
 // Build plans, implements and verifies a change. Reports live in the run directory; the
 // implementation stays in the target working tree for the user to review.
-func Build(cfg config.Config, ov config.Overrides, repo, request string) int {
-	r, err := run.New(cfg, ov, "build", repo, request)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "lathe:", err)
-		return 1
-	}
-	err = r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"}, func(ph *run.Handle) error {
+func Build(r *run.Run) int {
+	request := r.Request
+	err := r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"}, func(ph *run.Handle) error {
 		if err := ph.Log("request", request); err != nil {
 			return err
 		}
@@ -119,7 +113,7 @@ func Build(cfg config.Config, ov config.Overrides, repo, request string) int {
 	})
 	var plan PlanOutput
 	if err == nil {
-		err = planPhase(r, cfg, request, &plan)
+		err = planPhase(r, request, &plan)
 	}
 	var out BuildOutput
 	var builderSession, handoff string

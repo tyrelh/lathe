@@ -3,9 +3,7 @@ package workflow
 import (
 	"fmt"
 	"io"
-	"os"
 
-	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/run"
 )
@@ -100,19 +98,14 @@ func globby(path string) bool {
 // Plan reads the repo and produces the plan a builder will implement. Same
 // shape as Scout — one read-only agent, one phase — because that is all it is
 // when invoked on its own. Build hands the same envelope to the builder.
-func Plan(cfg config.Config, ov config.Overrides, repo, request string) int {
-	r, err := run.New(cfg, ov, "plan", repo, request)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "lathe:", err)
-		return 1
-	}
-
-	err = r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"},
+func Plan(r *run.Run) int {
+	request := r.Request
+	err := r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"},
 		func(ph *run.Handle) error { return ph.Log("request", request) })
 
 	var out PlanOutput
 	if err == nil {
-		err = planPhase(r, cfg, request, &out)
+		err = planPhase(r, request, &out)
 	}
 	// The plan is the product of this workflow, so it goes to the terminal as
 	// well as to disk; a failed phase has nothing to print.
@@ -126,11 +119,11 @@ func Plan(cfg config.Config, ov config.Overrides, repo, request string) int {
 // under — in one place. `lathe build` runs this same phase before handing the
 // plan to the builder, and a second copy is how the two would start planning
 // under different rules without anything failing to compile.
-func planPhase(r *run.Run, cfg config.Config, request string, out *PlanOutput) error {
+func planPhase(r *run.Run, request string, out *PlanOutput) error {
 	return r.Phase(run.Params{Name: "plan", Kind: "agent", Owner: "planner"},
 		func(ph *run.Handle) error {
 			if err := ph.Call(out, request,
-				run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(cfg.Protected)); err != nil {
+				run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected())); err != nil {
 				return err
 			}
 			return writeResult(r.Dir, "plan.json", out)

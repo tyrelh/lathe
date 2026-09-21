@@ -1,22 +1,46 @@
 package trace
 
 import (
-	"fmt"
 	"math"
 	"testing"
 )
 
-// seed writes a run and a phase so usage has something to attach to.
+// costEpsilon is the precision two dollar figures are compared at: below the
+// five decimals the UI shows, above the noise of summing float64 costs.
+const costEpsilon = 1e-7
+
+// seed writes a running run and a phase so usage has something to attach to.
+// It writes the row directly because these tests are about accounting, not
+// about the dispatch protocol that normally produces one.
 func seed(t *testing.T, db *DB, runID string) string {
 	t.Helper()
-	if err := db.RunStart(runID, "build", "/repo", "do a thing"); err != nil {
-		t.Fatal(err)
-	}
+	seedRun(t, db, runID, "/repo")
 	p := NewPhase(runID, 1, "build", "agent", "builder")
 	if err := db.PhaseUpsert(p); err != nil {
 		t.Fatal(err)
 	}
 	return p.ID
+}
+
+// seedRun writes a running run row directly. These tests are about accounting
+// and rendering, not about the dispatch protocol that normally produces one.
+func seedRun(tb testing.TB, db *DB, runID, repo string) {
+	tb.Helper()
+	if _, err := db.sql.Exec(
+		`INSERT INTO runs (run_id, workflow, repo, request, status, submitted_at, started_at)
+		 VALUES (?, 'build', ?, 'do a thing', 'running', ?, ?)`,
+		runID, repo, nowUTC(), nowUTC()); err != nil {
+		tb.Fatal(err)
+	}
+}
+
+// settle puts a seeded run into a terminal state.
+func settle(tb testing.TB, db *DB, runID, status string) {
+	tb.Helper()
+	if _, err := db.sql.Exec(
+		`UPDATE runs SET status = ?, ended_at = ? WHERE run_id = ?`, status, nowUTC(), runID); err != nil {
+		tb.Fatal(err)
+	}
 }
 
 func runCost(t *testing.T, db *DB, runID string) (int, float64) {
@@ -81,21 +105,6 @@ func TestRecordUsageIsPerResponseAndIdempotent(t *testing.T) {
 	if n := one[int](t, db, `SELECT count(*) FROM events WHERE run_id = 'r1' AND type = 'usage'`); n != 2 {
 		t.Fatalf("usage events = %d; want 2 — the retry left a duplicate", n)
 	}
-
-	// Run completion settles the lifecycle and nothing else.
-	if err := db.RunFinish("r1", "ok"); err != nil {
-		t.Fatal(err)
-	}
-	if tokens, cost := runCost(t, db, "r1"); tokens != 150 || math.Abs(cost-0.015) > costEpsilon {
-		t.Fatalf("RunFinish charged the run again: %d tok $%v", tokens, cost)
-	}
-	// Spend committed before an interruption survives it.
-	if err := db.RunInterrupt("r1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, cost := runCost(t, db, "r1"); math.Abs(cost-0.015) > costEpsilon {
-		t.Fatalf("interrupt lost committed spend: $%v", cost)
-	}
 }
 
 // A write that fails partway commits none of the three: no event, no typed
@@ -135,114 +144,8 @@ func TestRecordUsageIsAllOrNothing(t *testing.T) {
 	}
 }
 
-// legacyRun writes a v0.1-shaped run: attempt-level usage events and a run
-// total written once at the end, with no typed usage records at all.
-func legacyRun(t *testing.T, db *DB, runID string, total float64, payloads ...string) {
-	t.Helper()
-	phase := seed(t, db, runID)
-	for _, p := range payloads {
-		if _, err := db.sql.Exec(
-			`INSERT INTO events (run_id, phase_id, type, name, payload, at)
-			 VALUES (?, ?, 'usage', 'builder', ?, '2026-09-01T00:00:00Z')`,
-			runID, phase, p); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.sql.Exec(`UPDATE runs SET status='ok', tokens=1, cost=? WHERE run_id=?`, total, runID); err != nil {
-		t.Fatal(err)
-	}
-	// Migration has already seen this database, so the run must be put back on
-	// the backfill's list the way an older lathe would have left it.
-	if _, err := db.sql.Exec(`DELETE FROM usage_reconcile WHERE run_id = ?`, runID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.sql.Exec(`DELETE FROM usage WHERE run_id = ?`, runID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func usagePayloadJSON(attempt int, tokens int, cost float64, model string) string {
-	return fmt.Sprintf(`{"attempt":%d,"tokens":%d,"cost":%v,"model":%q}`, attempt, tokens, cost, model)
-}
-
-// The backfill attributes what the events explain, keeps what they do not as
-// unattributed legacy spend, never subtracts, and produces the same answer
-// however many times it runs.
-func TestBackfillReconcilesLegacyRuns(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Explained exactly: two attempts summing to the stored total.
-	legacyRun(t, db, "exact", 0.03,
-		usagePayloadJSON(0, 100, 0.01, "kimi"), usagePayloadJSON(1, 200, 0.02, "kimi"))
-	// The stored total exceeds the events — spend nothing can name a model for.
-	legacyRun(t, db, "short", 0.05, usagePayloadJSON(0, 100, 0.01, "kimi"))
-	// The events exceed the stored total, which is what an interrupted run
-	// looks like: the events win and the difference is kept, not cancelled.
-	legacyRun(t, db, "interrupted", 0.0, usagePayloadJSON(0, 100, 0.04, "kimi"))
-	// Rounding noise must not read as unexplained spend.
-	legacyRun(t, db, "noise", 0.1+0.2,
-		usagePayloadJSON(0, 1, 0.1, "kimi"), usagePayloadJSON(1, 2, 0.2, "kimi"))
-	// A model that was never recorded, and an event that will not parse.
-	legacyRun(t, db, "unknown", 0.02, usagePayloadJSON(0, 10, 0.02, ""), `{not json`)
-
-	for pass := 0; pass < 2; pass++ {
-		if err := db.Backfill(); err != nil {
-			t.Fatal(err)
-		}
-		for _, c := range []struct {
-			run          string
-			cost         float64
-			unattributed float64
-			difference   float64
-			legacy       float64
-		}{
-			{"exact", 0.03, 0, 0, 0.03},
-			{"short", 0.05, 0.04, 0.04, 0.05},
-			{"interrupted", 0.04, 0, -0.04, 0},
-			{"noise", 0.3, 0, 0, 0.1 + 0.2},
-			{"unknown", 0.02, 0, 0, 0.02},
-		} {
-			tokens, cost := runCost(t, db, c.run)
-			un := one[float64](t, db, `SELECT unattributed FROM runs WHERE run_id = ?`, c.run)
-			diff := one[float64](t, db, `SELECT difference FROM usage_reconcile WHERE run_id = ?`, c.run)
-			legacy := one[float64](t, db, `SELECT legacy_total FROM usage_reconcile WHERE run_id = ?`, c.run)
-			if math.Abs(cost-c.cost) > costEpsilon || math.Abs(un-c.unattributed) > costEpsilon ||
-				math.Abs(diff-c.difference) > costEpsilon {
-				t.Fatalf("pass %d %s: cost $%v unattributed $%v difference $%v; want $%v $%v $%v",
-					pass, c.run, cost, un, diff, c.cost, c.unattributed, c.difference)
-			}
-			if tokens < 1 {
-				t.Fatalf("pass %d %s: tokens = %d", pass, c.run, tokens)
-			}
-			// The original total is kept whatever happened to the displayed one,
-			// so the evidence outlives the adjustment.
-			if math.Abs(legacy-c.legacy) > costEpsilon {
-				t.Fatalf("pass %d %s: legacy_total = $%v; want $%v", pass, c.run, legacy, c.legacy)
-			}
-		}
-		// Attribution comes only from the events, so the unattributed excess is
-		// never charged to a model, and repeating the pass never duplicates one.
-		if n := one[int](t, db, `SELECT count(*) FROM usage WHERE run_id = 'short'`); n != 1 {
-			t.Fatalf("pass %d: 'short' has %d usage records; want 1", pass, n)
-		}
-		if got := one[float64](t, db, `SELECT SUM(cost) FROM usage WHERE run_id = 'short'`); math.Abs(got-0.01) > costEpsilon {
-			t.Fatalf("pass %d: unattributed spend was charged to a model: $%v", pass, got)
-		}
-		if n := one[int](t, db, `SELECT malformed FROM usage_reconcile WHERE run_id = 'unknown'`); n != 1 {
-			t.Fatalf("pass %d: malformed = %d; want 1", pass, n)
-		}
-		if m := one[string](t, db, `SELECT model FROM usage WHERE run_id = 'unknown'`); m != "" {
-			t.Fatalf("pass %d: a missing model was invented as %q", pass, m)
-		}
-	}
-}
-
-// A dashboard reader and a run writer share the database the way lathe dash
-// and lathe build do: WAL lets the reader in, and the reader only ever sees
+// A dashboard reader and a run writer share the database the way the dashboard
+// and a worker do: WAL lets the reader in, and the reader only ever sees
 // whole responses, never half of one.
 func TestReaderAndWriterShareTheDatabase(t *testing.T) {
 	root := t.TempDir()
@@ -269,7 +172,8 @@ func TestReaderAndWriterShareTheDatabase(t *testing.T) {
 				return
 			}
 		}
-		done <- db.RunFinish("live", "ok")
+		settle(t, db, "live", "ok")
+		done <- nil
 	}()
 
 	for reads := 0; ; reads++ {
@@ -283,7 +187,7 @@ func TestReaderAndWriterShareTheDatabase(t *testing.T) {
 		for _, m := range o.TopModels {
 			attributed += m.Cost
 		}
-		if math.Abs(o.Cost-attributed-o.Unattributed) > costEpsilon {
+		if math.Abs(o.Cost-attributed) > costEpsilon {
 			t.Fatalf("read %d saw a half-applied response: total $%v, models $%v",
 				reads, o.Cost, attributed)
 		}
