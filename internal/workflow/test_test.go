@@ -12,7 +12,7 @@ import (
 )
 
 func TestBuildVerifyLoop(t *testing.T) {
-	for _, greenAt := range []int{0, 1, 2, 3} {
+	for _, greenAt := range []int{0, 1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("green-after-%d-fixes", greenAt), func(t *testing.T) {
 			cfg, repo := buildRepo(t)
 			// Tracked dirt and staged additions must both be undone by test phases.
@@ -20,6 +20,7 @@ func TestBuildVerifyLoop(t *testing.T) {
 			gitBuild(t, repo, "add", ".")
 			gitBuild(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
 			dir := t.TempDir()
+			write(t, filepath.Join(dir, "review"), reviewOK(t))
 			write(t, filepath.Join(dir, "plan"), planReply(t, `"hello.txt"`))
 			write(t, filepath.Join(dir, "build"), piReply(t, "```json\n"+`{"summary":"implemented","changed":["hello.txt"],"needed":[],"artifacts":["hello.txt"]}`+"\n```"))
 			command := "echo verify-dirt > fixture.txt; echo junk > coverage.out; git add fixture.txt coverage.out; echo VERIFY-TAIL >&2; test \"$(cat hello.txt)\" = good"
@@ -33,24 +34,25 @@ printf '%%s\n' "$@" > %[1]q/args$n
 cp "$LATHE_PERMIT" %[1]q/scope$n
 case "$n" in
 0) cat %[1]q/plan ;;
-2) echo tester-dirt > fixture.txt; echo junk > coverage.out
+1) cat %[1]q/review ;;
+3) echo tester-dirt > fixture.txt; echo junk > coverage.out
    git add fixture.txt coverage.out
    cat %[1]q/test ;;
-*) round=$((n-2)); [ "$n" != 1 ] || round=0
+*) round=$((n-3)); [ "$n" != 2 ] || round=0
    if [ "$round" -ge %[2]d ]; then echo good > hello.txt; else echo bad > hello.txt; fi
    cat %[1]q/build ;;
 esac
 `, dir, greenAt))
 			wantCode := 0
 			fixes := greenAt
-			if greenAt == 3 {
-				wantCode, fixes = 1, 2
+			if greenAt == 5 {
+				wantCode, fixes = 1, 4
 			}
 			if code := execute(t, cfg, "build", repo, "change greeting"); code != wantCode {
 				t.Fatalf("code %d want %d", code, wantCode)
 			}
 			count, _ := os.ReadFile(filepath.Join(dir, "count"))
-			if strings.TrimSpace(string(count)) != fmt.Sprint(3+fixes) {
+			if strings.TrimSpace(string(count)) != fmt.Sprint(4+fixes) {
 				t.Fatalf("agent calls: %s", count)
 			}
 			if got := gitBuild(t, repo, "status", "--porcelain"); got != " M hello.txt\n" {
@@ -70,21 +72,21 @@ esac
 				t.Fatal("missing session")
 				return ""
 			}
-			initial := session(args(1))
-			if session(args(2)) == initial {
+			initial := session(args(2))
+			if session(args(3)) == initial {
 				t.Fatal("tester reused builder session")
 			}
-			if !strings.Contains(args(2), "read,grep,find,ls,bash") {
+			if !strings.Contains(args(3), "read,grep,find,ls,bash") {
 				t.Fatal("tester tools")
 			}
-			for n := 3; n < 3+fixes; n++ {
+			for n := 4; n < 4+fixes; n++ {
 				if session(args(n)) != initial {
 					t.Fatal("fix lost builder session")
 				}
 				if !strings.Contains(args(n), "VERIFY-TAIL") {
 					t.Fatal("fix missing output")
 				}
-				if strings.Contains(args(n), "TESTER-OBSERVATION") != (n == 3) {
+				if strings.Contains(args(n), "TESTER-OBSERVATION") != (n == 4) {
 					t.Fatal("tester failures must appear only in first fix")
 				}
 				scope, _ := os.ReadFile(filepath.Join(dir, fmt.Sprintf("scope%d", n)))
@@ -92,7 +94,7 @@ esac
 					t.Fatalf("fix scope: %s", scope)
 				}
 			}
-			scope, _ := os.ReadFile(filepath.Join(dir, "scope2"))
+			scope, _ := os.ReadFile(filepath.Join(dir, "scope3"))
 			if !strings.Contains(string(scope), `"allow":[]`) {
 				t.Fatalf("tester scope: %s", scope)
 			}
@@ -116,7 +118,7 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
-			names := []string{"request", "plan", "build", "test", "verify"}
+			names := []string{"request", "plan", "review", "build", "test", "verify"}
 			for i := 0; i < fixes; i++ {
 				names = append(names, "fix", "verify")
 			}

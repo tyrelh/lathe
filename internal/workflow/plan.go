@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/run"
@@ -95,9 +98,8 @@ func globby(path string) bool {
 	return false
 }
 
-// Plan reads the repo and produces the plan a builder will implement. Same
-// shape as Scout — one read-only agent, one phase — because that is all it is
-// when invoked on its own. Build hands the same envelope to the builder.
+// Plan reads and reviews the plan a builder will implement. Build hands the
+// same reviewed envelope to the builder.
 func Plan(r *run.Run) int {
 	request := r.Request
 	err := r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"},
@@ -112,22 +114,91 @@ func Plan(r *run.Run) int {
 	if err == nil {
 		printPlan(r.Out, &out)
 	}
-	return r.Finish(true, "")
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	return r.Finish(err == nil, reason)
 }
 
-// planPhase is the planner's whole contract — its gates and the name it reports
-// under — in one place. `lathe build` runs this same phase before handing the
-// plan to the builder, and a second copy is how the two would start planning
-// under different rules without anything failing to compile.
+// maxSendBacks permits four revisions to close omissions before the fifth
+// review hands any remaining objections to the builder as risks.
+const maxSendBacks = 4
+
+// planPhase shares planning, review and file-scope checks across plan and build.
 func planPhase(r *run.Run, request string, out *PlanOutput) error {
-	return r.Phase(run.Params{Name: "plan", Kind: "agent", Owner: "planner"},
+	var plannerSession, reviewerSession string
+	if err := r.Phase(run.Params{Name: "plan", Kind: "agent", Owner: "planner"},
 		func(ph *run.Handle) error {
-			if err := ph.Call(out, request,
-				run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected())); err != nil {
+			plannerSession = ph.SessionID()
+			return ph.Call(out, request, run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected()))
+		}); err != nil {
+		return err
+	}
+
+	for review := 1; review <= maxSendBacks+1; review++ {
+		var message strings.Builder
+		fmt.Fprintf(&message, "Review round %d of %d.\nYou may send this plan back %d more times.\n",
+			review, maxSendBacks+1, maxSendBacks+1-review)
+		if review > 1 {
+			message.WriteString("\nThe planner returned the following complete plan.\n")
+		}
+		fmt.Fprintf(&message, "\n## Request\n\n%s\n", request)
+		printPlan(&message, out)
+		var report ReviewOutput
+		var callErr error
+		err := r.Phase(run.Params{Name: "review", Kind: "agent", Owner: "plan-reviewer", SessionID: reviewerSession},
+			func(ph *run.Handle) error {
+				reviewerSession = ph.SessionID()
+				callErr = ph.Call(&report, message.String(), run.ArtifactsExist, run.FilesNonEmpty)
+				if callErr != nil && !errors.Is(callErr, context.Canceled) && !errors.Is(callErr, context.DeadlineExceeded) {
+					return &run.RecoverableError{Err: callErr}
+				}
+				return callErr
+			})
+		var recoverable *run.RecoverableError
+		if err != nil && !errors.As(err, &recoverable) {
+			return err
+		}
+		var feedback []string
+		if callErr != nil {
+			reviewerSession = ""
+			feedback = []string{"review failed: reviewer returned nothing usable: " + callErr.Error()}
+		} else {
+			feedback = *report.Feedback
+		}
+		if len(feedback) == 0 || review == maxSendBacks+1 {
+			for _, objection := range feedback {
+				*out.Risks = append(*out.Risks, "unresolved review: "+objection)
+			}
+			if err := writeResult(r.Dir, "plan.json", out); err != nil {
 				return err
 			}
-			return writeResult(r.Dir, "plan.json", out)
-		})
+			if review > 1 {
+				if len(feedback) == 0 {
+					fmt.Fprintf(r.Out, "plan revised %d times; reviewer accepted\n", review-1)
+				} else {
+					fmt.Fprintf(r.Out, "plan revised %d times; %d objections unresolved\n", review-1, len(feedback))
+				}
+			}
+			return nil
+		}
+
+		var revision strings.Builder
+		revision.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
+		printPlan(&revision, out)
+		section(&revision, "Review feedback", feedback)
+		if callErr != nil {
+			revision.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
+		}
+		if err := r.Phase(run.Params{Name: "replan", Kind: "agent", Owner: "planner", SessionID: plannerSession},
+			func(ph *run.Handle) error {
+				return ph.Call(out, revision.String(), run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected()))
+			}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // printPlan renders an envelope Validate has already accepted, so every list is

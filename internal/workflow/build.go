@@ -99,7 +99,9 @@ func buildRequest(request string, plan *PlanOutput) string {
 	return b.String()
 }
 
-const maxFixRounds = 2
+// maxFixRounds gives the builder four attempts to repair measured test failures
+// after its initial implementation, bounding the cost of a persistently red suite.
+const maxFixRounds = 4
 
 // Build plans, implements and verifies a change. Reports live in the run directory; the
 // implementation stays in the target working tree for the user to review.

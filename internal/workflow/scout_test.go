@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,6 +81,11 @@ func piReply(t *testing.T, text string) string {
 // and not this package's.
 func execute(t *testing.T, cfg config.Config, name, repo, request string) int {
 	t.Helper()
+	return executeWith(t, cfg, name, repo, request, context.Background(), io.Discard)
+}
+
+func executeWith(t *testing.T, cfg config.Config, name, repo, request string, ctx context.Context, out io.Writer) int {
+	t.Helper()
 	roster, err := cfg.Capture(Agents[name], config.Overrides{})
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +111,7 @@ func execute(t *testing.T, cfg config.Config, name, repo, request string) int {
 	r, err := run.Open(run.Options{
 		ID: id, Workflow: name, Request: request, Repo: repo,
 		Dir: filepath.Join(dataRoot, "runs", id), Snapshot: roster, DB: db,
-		Out: io.Discard,
+		Out: out, Ctx: ctx,
 	})
 	if err != nil {
 		t.Fatal(err)

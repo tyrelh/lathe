@@ -56,3 +56,20 @@ func TestEmbeddedTester(t *testing.T) {
 		t.Fatal("tester prompts missing")
 	}
 }
+
+func TestEmbeddedPlanReviewer(t *testing.T) {
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := cfg.Resolve("plan-reviewer", config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Model != "kimi-k3" || strings.Join(a.Tools, ",") != "read,grep,find,ls" {
+		t.Fatalf("reviewer configuration: %+v", a)
+	}
+	if !strings.Contains(a.SystemPrompt, "You are the plan-reviewer") || !strings.Contains(a.UserPrompt, `"feedback"`) {
+		t.Fatal("reviewer prompts missing")
+	}
+}

@@ -20,7 +20,7 @@ func planReply(t *testing.T, files string) string {
 // Phase 1's done-when: plan.json lands in the run directory with the file list
 // intact.
 func TestPlanWritesPlanJSON(t *testing.T) {
-	stubPi(t, planReply(t, `"fetch.go", "fetch_test.go"`))
+	stubPi(t, planReply(t, `"fetch.go", "fetch_test.go"`), reviewOK(t))
 	cfg, repo := load(t)
 
 	if code := execute(t, cfg, "plan", repo, "add retry to the fetch client"); code != 0 {
