@@ -6,21 +6,21 @@
   /* Catppuccin Macchiato (dark) and Latte (light). */
   :root {
     color-scheme: dark;
-    --bg: #24273a; --panel: #363a4f; --line: #494d64;
+    --bg: #24273a; --panel: #363a4f; --line: #494d64; --card: #1e2030;
     --fg: #cad3f5; --dim: #a5adcb;
     --ok: #a6da95; --fail: #ed8796; --run: #eed49f; --cost: #c6a0f6;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       color-scheme: light;
-      --bg: #eff1f5; --panel: #ccd0da; --line: #bcc0cc;
+      --bg: #eff1f5; --panel: #ccd0da; --line: #bcc0cc; --card: #ffffff;
       --fg: #4c4f69; --dim: #6c6f85;
       --ok: #40a02b; --fail: #d20f39; --run: #df8e1d; --cost: #8839ef;
     }
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --bg: #eff1f5; --panel: #ccd0da; --line: #bcc0cc;
+    --bg: #eff1f5; --panel: #ccd0da; --line: #bcc0cc; --card: #ffffff;
     --fg: #4c4f69; --dim: #6c6f85;
     --ok: #40a02b; --fail: #d20f39; --run: #df8e1d; --cost: #8839ef;
   }
@@ -74,7 +74,15 @@
   h2 { font-size: 12px; color: var(--dim); text-transform: uppercase;
        letter-spacing: .1em; margin: 24px 0 8px; }
   h2:first-child { margin-top: 0; }
+
+  /* Each section sits in its own box, so a page reads as a set of panels
+     rather than one continuous column of rows. */
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+  .card > h2 { margin-top: 0; }
+  .card > :last-child { margin-bottom: 0; }
   table { width: 100%; border-collapse: collapse; }
+  .card table tr:last-child td { border-bottom: none; }
   td, th { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line);
            vertical-align: top; white-space: nowrap; text-align: left;
            font-weight: normal; }
@@ -120,7 +128,7 @@
               font-variant-numeric: tabular-nums; }
   .totals .cost b { color: var(--cost); }
   .totals span { color: var(--dim); font-size: 12px; }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 32px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
   @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
   @media (max-width: 720px) {
     body { --rail: 46px; }
@@ -293,18 +301,18 @@ async function overview(current) {
   const empty = what => `<tr><td class="dim">No ${what} recorded yet.</td></tr>`;
 
   app.innerHTML = `
-    <div class="totals">
+    <div class="card totals">
       <div><b>${count(o.runs)}</b><span>runs recorded</span></div>
       <div class="cost"><b>${money(o.cost)}</b><span>recorded spend</span></div>
     </div>
     <p class="dim">Every run in every repository, for all time.
       Spend updates after each model response.</p>
     <div class="cols">
-      <div>
+      <div class="card">
         <h2>top runs by spend</h2>
         <table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>
       </div>
-      <div>
+      <div class="card">
         <h2>top models by spend</h2>
         <table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table>
         <p class="dim">${attribution(o)}</p>
@@ -339,6 +347,7 @@ async function list(current) {
   }
 
   app.innerHTML = [...repos].map(([repo, rows]) => `
+    <section class="card">
     <h2>${esc(repo)}</h2>
     <table>${rows.map(r => `
       <tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
@@ -349,7 +358,7 @@ async function list(current) {
         <td class="num dim">${count(r.tokens)} tok</td>
         <td class="num cost">${money(r.cost)}</td>
         <td class="wrap">${esc(r.request)}</td>
-      </tr>`).join('')}</table>`).join('')
+      </tr>`).join('')}</table></section>`).join('')
     || '<p class="dim">No runs yet. Start one with <code>lathe scout</code>.</p>';
 
   // Explicitly "displayed", because these are the 50 most recent and the
@@ -388,10 +397,10 @@ async function detail(current) {
   if (!$('log')) {
     app.innerHTML = `
       <p><a href="#/runs">&larr; all runs</a></p>
-      <p id="head"></p>
-      <h2>phases</h2><div id="phases"></div>
-      <h2>permissions</h2><div id="permits"></div>
-      <h2>events</h2><table id="log"></table>`;
+      <div class="card"><p id="head"></p></div>
+      <section class="card"><h2>phases</h2><div id="phases"></div></section>
+      <section class="card"><h2>permissions</h2><div id="permits"></div></section>
+      <section class="card"><h2>events</h2><table id="log"></table></section>`;
   }
   $('head').innerHTML =
     `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
