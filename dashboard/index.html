@@ -178,7 +178,10 @@ let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route();
 
 const esc = s => String(s ?? '').replace(/[<&"']/g, c => ({'<':'&lt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
-const cls = s => s === 'ok' || s === 'success' ? 'ok' : s === 'running' ? 'running' : 'fail';
+// queued and starting are live states, not failures: a run that has not
+// executed yet must not read as one that went wrong.
+const live = s => s === 'running' || s === 'queued' || s === 'starting';
+const cls = s => s === 'ok' || s === 'success' ? 'ok' : live(s) ? 'running' : 'fail';
 const time = s => (s || '').slice(11, 19);
 const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 const money = n => '$' + (n || 0).toFixed(5);
@@ -320,15 +323,6 @@ function attribution(o) {
   // moves between agents and spends on several.
   const parts = [`Share is of ${money(o.cost)} total recorded spend, counted per
     phase — one run's phases can each name a different model.`];
-  if (o.unattributed > 0) {
-    parts.push(`${money(o.unattributed)} of recorded spend names no model and is
-      excluded from this ranking, while still counting toward the total.`);
-  }
-  if (o.unexplained_runs) {
-    parts.push(`${count(o.unexplained_runs)} run(s) reconciled to a difference
-      between their stored total and their usage events.`);
-  }
-  if (o.malformed_usage) parts.push(`${count(o.malformed_usage)} usage event(s) could not be read.`);
   return esc(parts.join(' ').replace(/\s+/g, ' '));
 }
 
@@ -348,9 +342,10 @@ async function list(current) {
     <h2>${esc(repo)}</h2>
     <table>${rows.map(r => `
       <tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
-        <td class="dim">${esc(r.started_at.replace('T', ' ').replace('Z', ''))}</td>
+        <td class="dim">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
         <td class="${cls(r.status)}">${esc(r.status)}</td>
         <td>${esc(r.workflow)}</td>
+        <td class="num dim lo">${esc(timings(r))}</td>
         <td class="num dim">${count(r.tokens)} tok</td>
         <td class="num cost">${money(r.cost)}</td>
         <td class="wrap">${esc(r.request)}</td>
@@ -438,11 +433,11 @@ async function detail(current) {
   // A settled run is final: the phases and the log above are the whole of it,
   // so the poll stops rather than re-running three queries every second. A full
   // page means the server capped this poll and there is more to fetch first.
-  if (r.status !== 'running' && d.events.length < PAGE) done = true;
+  if (!live(r.status) && d.events.length < PAGE) done = true;
 
   bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
     + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
-    + ` · ${elapsed(r)}<span class="lo"> · ${esc(base(r.repo))} · ${esc(r.run_id)}</span>`;
+    + ` · ${timings(r)}<span class="lo"> · ${esc(base(r.repo))} · ${esc(r.run_id)}</span>`;
   stamp();
 
   // Follow the tail, but only for someone already at the bottom: measure
@@ -461,13 +456,23 @@ async function detail(current) {
   if (d.events.length && following) app.scrollTop = app.scrollHeight;
 }
 
-// elapsed is how long a run took, or how long it has been going.
-function elapsed(r) {
-  const start = Date.parse(r.started_at), end = r.ended_at ? Date.parse(r.ended_at) : Date.now();
+// timings keeps waiting and working apart: a run that sat in the queue for a
+// minute is not a run that took a minute to do.
+function timings(r) {
+  const queued = span(r.submitted_at, r.started_at);
+  const ran = span(r.started_at, r.ended_at);
+  const parts = [];
+  if (queued) parts.push(queued + ' queued');
+  if (ran) parts.push(ran + (r.ended_at ? '' : ' elapsed'));
+  return parts.join(' · ');
+}
+
+// span is one stage's duration; an unfinished stage is measured against now.
+function span(from, to) {
+  const start = Date.parse(from), end = to ? Date.parse(to) : Date.now();
   if (!start || !(end >= start)) return '';
   const s = Math.round((end - start) / 1000);
-  const label = s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
-  return r.ended_at ? label : label + ' elapsed';
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
 }
 
 const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);

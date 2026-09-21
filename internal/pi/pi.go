@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -165,6 +166,11 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = o.Dir
+	// Pi's own tool calls are children of Pi, so cancellation has to reach a
+	// process group: killing Pi alone leaves them running, holding the pipe
+	// and the repository open after the run has stopped.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	if len(o.Env) > 0 {
 		cmd.Env = append(os.Environ(), o.Env...)
 	}

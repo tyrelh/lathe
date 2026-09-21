@@ -28,15 +28,7 @@ type Overview struct {
 	Cost      float64      `json:"cost"`
 	TopRuns   []Row        `json:"top_runs"`
 	TopModels []ModelSpend `json:"top_models"`
-	// Unattributed is recorded spend no model can be named for: legacy run
-	// totals the usage events did not explain. It counts toward Cost.
-	Unattributed float64 `json:"unattributed"`
-	// Unexplained is how many runs reconciled to a nonzero signed difference,
-	// and Malformed how many usage events would not parse. Both are coverage
-	// signals: the totals are what was recorded, not a provider invoice.
-	Unexplained int    `json:"unexplained_runs"`
-	Malformed   int    `json:"malformed_usage"`
-	At          string `json:"at"`
+	At        string       `json:"at"`
 }
 
 // Overview reads every figure inside one transaction, so the totals and the
@@ -52,21 +44,15 @@ func (d *DB) Overview() (Overview, error) {
 	// Counted from runs, never through a join to usage: a run that used three
 	// models is still one run, and a run with no usage at all is still one run.
 	if err := tx.QueryRow(
-		`SELECT count(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0), COALESCE(SUM(unattributed), 0)
-		 FROM runs`).Scan(&o.Runs, &o.Tokens, &o.Cost, &o.Unattributed); err != nil {
-		return o, err
-	}
-	if err := tx.QueryRow(
-		`SELECT COALESCE(SUM(abs(difference) > 0), 0), COALESCE(SUM(malformed), 0)
-		 FROM usage_reconcile`).Scan(&o.Unexplained, &o.Malformed); err != nil {
+		`SELECT count(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0)
+		 FROM runs`).Scan(&o.Runs, &o.Tokens, &o.Cost); err != nil {
 		return o, err
 	}
 
 	// Ties break on run_id, which is unique — so the same database always
 	// produces the same ten rows in the same order.
 	rows, err := tx.Query(
-		`SELECT run_id, workflow, repo, request, status, started_at, ended_at, tokens, cost
-		 FROM runs ORDER BY cost DESC, run_id LIMIT ?`, topN)
+		runColumns+` FROM runs ORDER BY cost DESC, run_id LIMIT ?`, topN)
 	if err != nil {
 		return o, err
 	}
@@ -111,16 +97,25 @@ func (d *DB) Total() (int, error) {
 	return n, err
 }
 
+// runColumns is the one column list every run query selects, so Row and the
+// scanner cannot drift apart across the four places runs are read.
+const runColumns = `SELECT run_id, workflow, repo, request, status,
+	COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(attempt_id, ''),
+	COALESCE(reason, ''), COALESCE(submitted_at, ''), COALESCE(started_at, ''),
+	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, '')`
+
 func scanRows(rows *sql.Rows) ([]Row, error) {
 	defer rows.Close()
 	out := []Row{}
 	for rows.Next() {
 		var r Row
-		var ended sql.NullString
-		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status, &r.Started, &ended, &r.Tokens, &r.Cost); err != nil {
+		var spec string
+		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status,
+			&r.Branch, &r.Commit, &r.AttemptID, &r.Reason, &r.Submitted, &r.Started,
+			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec); err != nil {
 			return nil, err
 		}
-		r.Ended = ended.String
+		r.Spec = []byte(spec)
 		out = append(out, r)
 	}
 	return out, rows.Err()

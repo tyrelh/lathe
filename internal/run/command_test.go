@@ -86,9 +86,10 @@ func TestCommandRejectsBeforeExecution(t *testing.T) {
 func TestCommandTimeoutCleansAndStopsChildren(t *testing.T) {
 	r := newRun(t, "")
 	r.Repo = gitRepo(t)
-	for i := range r.cfg.Agents {
-		if r.cfg.Agents[i].Name == "tester" {
-			r.cfg.Agents[i].Timeout = "100ms"
+	for name, a := range r.cfg.Agents {
+		if name == "tester" {
+			a.Deadline = 100 * time.Millisecond
+			r.cfg.Agents[name] = a
 		}
 	}
 	if err := r.EnsureClean(); err != nil {

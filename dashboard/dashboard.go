@@ -8,8 +8,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -23,25 +21,26 @@ var indexHTML []byte
 // and serves prompts and source. Remote viewing is an SSH tunnel.
 const Addr = "127.0.0.1:4700"
 
-// Serve blocks until the process is interrupted. The database is opened
-// read-only once and shared: SQLite in WAL mode lets this reader in while a
-// run in another terminal is writing.
-func Serve(dataRoot, version string, out io.Writer) error {
-	// Migrations need a writer, and the serving connection is not one. Doing it
-	// here in its own step means a database written by an older lathe — or no
-	// database at all — opens as a dashboard rather than as an error telling
-	// you to go start an agent run first.
+// Handler is the dashboard as something to mount: the manager serves it
+// alongside the scheduler, so there is no second process and no second
+// listener. The database is opened read-only — a UI bug cannot write — and
+// created first if it is not there yet, so a fresh install serves an empty
+// dashboard rather than an error telling you to go start a run.
+func Handler(dataRoot, version string) http.Handler {
 	if err := trace.Init(dataRoot); err != nil {
-		return err
+		return failed(err)
 	}
 	db, err := trace.OpenRO(dataRoot)
 	if err != nil {
-		return err
+		return failed(err)
 	}
-	defer db.Close()
+	return handler(db, version)
+}
 
-	fmt.Fprintf(out, "lathe dash: http://%s  (Ctrl-C to stop)\n", Addr)
-	return http.ListenAndServe(Addr, handler(db, version))
+func failed(err error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	})
 }
 
 // handler is the whole server minus the listener, which is what lets a test

@@ -81,7 +81,7 @@ func TestBuild(t *testing.T) {
 			if tc.want == 0 {
 				write(t, filepath.Join(stub, "success"), "")
 			}
-			if got := Build(cfg, config.Overrides{}, repo, "greet the world"); got != tc.want {
+			if got := execute(t, cfg, "build", repo, "greet the world"); got != tc.want {
 				t.Fatalf("code = %d, want %d", got, tc.want)
 			}
 			count, _ := os.ReadFile(filepath.Join(stub, "count"))
@@ -147,7 +147,7 @@ func TestBuildDirtyRepoDoesNotSpawn(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := buildStub(t, ":", `{}`)
 	write(t, filepath.Join(repo, "hello.txt"), "my work\n")
-	if code := Build(cfg, config.Overrides{}, repo, "change greeting"); code != 1 {
+	if code := execute(t, cfg, "build", repo, "change greeting"); code != 1 {
 		t.Fatalf("code = %d", code)
 	}
 	if _, err := os.Stat(filepath.Join(stub, "count")); !os.IsNotExist(err) {
@@ -199,7 +199,7 @@ func TestBuildBlockedWriteTrace(t *testing.T) {
 	blocked := `{"type":"tool_execution_start","toolCallId":"blocked","toolName":"write","args":{"path":"forbidden.txt","content":"test"}}` + "\n" +
 		`{"type":"tool_execution_end","toolCallId":"blocked","toolName":"write","isError":true,"result":{"content":[{"type":"text","text":"forbidden.txt is not in the plan"}]}}` + "\n"
 	write(t, replyPath, blocked+string(body))
-	if code := Build(cfg, config.Overrides{}, repo, "boundary fixture"); code != 1 {
+	if code := execute(t, cfg, "build", repo, "boundary fixture"); code != 1 {
 		t.Fatalf("code = %d", code)
 	}
 	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
@@ -232,7 +232,7 @@ func TestBuildBlockedWriteTrace(t *testing.T) {
 func TestBuildNeededOutranksAnInvalidEnvelope(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := buildStub(t, ":", `{"summary":"blocked","changed":[],"needed":["missing.txt"]}`)
-	if code := Build(cfg, config.Overrides{}, repo, "greet the world"); code != 1 {
+	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d; want 1", code)
 	}
 	count, _ := os.ReadFile(filepath.Join(stub, "count"))

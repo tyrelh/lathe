@@ -70,7 +70,7 @@ for (const e of [
 }
 assert(evaluate(`eventPayload({type:'tool_call',payload:{isError:true}})`).includes('class="fail"'));
 const phases = [1,2].map(seq => ({phase_id:'p'+seq, seq, name:'fix', owner:'builder', status:'success', started_at:'', ended_at:'done'}));
-const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:'/repo',request:'fix',started_at:'2026-09-20T12:00:00Z',ended_at:'2026-09-20T12:01:05Z'};
+const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:'/repo',request:'fix',submitted_at:'2026-09-20T11:59:50Z',started_at:'2026-09-20T12:00:00Z',ended_at:'2026-09-20T12:01:05Z'};
 let id = 0;
 const event = (type, payload, phase_id='p1', name='fix') => ({event_id:++id,type,payload,phase_id,name});
 function serve(events) { response = json({run,phases,events}); }
@@ -101,7 +101,8 @@ function serve(events) { response = json({run,phases,events}); }
   assert.equal(nodes.get('permits').innerHTML.split('<section>').length - 1, 1, 'permit rendered once');
   // The bottom bar carries the run's own context, and a settled run reads final.
   const bar = nodes.get('status').innerHTML;
-  for (const text of ['build','ok','$0.30000','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
+  // Queue time and execution time are separate: 10s waiting, 1m05s working.
+  for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
   assert.equal(nodes.get('note').textContent, 'final');
 
   // Navigation while a request is in flight cannot contaminate the next run.
@@ -124,6 +125,14 @@ function serve(events) { response = json({run,phases,events}); }
   assert(runsBar.includes('displayed:'), runsBar);
   assert(nodes.get('app').innerHTML.includes("location.hash='/runs/r1'"));
 
+  // A queued run is a live run, not a failed one, and it shows its wait.
+  evaluate('generation++');
+  response = json([{...run, run_id:'r2', status:'queued', started_at:'', ended_at:''}], {'X-Total-Runs': '1'});
+  await evaluate('tick()');
+  const queuedRow = nodes.get('app').innerHTML;
+  assert(queuedRow.includes('class="running">queued'), queuedRow);
+  assert(queuedRow.includes('queued</td>') || queuedRow.includes(' queued'), queuedRow);
+
   // Overview: lifetime totals, both rankings, and the attribution caveats.
   context.location.hash = '#/overview';
   evaluate('view = route(); generation++');
@@ -132,21 +141,19 @@ function serve(events) { response = json({run,phases,events}); }
     top_runs: [{...run, run_id:'top', cost: 9.5}],
     top_models: [{provider:'moonshotai', model:'kimi', cost:30, share:0.7113, phases:2700},
                  {provider:'', model:'', cost:2, share:0.0474, phases:12}],
-    unattributed: 2, unexplained_runs: 3, malformed_usage: 1, at: '2026-09-20T12:00:00Z',
+    at: '2026-09-20T12:00:00Z',
   });
   await evaluate('tick()');
   const over = nodes.get('app').innerHTML;
   for (const text of ['1,284','$42.18374','$9.50000','moonshotai/kimi','71.1%','unknown/unknown',
-                      '2,700 phases','counted per phase','$2.00000 of recorded spend names no model','3 run(s) reconciled',
-                      '1 usage event(s) could not be read',"location.hash='/runs/top'"]) {
+                      '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
     assert(over.includes(text), `overview: ${text}`);
   }
   assert(nodes.get('status').innerHTML.includes('all repositories · all time'));
 
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');
-  response = json({runs:0, tokens:0, cost:0, top_runs:[], top_models:[],
-                   unattributed:0, unexplained_runs:0, malformed_usage:0, at:''});
+  response = json({runs:0, tokens:0, cost:0, top_runs:[], top_models:[], at:''});
   await evaluate('tick()');
   const empty = nodes.get('app').innerHTML;
   assert(empty.includes('$0.00000') && empty.includes('No runs recorded yet.')

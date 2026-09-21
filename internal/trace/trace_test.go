@@ -17,9 +17,7 @@ func TestWriteFakeRun(t *testing.T) {
 	defer db.Close()
 
 	const runID = "20260916T120000Z_scout"
-	if err := db.RunStart(runID, "scout", "/Users/tyrel/Projects/lathe", "where is the parser"); err != nil {
-		t.Fatal(err)
-	}
+	seedRun(t, db, runID, "/Users/tyrel/Projects/lathe")
 
 	for i, name := range []string{"request", "scout"} {
 		p := NewPhase(runID, i, name, "agent", name)
@@ -38,7 +36,7 @@ func TestWriteFakeRun(t *testing.T) {
 		}
 	}
 	// Spend reaches the run through the usage path now, one record per model
-	// response; RunFinish only settles the lifecycle.
+	// response; completion only settles the lifecycle.
 	for _, u := range []Usage{
 		{RunID: runID, PhaseID: runID + "_01_scout", Agent: "scout", Seq: 1, Provider: "moonshotai", Model: "kimi", Tokens: 4000, Cost: 0.0030},
 		{RunID: runID, PhaseID: runID + "_01_scout", Agent: "scout", Seq: 2, Provider: "moonshotai", Model: "kimi", Tokens: 119, Cost: 0.0001},
@@ -47,12 +45,10 @@ func TestWriteFakeRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.RunFinish(runID, "ok"); err != nil {
-		t.Fatal(err)
-	}
+	settle(t, db, runID, "ok")
 
 	// Read through a second, read-only connection: what the dashboard will do.
-	ro, err := sql.Open("sqlite", "file:"+filepath.Join(root, "runs.db")+"?mode=ro")
+	ro, err := sql.Open("sqlite", "file:"+filepath.Join(root, dbFile)+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}

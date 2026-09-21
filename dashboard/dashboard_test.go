@@ -2,15 +2,34 @@ package dashboard
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http/httptest"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyrelh/lathe/internal/trace"
 )
+
+// claimed submits a run and takes it through dispatch and claim the way the
+// manager and a worker do, leaving it running.
+func claimed(t *testing.T, db *trace.DB, workflow, repo, request string) (id, attempt, token string) {
+	t.Helper()
+	id, err := db.Submit(trace.Request{Workflow: workflow, Repo: repo, Request: request, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt = trace.NewAttemptID(id)
+	if err := db.Reserve(id, attempt, ""); err != nil {
+		t.Fatal(err)
+	}
+	token = trace.NewClaimToken()
+	if _, err := db.Claim(attempt, token, "host", 1, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	return id, attempt, token
+}
 
 // TestRoutes is Phase 6's done-when, minus the browser: a run written by the
 // writer is readable through the read-only handles, and ?after= only returns
@@ -21,10 +40,7 @@ func TestRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const runID = "20260916T120000Z_scout_1"
-	if err := db.RunStart(runID, "scout", "/Users/tyrel/Projects/lathe", "where is the parser"); err != nil {
-		t.Fatal(err)
-	}
+	runID, _, _ := claimed(t, db, "scout", "/Users/tyrel/Projects/lathe", "where is the parser")
 	p := trace.NewPhase(runID, 1, "scout", "agent", "scout")
 	if err := db.PhaseUpsert(p); err != nil {
 		t.Fatal(err)
@@ -117,16 +133,18 @@ func TestOverviewAndMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		id := fmt.Sprintf("20260920T12000%dZ_build_1", i)
-		if err := db.RunStart(id, "build", "/Users/tyrel/Projects/lathe", "add retries"); err != nil {
-			t.Fatal(err)
-		}
+		// Finished each time round: a second outstanding build for one
+		// checkout is rejected at submission, which is the point of the rule.
+		id, attempt, token := claimed(t, db, "build", "/Users/tyrel/Projects/lathe", "add retries")
 		p := trace.NewPhase(id, 1, "build", "agent", "builder")
 		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.RecordUsage(trace.Usage{RunID: id, PhaseID: p.ID, Agent: "builder",
 			Seq: 1, Provider: "moonshotai", Model: "kimi", Tokens: 100, Cost: 0.01}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

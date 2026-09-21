@@ -17,6 +17,12 @@ Sequencing is the binary's job. Do not orchestrate phases by hand, and do not
 substitute your own investigation for a workflow the user asked for — the point
 of `lathe` is the trace it leaves behind.
 
+The command records the run and blocks until it finishes, printing the report.
+The work happens in a separate worker process, so the run survives the command
+being interrupted; that detaches rather than cancels. `--detach` returns the
+run ID immediately instead. A manager process drains the queue and is started
+automatically if none is running.
+
 ## Workflows
 
 - `scout "<request>"` — investigate and report. Read-only: the scout has
@@ -49,7 +55,12 @@ error handling" gets a vague one.
 Before the request, not after:
 
 - `--repo <dir>` act on another repository
+- `--detach` record the request, print the run ID, exit 0
 - `--model`, `--provider`, `--thinking` override the roster for one run
+
+A build needs a clean checkout and owns it until the run stops: do not edit
+files or switch branches there meanwhile. A second outstanding build for the
+same checkout is rejected.
 
 ## Reading the result
 
@@ -57,5 +68,9 @@ The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
 prints; `<dir>/build.json` is the builder's report (also saved when it reports
 needed files); `<dir>/test.json` records the discovered command and observations;
-`<dir>/raw.jsonl` is the full event stream. `lathe runs` lists recent
-runs from every repo.
+`<dir>/<attempt>/raw.jsonl` is the full event stream. `lathe runs` lists recent
+runs from every repo, queued and running ones included.
+
+`lathe show <id>` prints one run's state, outcome and report locations,
+`lathe wait <id>` blocks until it is terminal and exits with its outcome, and
+`lathe cancel <id>` asks it to stop. Both `show` and `wait` take `--json`.

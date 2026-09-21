@@ -3,27 +3,69 @@
 package trace
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite" // pure Go: cross-compiles without a C toolchain
 )
 
+// dbFile is the database this release writes. The v0.2 runs.db is left where
+// it is and never opened: a one-shot destructive upgrade path costs more than
+// a new filename.
+const dbFile = "lathe.db"
+
 const schema = `
 CREATE TABLE IF NOT EXISTS runs (
-  run_id     TEXT PRIMARY KEY,
-  workflow   TEXT,
-  repo       TEXT,
-  request    TEXT,
-  status     TEXT,
-  started_at TEXT,
-  ended_at   TEXT,
-  tokens     INTEGER DEFAULT 0,
-  cost       REAL    DEFAULT 0
+  run_id       TEXT PRIMARY KEY,
+  workflow     TEXT,
+  repo         TEXT,
+  request      TEXT,
+  status       TEXT,
+  spec         TEXT,
+  branch       TEXT,
+  commit_sha   TEXT,
+  attempt_id   TEXT,
+  reason       TEXT,
+  submitted_at TEXT,
+  started_at   TEXT,
+  ended_at     TEXT,
+  cancel_at    TEXT,
+  tokens       INTEGER DEFAULT 0,
+  cost         REAL    DEFAULT 0
+);
+
+-- One row per dispatch. The manager writes it before it launches anything, so
+-- a crash between the two is reconcilable from the database alone.
+CREATE TABLE IF NOT EXISTS attempts (
+  attempt_id   TEXT PRIMARY KEY,
+  run_id       TEXT REFERENCES runs,
+  dispatched_at TEXT,
+  claimed_at   TEXT,
+  claim_token  TEXT,
+  worker_pid   INTEGER DEFAULT 0,
+  worker_host  TEXT,
+  handle       TEXT,
+  log_path     TEXT,
+  heartbeat_at TEXT,
+  lease_until  TEXT,
+  outcome      TEXT
+);
+CREATE INDEX IF NOT EXISTS attempts_run ON attempts (run_id);
+
+-- A checkout reservation outlives its run's terminal state: a lost run may
+-- still have a process sitting in that directory.
+CREATE TABLE IF NOT EXISTS reservations (
+  path   TEXT PRIMARY KEY,
+  host   TEXT,
+  run_id TEXT,
+  at     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -70,13 +112,13 @@ func DataRoot() (string, error) {
 // DB is the single writer. Every lathe process holds one.
 type DB struct{ sql *sql.DB }
 
-// Open creates dataRoot if needed and opens runs.db inside it, applying the
+// Open creates dataRoot if needed and opens lathe.db inside it, applying the
 // schema. Close it when the run ends.
 func Open(dataRoot string) (*DB, error) {
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dataRoot, "runs.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dataRoot, dbFile))
 	if err != nil {
 		return nil, err
 	}
@@ -99,23 +141,16 @@ func Open(dataRoot string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	d := &DB{sql: db}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// Repeatable by design, so every writable open is a chance to settle a
-	// trace written by an older lathe. It is a no-op once a run is reconciled.
-	if err := d.Backfill(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("backfill: %w", err)
-	}
-	return d, nil
+	return &DB{sql: db}, nil
 }
 
-// Init creates and migrates the database, then closes it. lathe dash calls it
-// before opening its read-only connection, so viewing old traces neither
-// requires starting an agent run nor leaves a writable handle open all day.
+// Init creates and migrates the database, then closes it. The dashboard calls
+// it before opening its read-only connection, so a manager started on a fresh
+// machine serves an empty dashboard rather than an error.
 func Init(dataRoot string) error {
 	db, err := Open(dataRoot)
 	if err != nil {
@@ -141,12 +176,24 @@ type Phase struct {
 	End    string
 }
 
-// NewRunID builds the canonical run ID <UTC timestamp>_<workflow>_<pid>. The
-// timestamp is second-resolution, so two runs of the same workflow starting in
-// the same second would collide on the primary key; the pid settles it,
-// because one lathe process runs exactly one run.
+// NewRunID builds the canonical run ID <UTC timestamp>_<workflow>_<random>.
+// The suffix is random rather than the process ID because after the
+// submitter/worker split the submitting process executes nothing, so its PID
+// identifies nothing. The format stays sortable, greppable and usable as a
+// directory name.
 func NewRunID(workflow string) string {
-	return fmt.Sprintf("%s_%s_%d", time.Now().UTC().Format("20060102T150405Z"), workflow, os.Getpid())
+	return fmt.Sprintf("%s_%s_%s", time.Now().UTC().Format("20060102T150405Z"), workflow, randomHex(4))
+}
+
+// randomHex is the suffix source for run IDs, attempt IDs and claim tokens.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing is not a condition worth a second code path;
+		// the clock still separates these and the caller would only panic.
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b)
 }
 
 // NewPhase builds a phase with the canonical ID <runID>_<seq, two digits>_<name>,
@@ -166,36 +213,6 @@ func NewPhase(runID string, seq int, name, kind, owner string) *Phase {
 // formats a time. Write it back with PhaseUpsert.
 func (p *Phase) Finish(status, errMsg string) {
 	p.Status, p.Error, p.End = status, errMsg, nowUTC()
-}
-
-// RunStart records a run as running. Every timestamp in the database comes
-// from nowUTC so a Mac and a VPS interleave correctly.
-func (d *DB) RunStart(runID, workflow, repo, request string) error {
-	_, err := d.sql.Exec(
-		`INSERT INTO runs (run_id, workflow, repo, request, status, started_at)
-		 VALUES (?, ?, ?, ?, 'running', ?)`,
-		runID, workflow, repo, request, nowUTC())
-	return err
-}
-
-// RunFinish settles a run's lifecycle. It does not touch tokens or cost:
-// every response has already been charged transactionally as it arrived, so
-// writing the in-memory total here would charge the whole run a second time.
-func (d *DB) RunFinish(runID, status string) error {
-	_, err := d.sql.Exec(
-		`UPDATE runs SET status = ?, ended_at = ? WHERE run_id = ?`,
-		status, nowUTC(), runID)
-	return err
-}
-
-// RunInterrupt settles a run killed by a signal. It leaves tokens and cost
-// alone so a signal handler never has to read counters the run is still
-// updating; the usage events hold the spend either way.
-func (d *DB) RunInterrupt(runID string) error {
-	_, err := d.sql.Exec(
-		`UPDATE runs SET status = 'fail', ended_at = ? WHERE run_id = ? AND ended_at IS NULL`,
-		nowUTC(), runID)
-	return err
 }
 
 // PhaseUpsert writes the whole phase row, creating or replacing it. Leaving
@@ -239,23 +256,31 @@ func (d *DB) Event(runID, phaseID, typ, name string, payload any) error {
 
 // Row is one run as `lathe runs` lists it and the dashboard renders it.
 type Row struct {
-	ID       string  `json:"run_id"`
-	Workflow string  `json:"workflow"`
-	Repo     string  `json:"repo"`
-	Request  string  `json:"request"`
-	Status   string  `json:"status"`
-	Started  string  `json:"started_at"`
-	Ended    string  `json:"ended_at"`
-	Tokens   int     `json:"tokens"`
-	Cost     float64 `json:"cost"`
+	ID        string  `json:"run_id"`
+	Workflow  string  `json:"workflow"`
+	Repo      string  `json:"repo"`
+	Request   string  `json:"request"`
+	Status    string  `json:"status"`
+	Branch    string  `json:"branch"`
+	Commit    string  `json:"commit"`
+	AttemptID string  `json:"attempt_id"`
+	Reason    string  `json:"reason"`
+	Submitted string  `json:"submitted_at"`
+	Started   string  `json:"started_at"`
+	Ended     string  `json:"ended_at"`
+	Cancelled string  `json:"cancel_requested_at"`
+	Tokens    int     `json:"tokens"`
+	Cost      float64 `json:"cost"`
+	// Spec is the execution specification captured at submission. It is only
+	// loaded by the worker, so it stays out of the JSON the dashboard reads.
+	Spec []byte `json:"-"`
 }
 
 // Recent returns the n most recent runs across every repo — the whole point of
 // one global database.
 func (d *DB) Recent(n int) ([]Row, error) {
 	rows, err := d.sql.Query(
-		`SELECT run_id, workflow, repo, request, status, started_at, ended_at, tokens, cost
-		 FROM runs ORDER BY started_at DESC, run_id DESC LIMIT ?`, n)
+		runColumns+` FROM runs ORDER BY submitted_at DESC, run_id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
@@ -271,11 +296,11 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// OpenRO opens runs.db read-only, which is what the dashboard uses: a UI bug
+// OpenRO opens lathe.db read-only, which is what the dashboard uses: a UI bug
 // cannot write, and mode=ro fails loudly if the file is not there rather than
 // creating an empty database that looks like "no runs yet".
 func OpenRO(dataRoot string) (*DB, error) {
-	path := filepath.Join(dataRoot, "runs.db")
+	path := filepath.Join(dataRoot, dbFile)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("no trace database at %s — run something first", path)
 	}
@@ -315,14 +340,18 @@ type EventRow struct {
 
 // Get returns one run. A missing run is sql.ErrNoRows.
 func (d *DB) Get(runID string) (Row, error) {
-	var r Row
-	var ended sql.NullString
-	err := d.sql.QueryRow(
-		`SELECT run_id, workflow, repo, request, status, started_at, ended_at, tokens, cost
-		 FROM runs WHERE run_id = ?`, runID).
-		Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status, &r.Started, &ended, &r.Tokens, &r.Cost)
-	r.Ended = ended.String
-	return r, err
+	rows, err := d.sql.Query(runColumns+` FROM runs WHERE run_id = ?`, runID)
+	if err != nil {
+		return Row{}, err
+	}
+	out, err := scanRows(rows)
+	if err != nil {
+		return Row{}, err
+	}
+	if len(out) == 0 {
+		return Row{}, sql.ErrNoRows
+	}
+	return out[0], nil
 }
 
 // Phases returns a run's phases in the order they ran.

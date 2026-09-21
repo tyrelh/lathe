@@ -44,9 +44,7 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 	opusPhases := 0
 	for i := 0; i < runs; i++ {
 		id := fmt.Sprintf("r%02d", i)
-		if err := db.RunStart(id, "build", "/repo", "do a thing"); err != nil {
-			t.Fatal(err)
-		}
+		seedRun(t, db, id, "/repo")
 		for seq := 1; seq <= kimiPhases; seq++ {
 			p := NewPhase(id, seq, "work", "agent", "builder")
 			if err := db.PhaseUpsert(p); err != nil {
@@ -69,16 +67,10 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 			}
 			opusPhases++
 		}
-		if err := db.RunFinish(id, "ok"); err != nil {
-			t.Fatal(err)
-		}
+		settle(t, db, id, "ok")
 	}
-	// A run with no usage at all still counts as a run, and a legacy total with
-	// no events behind it still counts as spend nothing can name a model for.
-	legacyRun(t, db, "legacy", 0.5)
-	if err := db.Backfill(); err != nil {
-		t.Fatal(err)
-	}
+	// A run with no usage at all is still a run.
+	seedRun(t, db, "empty", "/repo")
 
 	o, err := db.Overview()
 	if err != nil {
@@ -87,13 +79,10 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 	if o.Runs != runs+1 {
 		t.Fatalf("runs = %d; want %d — counted through a join, not from runs", o.Runs, runs+1)
 	}
-	// 189 kimi phases at $0.001, 21 opus phases at $0.002, $0.5 unattributed.
-	want := runs*kimiPhases*0.001 + float64(opusPhases)*0.002 + 0.5
+	// 189 kimi phases at $0.001 and 21 opus phases at $0.002.
+	want := runs*kimiPhases*0.001 + float64(opusPhases)*0.002
 	if math.Abs(o.Cost-want) > costEpsilon {
 		t.Fatalf("cost = $%v; want $%v", o.Cost, want)
-	}
-	if math.Abs(o.Unattributed-0.5) > costEpsilon {
-		t.Fatalf("unattributed = $%v; want $0.5", o.Unattributed)
 	}
 
 	if len(o.TopRuns) != topN {
@@ -115,8 +104,10 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 			t.Fatalf("ranking is not stable at %d: %s then %s", i, o.TopRuns[i].ID, again.TopRuns[i].ID)
 		}
 	}
-	if o.TopRuns[0].ID != "legacy" {
-		t.Fatalf("the most expensive run is %s; want legacy", o.TopRuns[0].ID)
+	// The costliest runs are the ones with a fourth, pricier phase, and ties
+	// break on run_id, so the first is deterministic.
+	if o.TopRuns[0].ID != "r00" {
+		t.Fatalf("the most expensive run is %s; want r00", o.TopRuns[0].ID)
 	}
 
 	if len(o.TopModels) != 2 {
@@ -136,7 +127,9 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 		t.Fatalf("phase counts %d+%d look like run counts against %d runs",
 			kimi.Phases, opus.Phases, o.Runs)
 	}
-	if share := kimi.Cost / o.Cost; math.Abs(kimi.Share-share) > 1e-9 || kimi.Share+opus.Share >= 1 {
+	// Every dollar is attributed to a model now, so the two shares are the
+	// whole of recorded spend.
+	if share := kimi.Cost / o.Cost; math.Abs(kimi.Share-share) > 1e-9 || math.Abs(kimi.Share+opus.Share-1) > 1e-9 {
 		t.Fatalf("shares %v %v of $%v", kimi.Share, opus.Share, o.Cost)
 	}
 
@@ -165,9 +158,7 @@ func BenchmarkOverview(b *testing.B) {
 	models := []string{"kimi-k2.7-code", "kimi-k2.7", "opus", "sonnet", "haiku"}
 	for i := 0; i < runs; i++ {
 		id := fmt.Sprintf("bench%05d", i)
-		if err := db.RunStart(id, "build", fmt.Sprintf("/repos/p%d", i%20), "a request"); err != nil {
-			b.Fatal(err)
-		}
+		seedRun(b, db, id, fmt.Sprintf("/repos/p%d", i%20))
 		p := NewPhase(id, 1, "build", "agent", "builder")
 		if err := db.PhaseUpsert(p); err != nil {
 			b.Fatal(err)
@@ -184,9 +175,7 @@ func BenchmarkOverview(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		if err := db.RunFinish(id, "ok"); err != nil {
-			b.Fatal(err)
-		}
+		settle(b, db, id, "ok")
 	}
 	b.Logf("fixture: %d runs, %d events, %d usage records",
 		runs, runs*(eventsPerRun+3), runs*3)
