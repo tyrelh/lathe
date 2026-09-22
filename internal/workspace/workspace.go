@@ -76,10 +76,6 @@ func Branch(repo string) (string, error) {
 	return out, nil
 }
 
-// Commit is the commit a worker actually executed against. Newer commits on
-// the recorded branch are allowed, so this is recorded rather than checked.
-func Commit(repo string) (string, error) { return git(repo, "rev-parse", "HEAD") }
-
 func git(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repo

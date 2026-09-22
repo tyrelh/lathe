@@ -11,18 +11,18 @@ import (
 	"github.com/tyrelh/lathe/internal/trace"
 )
 
-func TestBuildVerifyLoop(t *testing.T) {
+func TestImplementVerifyLoop(t *testing.T) {
 	for _, greenAt := range []int{0, 1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("green-after-%d-fixes", greenAt), func(t *testing.T) {
 			cfg, repo := buildRepo(t)
 			// Tracked dirt and staged additions must both be undone by test phases.
 			write(t, filepath.Join(repo, "fixture.txt"), "original\n")
 			gitBuild(t, repo, "add", ".")
-			gitBuild(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
+			gitBuild(t, repo, "commit", "-qm", "fixture")
 			dir := t.TempDir()
 			write(t, filepath.Join(dir, "review"), reviewOK(t))
 			write(t, filepath.Join(dir, "plan"), planReply(t, `"hello.txt"`))
-			write(t, filepath.Join(dir, "build"), piReply(t, "```json\n"+`{"summary":"implemented","changed":["hello.txt"],"needed":[],"artifacts":["hello.txt"]}`+"\n```"))
+			write(t, filepath.Join(dir, "implement"), piReply(t, "```json\n"+`{"summary":"implemented","changed":["hello.txt"],"needed":[],"artifacts":["hello.txt"]}`+"\n```"))
 			command := "echo verify-dirt > fixture.txt; echo junk > coverage.out; git add fixture.txt coverage.out; echo VERIFY-TAIL >&2; test \"$(cat hello.txt)\" = good"
 			report, _ := json.Marshal(map[string]any{"summary": "discovered", "command": command, "failures": []string{"TESTER-OBSERVATION"}, "artifacts": []string{}})
 			write(t, filepath.Join(dir, "test"), piReply(t, "```json\n"+string(report)+"\n```"))
@@ -40,7 +40,7 @@ case "$n" in
    cat %[1]q/test ;;
 *) round=$((n-3)); [ "$n" != 2 ] || round=0
    if [ "$round" -ge %[2]d ]; then echo good > hello.txt; else echo bad > hello.txt; fi
-   cat %[1]q/build ;;
+   cat %[1]q/implement ;;
 esac
 `, dir, greenAt))
 			wantCode := 0
@@ -48,7 +48,7 @@ esac
 			if greenAt == 5 {
 				wantCode, fixes = 1, 4
 			}
-			if code := execute(t, cfg, "build", repo, "change greeting"); code != wantCode {
+			if code := execute(t, cfg, "implement", repo, "change greeting"); code != wantCode {
 				t.Fatalf("code %d want %d", code, wantCode)
 			}
 			count, _ := os.ReadFile(filepath.Join(dir, "count"))
@@ -118,9 +118,9 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
-			names := []string{"request", "plan", "review", "build", "test"}
+			names := []string{"request", "plan", "review", "implement", "test"}
 			for i := 0; i < fixes; i++ {
-				names = append(names, "build", "test")
+				names = append(names, "implement", "test")
 			}
 			if len(phases) != len(names) {
 				t.Fatalf("phases: %v", phases)

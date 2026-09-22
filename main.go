@@ -31,7 +31,8 @@ usage: lathe <command> [flags] [args]
 commands:
   scout "<request>"   investigate the current repo and report what is there
   plan "<request>"    plan a change to the current repo; write nothing
-  build "<request>"   plan, implement and test a change; leave it uncommitted
+  implement "<req>"   plan, implement and test a change; leave it uncommitted
+  build "<request>"   implement it, then branch, commit and open a pull request
   manager             run the scheduler and the dashboard in the foreground
   runs                list recent runs, from every repo
   show <id>           state, outcome, reports and artifact locations for one run
@@ -48,14 +49,19 @@ flags (before the request, as Go's flag package stops at the first argument):
   --model <name>      override the model for this run
   --thinking <level>  override the thinking level; ignored by models without one
 
-scout, plan and build record a run and then block until it finishes. The work
-happens in a worker process, so interrupting the wait detaches from the run
-rather than cancelling it; use lathe cancel for that. A manager is started
-automatically if none is running, and serves the dashboard.
+Every command records a run and then blocks until it finishes. The work happens
+in a worker process, so interrupting the wait detaches from the run rather than
+cancelling it; use lathe cancel for that. A manager is started automatically if
+none is running, and serves the dashboard.
+
+implement and build need a clean checkout and own it until they stop. build
+leaves the checkout on the branch it created, and a failure after its commit
+leaves that commit there rather than losing the work.
 
 environment:
-  LATHE_WORKER_ENV    file of KEY=VALUE lines workers load: credentials, PATH,
-                      test settings. Read by the manager, passed to workers.
+  Workers inherit the manager's environment: credentials such as
+  MOONSHOT_API_KEY, PATH, test settings. An auto-started manager takes the
+  environment of the submission that started it; restart it to change that.
   LATHE_CAPACITY      how many runs may execute at once (default 1)
 
 Run install from a checkout of the lathe repo; it links the checkout itself,
@@ -74,7 +80,7 @@ func dispatch(args []string) int {
 		return 2
 	}
 	switch cmd := args[0]; cmd {
-	case "scout", "plan", "build":
+	case "scout", "plan", "implement", "build":
 		return submit(cmd, args[1:])
 	case "manager":
 		return managerCmd()
@@ -153,7 +159,7 @@ func submit(name string, args []string) int {
 	// Checked here for early feedback and again when the worker starts; a
 	// checkout that goes dirty in between fails the run without discarding
 	// anything.
-	if name == "build" {
+	if workflow.Writes[name] {
 		if err := permit.Clean(ws.Path); err != nil {
 			return fail(err)
 		}
@@ -177,6 +183,7 @@ func submit(name string, args []string) int {
 	}
 	id, err := db.Submit(trace.Request{
 		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec,
+		Exclusive: workflow.Writes[name],
 	})
 	if err != nil {
 		db.Close()
@@ -185,10 +192,13 @@ func submit(name string, args []string) int {
 	if err := manager.Start(dataRoot); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
 	}
-	if name == "build" {
-		fmt.Printf("lathe build %s: %s belongs to lathe until this run stops.\n"+
+	if workflow.Writes[name] {
+		fmt.Printf("lathe %s %s: %s belongs to lathe until this run stops.\n"+
 			"  Do not edit files or switch branches there; cleanup can revert changes made during the run.\n",
-			id, ws.Path)
+			name, id, ws.Path)
+		if name == "build" {
+			fmt.Printf("  It ends on the branch it creates, and a failure after its commit leaves that commit there.\n")
+		}
 	}
 	fmt.Printf("%s %s queued\n", name, id)
 	if *detach {
@@ -241,8 +251,10 @@ func outcome(status string) int {
 }
 
 // reportFiles are the structured results a workflow leaves in its run
-// directory, in the order they are produced.
-var reportFiles = []string{"result.json", "plan.json", "build.json", "test.json"}
+// directory, in the order they are produced. build.json is what the builder's
+// report was called before the rename, kept so lathe show still reads runs from
+// before it.
+var reportFiles = []string{"result.json", "plan.json", "implement.json", "build.json", "test.json", "pr.json"}
 
 // report prints what a finished run produced, including the partial reports
 // of one that failed, was cancelled, or was lost.

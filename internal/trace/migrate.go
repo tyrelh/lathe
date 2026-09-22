@@ -29,6 +29,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS usage_response ON usage (run_id, phase_id, att
 CREATE INDEX IF NOT EXISTS usage_run ON usage (run_id);
 CREATE INDEX IF NOT EXISTS usage_model ON usage (provider, model);
 `,
+	// 2: exclusive marks a run that owns the checkout it executes in. The
+	// duplicate check reads this instead of a workflow name, so which workflows
+	// write is the workflow package's business and not the database's.
+	`
+ALTER TABLE runs ADD COLUMN exclusive INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS runs_exclusive ON runs (repo, exclusive, status);
+`,
 }
 
 // migrate applies every migration the database has not seen yet.

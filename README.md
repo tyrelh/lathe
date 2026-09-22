@@ -28,7 +28,10 @@ lathe scout "where is authentication handled and what calls it"
 # plan a change; writes nothing
 lathe plan  "add retry with backoff to the fetch client"
 
-# plan, implement, test, and fix failures
+# plan, implement, test, and fix failures; leave it uncommitted
+lathe implement "add retry with backoff to the fetch client"
+
+# the same, then branch, commit and open a pull request
 lathe build "add retry with backoff to the fetch client"
 
 # record the request, print the run ID, exit
@@ -50,35 +53,45 @@ lathe cancel <id>
 lathe manager
 ```
 
-Submission and execution are separate processes. `scout`, `plan` and `build`
-record a run in the database and then block until it finishes; the work itself
+Submission and execution are separate processes. Every workflow command
+records a run in the database and then block until it finishes; the work itself
 happens in a worker process, so interrupting the wait detaches from the run
 rather than cancelling it — `lathe cancel` is how you stop one. A long-lived
 manager drains the queue and serves the dashboard; if none is running, a
 submission starts one in the background and it stays up until it is killed.
 
-Two settings, both read from the environment of the process that needs them:
+Workers inherit the manager's environment: API keys, `PATH`, test settings. That
+is the environment of whatever started the manager — a shell running
+`lathe manager`, or the first submission when none was running — and it stays
+fixed until the manager is restarted. Export what agents and test suites need
+before either. `LATHE_CAPACITY` sets how many runs may execute at once; it
+defaults to 1.
 
-- `LATHE_WORKER_ENV` — a file of `KEY=VALUE` lines that workers load: API keys,
-  `PATH`, test settings. Kept outside the repository, configured separately
-  from your shell, and read by the manager so it can pass it to each worker.
-- `LATHE_CAPACITY` — how many runs may execute at once. Defaults to 1.
+`implement` and `build` need a clean working tree, and the checkout belongs to
+lathe until the run stops: do not edit files or switch branches there while one
+is running, because permission cleanup can revert changes made during the run,
+including yours. Lathe records the branch at submission and fails the run if it
+changed before execution started; newer commits on that branch are fine. A
+second outstanding run of either for the same checkout is rejected immediately.
+The builder may write only the files its own plan named.
 
-`build` needs a clean working tree, and the checkout belongs to lathe until the
-run stops: do not edit files or switch branches there while one is running,
-because permission cleanup can revert changes made during the run, including
-yours. Lathe records the branch at submission and fails the run if it changed
-before execution started; newer commits on that branch are fine. A second
-outstanding build for the same checkout is rejected immediately. The builder
-may write only the files its own plan named; review the result with `git diff`
-and commit it yourself.
+`implement` stops there: review the result with `git diff` and commit it
+yourself. `build` goes on to branch, commit and open a pull request, which needs
+`git` and `gh` on `PATH` with `gh` already authenticated. In each of those three
+phases an agent judges the text — the branch name, the commit message, the pull
+request title and body, each read off what the repository already does — and
+lathe performs the git itself, staging exactly the scope the run accumulated. No
+agent can commit or push: the guard denies both. A build ends on the branch it
+created, and a failure after its commit leaves that commit there rather than
+losing the work.
 
-The plan and build workflows share a read-only review loop:
+The plan, implement and build workflows share a read-only review loop:
 
 ```
 request → plan → review → [plan → review, up to four send-backs]
-plan:  → print the reviewed plan
-build: → build → test → [build → test, up to four fixes]
+plan:      → print the reviewed plan
+implement: → implement → test → [implement → test, up to four fixes]
+build:     → branch → implement → test → [implement → test] → commit → pr
 ```
 
 The reviewer checks the plan against the repository, including the builder's
@@ -89,9 +102,9 @@ even when the run succeeds. Planner failures and cancellation stop the run.
 
 The tester discovers the test command, then lathe runs it and uses its exit code to decide success. A failing suite gets at most four builder fix rounds in the same session. Test commands inherit your environment, run under the roster's `command_timeout`, and pass the shell deny list.
 
-A guard vetoes every `write`, `edit` or `bash` call before it executes, with the tester alone receiving a shell. The shell deny list is a coarse check, not a sandbox.
+A guard vetoes every `write`, `edit` or `bash` call before it executes. Four agents get a shell: the tester, and the three that read git and `gh` to judge a branch name, a commit message and a pull request. The shell deny list is a coarse check, not a sandbox.
 
-Agents run on [pi](https://github.com/earendil-works/pi), which needs `MOONSHOT_API_KEY` in the worker environment file. Traces go to `$XDG_DATA_HOME/lathe/lathe.db`, else `~/.local/share/lathe/lathe.db`; per-attempt logs, raw streams and reports sit beside it under `runs/`, and the manager's own log is `manager.log`.
+Agents run on [pi](https://github.com/earendil-works/pi), which needs `MOONSHOT_API_KEY` in the manager's environment. Traces go to `$XDG_DATA_HOME/lathe/lathe.db`, else `~/.local/share/lathe/lathe.db`; per-attempt logs, raw streams and reports sit beside it under `runs/`, and the manager's own log is `manager.log`.
 
 A crashed worker holds capacity until it is confirmed stopped. There is no
 recovery command: the manager prints the run, the process, its log and the

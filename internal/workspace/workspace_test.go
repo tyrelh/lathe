@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,7 +58,7 @@ func TestBranchAndCommit(t *testing.T) {
 	if err != nil || branch != "main" {
 		t.Fatalf("branch = %q, %v", branch, err)
 	}
-	commit, err := Commit(dir)
+	commit, err := Head(dir)
 	if err != nil || len(commit) < 7 {
 		t.Fatalf("commit = %q, %v", commit, err)
 	}
@@ -97,5 +98,64 @@ func TestLockIsExclusivePerCheckout(t *testing.T) {
 	// one must not fight.
 	if err := again.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The git a build performs on the agents' behalf, end to end against a real
+// repository and a real remote: a name is judged, a branch is created, exactly
+// the named paths are committed, and the branch reaches origin.
+func TestBranchCommitPush(t *testing.T) {
+	dir, origin := t.TempDir(), t.TempDir()
+	run(t, origin, "init", "-q", "--bare")
+	run(t, dir, "init", "-q", "-b", "main")
+	run(t, dir, "config", "user.name", "T")
+	run(t, dir, "config", "user.email", "t@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "add", ".")
+	run(t, dir, "commit", "-qm", "one")
+	run(t, dir, "remote", "add", "origin", origin)
+
+	if !ValidBranch(dir, "feat/ship") || ValidBranch(dir, "feat//ship") {
+		t.Fatal("ValidBranch disagrees with git check-ref-format")
+	}
+	if !RefExists(dir, "main") || RefExists(dir, "feat/ship") {
+		t.Fatal("RefExists disagrees with git rev-parse")
+	}
+	if err := Checkout(dir, "feat/ship"); err != nil {
+		t.Fatal(err)
+	}
+	if branch, _ := Branch(dir); branch != "feat/ship" {
+		t.Fatalf("branch = %q", branch)
+	}
+
+	before, _ := Head(dir)
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("changed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// b.txt is left out of the pathspec, so it must survive as untracked dirt
+	// rather than being swept into the commit.
+	if err := Commit(dir, "feat: change a\n\nA body with a \"quote\" in it.\n", []string{"a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := Head(dir)
+	if after == before {
+		t.Fatal("HEAD did not move")
+	}
+	if out, _ := git(dir, "show", "--stat", "--format=%s%n%b", "HEAD"); !strings.Contains(out, `A body with a "quote" in it.`) || strings.Contains(out, "b.txt") {
+		t.Fatalf("commit = %s", out)
+	}
+	if err := Commit(dir, "x", nil); err == nil {
+		t.Fatal("an empty pathspec was staged")
+	}
+
+	if err := Push(dir, "feat/ship"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := git(origin, "rev-parse", "feat/ship"); out != after {
+		t.Fatalf("origin has %q, want %q", out, after)
 	}
 }

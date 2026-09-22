@@ -37,8 +37,8 @@ func Terminal(status string) bool {
 }
 
 var (
-	// ErrDuplicateBuild is a second outstanding build for one checkout.
-	ErrDuplicateBuild = errors.New("a build is already outstanding for this checkout")
+	// ErrDuplicateBuild is a second outstanding writing run for one checkout.
+	ErrDuplicateBuild = errors.New("a run that owns this checkout is already outstanding")
 	// ErrClaimLost means another process owns this attempt now, or the run is
 	// already terminal. A worker that sees it stops without writing anything.
 	ErrClaimLost = errors.New("this attempt is no longer ours")
@@ -55,11 +55,15 @@ type Request struct {
 	Request  string
 	Branch   string
 	Spec     []byte
+	// Exclusive is a run that owns its checkout: at most one of them may be
+	// outstanding per repository. The submitter sets it from the workflow list,
+	// which is what keeps workflow names out of this package.
+	Exclusive bool
 }
 
-// Submit records a queued run and returns its ID. The duplicate-build check
-// and the insert share one transaction, so two submitters cannot both see an
-// empty queue.
+// Submit records a queued run and returns its ID. The exclusivity check and
+// the insert share one transaction, so two submitters cannot both see an empty
+// queue.
 func (d *DB) Submit(r Request) (string, error) {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -67,10 +71,10 @@ func (d *DB) Submit(r Request) (string, error) {
 	}
 	defer tx.Rollback()
 
-	if r.Workflow == "build" {
+	if r.Exclusive {
 		var other string
 		err := tx.QueryRow(
-			`SELECT run_id FROM runs WHERE repo = ? AND workflow = 'build'
+			`SELECT run_id FROM runs WHERE repo = ? AND exclusive = 1
 			   AND status IN ('queued', 'starting', 'running') LIMIT 1`, r.Repo).Scan(&other)
 		switch {
 		case err == nil:
@@ -82,9 +86,9 @@ func (d *DB) Submit(r Request) (string, error) {
 
 	id := NewRunID(r.Workflow)
 	if _, err := tx.Exec(
-		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, submitted_at)
-		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
-		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, nowUTC()); err != nil {
+		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, exclusive, submitted_at)
+		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, r.Exclusive, nowUTC()); err != nil {
 		return "", err
 	}
 	return id, tx.Commit()
@@ -338,6 +342,15 @@ func (d *DB) MarkLost(runID, reason string) error {
 // necessarily submission-time HEAD.
 func (d *DB) SetCommit(runID, sha string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET commit_sha = ? WHERE run_id = ?`, sha, runID)
+	return err
+}
+
+// SetShipped moves a run's branch and commit to where its work now lives. A
+// build starts from the branch it was submitted against and ends on one it
+// created, so without this the run would name its base as its result. The base
+// is not lost: it is the shipped commit's parent, and the pull request's base.
+func (d *DB) SetShipped(runID, branch, sha string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET branch = ?, commit_sha = ? WHERE run_id = ?`, branch, sha, runID)
 	return err
 }
 

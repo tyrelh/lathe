@@ -19,9 +19,10 @@ type Local struct {
 }
 
 // Launch starts a worker in its own session, with its output redirected to
-// the attempt log and a deliberately small environment: the submitting
-// shell's and the manager's are not the worker's, and secrets come from the
-// worker environment file instead.
+// the attempt log. The worker inherits the manager's whole environment —
+// credentials, PATH, test settings — which is the environment of whatever
+// started the manager: a shell running `lathe manager`, or the first
+// submission if it was auto-started. Changing it means restarting the manager.
 func (l Local) Launch(j Job) (string, error) {
 	bin := l.Bin
 	if bin == "" {
@@ -39,11 +40,6 @@ func (l Local) Launch(j Job) (string, error) {
 	cmd := exec.Command(bin, "worker", "--data", j.DataRoot, "--run", j.RunID, "--attempt", j.AttemptID)
 	cmd.Stdin = nil
 	cmd.Stdout, cmd.Stderr = log, log
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-		"LATHE_WORKER_ENV=" + j.EnvFile,
-	}
 	// Its own session: the worker keeps running when the manager stops, and a
 	// Ctrl-C in the manager's terminal does not reach it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
