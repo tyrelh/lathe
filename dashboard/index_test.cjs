@@ -105,6 +105,51 @@ function serve(events) { response = json({run,phases,events}); }
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
   assert.equal(nodes.get('note').textContent, 'final');
 
+  // Each plan/review keeps its own output across pages. The readable result
+  // precedes raw replies and inputs, with nested disclosures retained on polls.
+  const reportPhases = [
+    {phase_id:'plan', owner:'planner', name:'plan'},
+    {phase_id:'review', owner:'plan-reviewer', name:'review'},
+    {phase_id:'replan', owner:'planner', name:'replan'},
+    {phase_id:'accepted', owner:'plan-reviewer', name:'review'},
+    {phase_id:'old', owner:'planner', name:'plan'},
+    {phase_id:'bad', owner:'plan-reviewer', name:'review', status:'fail', error:'Invalid report'},
+  ].map((p,i) => ({seq:i+1,status:'success',started_at:'',ended_at:'done',...p}));
+  const report = {summary:'Initial <plan>',steps:['Edit <file>'],files:['a.go'],risks:['Check & verify']};
+  evaluate('done = false');
+  const page = [
+    event('output',{attempt:0,report,text:'RAW PLAN <script>unsafe</script>'},'plan','planner'),
+    event('input',{prompt:'PLAN INPUT'},'plan','planner'),
+    event('output',{attempt:0,report:{summary:'Missing tests',feedback:['Add <tests>']},text:'RAW REVIEW'},'review','plan-reviewer'),
+    event('envelope',{attempt:0,text:'MALFORMED <reply>',violations:['missing feedback']},'bad','plan-reviewer'),
+    event('gate',{attempt:1,text:'PROTECTED PATH <reply>',violations:['protected path']},'bad','plan-reviewer'),
+  ];
+  while (page.length < 500) page.push(event('log','padding'));
+  response = json({run,phases:reportPhases,events:page});
+  expanded = [{dataset:{phase:'plan'}}];
+  await evaluate('tick()');
+  let panel = nodes.get('phases').innerHTML;
+  for (const text of ['Initial &lt;plan>','<ol>','Edit &lt;file>','a.go','Check &amp; verify',
+                      'Missing tests','Add &lt;tests>','Structured output not recorded',
+                      'MALFORMED &lt;reply>','PROTECTED PATH &lt;reply>','Response 2 · rejected','Invalid report']) assert(panel.includes(text),text);
+  assert(panel.indexOf('Initial &lt;plan>') < panel.indexOf('Raw responses'));
+  assert(panel.indexOf('RAW PLAN') < panel.indexOf('PLAN INPUT'));
+  assert(!panel.includes('<script>'), 'agent text must be escaped');
+  assert(!panel.includes('data-panel="plan-raw" open'), 'raw responses start collapsed');
+  assert(!panel.includes('data-panel="plan-inputs" open'), 'inputs start collapsed');
+
+  expanded.push({dataset:{panel:'plan-raw'}},{dataset:{panel:'plan-inputs'}});
+  response = json({run,phases:reportPhases,events:[
+    event('output',{attempt:0,report:{...report,summary:'Revised plan',files:['a.go','a_test.go']},text:'REVISED RAW'},'replan','planner'),
+    event('output',{attempt:0,report:{summary:'Ready',feedback:[]},text:'ACCEPTED RAW'},'accepted','plan-reviewer'),
+  ]});
+  await evaluate('tick()');
+  panel = nodes.get('phases').innerHTML;
+  for (const text of ['Initial &lt;plan>','Revised plan','a_test.go','Accepted · no objections.',
+                      'data-panel="plan-raw" open','data-panel="plan-inputs" open']) assert(panel.includes(text),text);
+  assert.equal(panel.split('RAW PLAN').length-1,1,'raw output must not duplicate across pages');
+  assert.equal(evaluate('done'),true);
+
   // Navigation while a request is in flight cannot contaminate the next run.
   evaluate('done = false'); response = null;
   const pending = evaluate('tick()');
@@ -171,6 +216,11 @@ function serve(events) { response = json({run,phases,events}); }
   evaluate('view = route(); generation++');
   await evaluate('tick()');
   assert(nodes.get('app').innerHTML.includes('not found'));
+
+  // A different run must not inherit the previous run's reports or responses.
+  evaluate('navigate()');
+  assert.equal(evaluate('outputs.size'),0);
+  assert.equal(evaluate('responses.size'),0);
 
   console.log('dashboard client checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

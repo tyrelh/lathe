@@ -393,9 +393,8 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		if len(violations) == 0 {
 			violations = out.Validate()
 		}
-		// The rejected reply is recorded because it is what the violation is
-		// about; an accepted one is already in raw.jsonl and in out, so
-		// storing it again would only grow the database.
+		// Rejected replies explain corrections. Validated replies are recorded
+		// below as phase outputs, after the mechanical gates pass.
 		envelope := map[string]any{"attempt": attempt, "violations": violations}
 		if len(violations) > 0 {
 			envelope["text"] = res.Text
@@ -407,10 +406,18 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 			for _, g := range gates {
 				gateViolations = append(gateViolations, g(out, r)...)
 			}
-			r.db.Event(r.ID, h.phase.ID, "gate", agent.Name,
-				map[string]any{"attempt": attempt, "violations": gateViolations})
+			gate := map[string]any{"attempt": attempt, "violations": gateViolations}
+			if len(gateViolations) > 0 {
+				gate["text"] = res.Text
+			}
+			r.db.Event(r.ID, h.phase.ID, "gate", agent.Name, gate)
 			if len(gateViolations) == 0 {
-				return nil
+				// Keep the report and exact response together so the dashboard can
+				// show each phase's result, including plans later revised. A final
+				// plan.json alone cannot reconstruct that history.
+				return r.db.Event(r.ID, h.phase.ID, "output", agent.Name, map[string]any{
+					"attempt": attempt, "report": out, "text": res.Text,
+				})
 			}
 			violations = gateViolations
 		}

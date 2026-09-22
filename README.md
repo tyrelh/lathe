@@ -101,3 +101,8 @@ The dashboard opens on **Overview**: every run ever recorded and every dollar re
 
 A run is listed from the moment it is queued, with queue time and execution
 time shown separately. A run's detail page shows per-phase model, tokens, and cost. Expand phase inputs or event payloads to read them in full; shell commands and tool errors are always visible. The permissions panel records kept and reverted files for each check. New runs record each agent turn's system prompt, supplied prompt, session ID, and write scope; older traces show when input context was not recorded.
+
+Expand a planner or plan-reviewer phase to read its plan or review first, with
+raw responses and inputs in separate disclosures underneath. Each phase keeps
+its own result, including plans later revised. Structured output is available
+for new runs; older phases indicate when it was not recorded.
