@@ -87,7 +87,7 @@ objections or a failed final review become risks in the saved plan and builder
 handoff. Failed reviews consume a send-back and remain visible as failed phases
 even when the run succeeds. Planner failures and cancellation stop the run.
 
-The tester discovers the test command, then lathe runs it and uses its exit code to decide success. A failing suite gets at most four builder fix rounds in the same session. Test commands inherit your environment, run under the tester timeout, and pass the shell deny list.
+The tester discovers the test command, then lathe runs it and uses its exit code to decide success. A failing suite gets at most four builder fix rounds in the same session. Test commands inherit your environment, run under the roster's `command_timeout`, and pass the shell deny list.
 
 A guard vetoes every `write`, `edit` or `bash` call before it executes, with the tester alone receiving a shell. The shell deny list is a coarse check, not a sandbox.
 

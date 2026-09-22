@@ -124,6 +124,26 @@ func TestPlannerIsReadOnly(t *testing.T) {
 
 // The deny list is one list in one file, because the Go gates and the guard
 // extension both have to be holding the same one.
+// A code phase is bounded by the roster, not by the tester it used to borrow
+// from, so a workflow that captures no tester still gets a deadline.
+func TestCaptureCarriesCommandTimeout(t *testing.T) {
+	s, err := assets(t).Capture([]string{"scout"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CommandDeadline.Minutes() != 10 {
+		t.Fatalf("command deadline = %v; want 10m", s.CommandDeadline)
+	}
+}
+
+func TestCaptureRejectsBadCommandTimeout(t *testing.T) {
+	c := assets(t)
+	c.CommandTimeout = "ten minutes"
+	if _, err := c.Capture([]string{"scout"}, Overrides{}); err == nil || !strings.Contains(err.Error(), "command_timeout") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestProtectedDecodes(t *testing.T) {
 	got := strings.Join(assets(t).Protected, ",")
 	if !strings.Contains(got, ".git/") || !strings.Contains(got, ".env*") {

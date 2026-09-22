@@ -20,6 +20,11 @@ bash_denied = [
   "\\bscp\\b",
 ]
 
+# How long a code phase's command may run. A code phase is lathe's own work, not
+# an agent's, so its bound is set here rather than borrowed from whichever agent
+# happened to discover the command.
+command_timeout = "10m"
+
 [defaults]
 provider = "moonshotai"
 model    = "kimi-k2.7-code"

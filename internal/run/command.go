@@ -60,16 +60,15 @@ func (h *Handle) Command(command string) (string, error) {
 			return "", fmt.Errorf("the command matches the deny rule %s and will not be run", rule)
 		}
 	}
-	agent, err := r.cfg.Resolve("tester")
-	if err != nil {
-		return "", err
-	}
 	// Derived from the run's context, so a cancelled run kills the suite and
-	// its whole process group rather than waiting for it.
+	// its whole process group rather than waiting for it. The bound is the
+	// roster's command_timeout: a code phase is lathe's own work, so borrowing
+	// the tester's deadline would both tie every code phase to that one agent
+	// and break any workflow whose captured roster does not include it.
 	ctx := r.ctx
 	cancel := func() {}
-	if agent.Deadline > 0 {
-		ctx, cancel = context.WithTimeout(ctx, agent.Deadline)
+	if d := r.cfg.CommandDeadline; d > 0 {
+		ctx, cancel = context.WithTimeout(ctx, d)
 	}
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
