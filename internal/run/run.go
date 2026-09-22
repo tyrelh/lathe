@@ -76,6 +76,13 @@ type Failing interface{ Failure() error }
 // judges the work — only whether what the agent said it did is true.
 type Gate func(Envelope, *Run) []string
 
+// RecoverableError records a failed phase while leaving its workflow to decide
+// whether the run can continue. Wrap only failures the workflow handles.
+type RecoverableError struct{ Err error }
+
+func (e *RecoverableError) Error() string { return e.Err.Error() }
+func (e *RecoverableError) Unwrap() error { return e.Err }
+
 // Run is one invocation of one workflow against one repository.
 type Run struct {
 	ID       string
@@ -201,9 +208,10 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 		r.db.PhaseUpsert(ph)
 		r.db.Event(r.ID, ph.ID, "phase_end", p.Name, map[string]string{"status": status})
 		if err != nil {
-			// Keep measured red in the timeline without poisoning a later green.
+			// Keep recoverable failures in the timeline without poisoning a later success.
 			var red *CommandFailure
-			if !errors.As(err, &red) {
+			var recoverable *RecoverableError
+			if !errors.As(err, &red) && !errors.As(err, &recoverable) {
 				r.fail(err)
 			}
 		}
@@ -213,8 +221,8 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 
 // Finish settles the status, the banner and the exit code in one call, so the
 // three cannot disagree. accepted is "the run produced an acceptable result",
-// which is a different question from "every phase worked": a red verify phase
-// is recoverable, and the workflow passes false if fixes run out.
+// which is a different question from "every phase worked": red verification
+// and unusable reviews can be recovered by their workflows.
 //
 // It does not write the run's terminal state. That write is bound to the
 // worker's claim, so the worker makes it — reading Status and Reason here.
@@ -355,6 +363,11 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 	nudged := false
 	for attempt := 0; ; attempt++ {
 		res, err := r.spawn(h, agent, prompt, attempt)
+		// Pi may report a killed process instead of the context's error. Keep
+		// run cancellation recognizable to workflows with recoverable phases.
+		if ctxErr := r.ctx.Err(); err != nil && ctxErr != nil {
+			return ctxErr
+		}
 		switch {
 		case errors.Is(err, errBudget) && !nudged:
 			nudged, prompt = true, budgetSpent
@@ -380,9 +393,8 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		if len(violations) == 0 {
 			violations = out.Validate()
 		}
-		// The rejected reply is recorded because it is what the violation is
-		// about; an accepted one is already in raw.jsonl and in out, so
-		// storing it again would only grow the database.
+		// Rejected replies explain corrections. Validated replies are recorded
+		// below as phase outputs, after the mechanical gates pass.
 		envelope := map[string]any{"attempt": attempt, "violations": violations}
 		if len(violations) > 0 {
 			envelope["text"] = res.Text
@@ -394,10 +406,18 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 			for _, g := range gates {
 				gateViolations = append(gateViolations, g(out, r)...)
 			}
-			r.db.Event(r.ID, h.phase.ID, "gate", agent.Name,
-				map[string]any{"attempt": attempt, "violations": gateViolations})
+			gate := map[string]any{"attempt": attempt, "violations": gateViolations}
+			if len(gateViolations) > 0 {
+				gate["text"] = res.Text
+			}
+			r.db.Event(r.ID, h.phase.ID, "gate", agent.Name, gate)
 			if len(gateViolations) == 0 {
-				return nil
+				// Keep the report and exact response together so the dashboard can
+				// show each phase's result, including plans later revised. A final
+				// plan.json alone cannot reconstruct that history.
+				return r.db.Event(r.ID, h.phase.ID, "output", agent.Name, map[string]any{
+					"attempt": attempt, "report": out, "text": res.Text,
+				})
 			}
 			violations = gateViolations
 		}

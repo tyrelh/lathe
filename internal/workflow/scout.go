@@ -25,8 +25,8 @@ var Graphs = map[string]func(*run.Run) int{
 // what the run executes from.
 var Agents = map[string][]string{
 	"scout": {"scout"},
-	"plan":  {"planner"},
-	"build": {"planner", "builder", "tester"},
+	"plan":  {"planner", "plan-reviewer"},
+	"build": {"planner", "plan-reviewer", "builder", "tester"},
 }
 
 // ScoutOutput is what the scout must return. Required fields are pointers
@@ -96,8 +96,7 @@ func Scout(r *run.Run) int {
 }
 
 // writeResult puts the accepted envelope beside raw.jsonl, under the name the
-// workflow's readers expect. It is written inside the phase so a disk failure
-// fails the phase rather than being discovered later by whatever wanted the file.
+// workflow's readers expect. Callers must propagate disk failures to the workflow.
 func writeResult(dir, name string, out any) error {
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

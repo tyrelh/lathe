@@ -73,7 +73,7 @@ func queue(t *testing.T, dataRoot, dir, workflow string) (db *trace.DB, runID, a
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents := map[string][]string{"scout": {"scout"}, "build": {"planner", "builder", "tester"}}[workflow]
+	agents := map[string][]string{"scout": {"scout"}, "build": {"planner", "plan-reviewer", "builder", "tester"}}[workflow]
 	roster, err := cfg.Capture(agents, config.Overrides{})
 	if err != nil {
 		t.Fatal(err)
@@ -218,10 +218,17 @@ func TestCancellationRecordsCancelled(t *testing.T) {
 	fakePi(t)
 	dir, dataRoot := repo(t), t.TempDir()
 	db, runID, attemptID := queue(t, dataRoot, dir, "scout")
-	if _, err := db.RequestCancel(runID); err != nil {
-		t.Fatal(err)
-	}
-	if code := Execute(dataRoot, runID, attemptID, io.Discard); code != 130 {
+	// Finish prints after saving the report, but before the worker settles the
+	// run. Cancelling here tests that ordering without racing the heartbeat.
+	out := writerFunc(func(p []byte) (int, error) {
+		if strings.Contains(string(p), "lathe scout ") {
+			if _, err := db.RequestCancel(runID); err != nil {
+				t.Errorf("request cancellation: %v", err)
+			}
+		}
+		return len(p), nil
+	})
+	if code := Execute(dataRoot, runID, attemptID, out); code != 130 {
 		t.Fatalf("exit code = %d; want 130", code)
 	}
 	row, _ := db.Get(runID)
@@ -232,6 +239,10 @@ func TestCancellationRecordsCancelled(t *testing.T) {
 		t.Fatalf("cancellation discarded the report it had already written: %v", err)
 	}
 }
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // A run recorded by an incompatible lathe fails with a reason rather than
 // being executed against a specification nothing understands.

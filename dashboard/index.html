@@ -118,6 +118,14 @@
   .phase > summary:hover { background: var(--panel); }
   .phase > summary > span { overflow: hidden; text-overflow: ellipsis; }
   .phase-panel { padding: 4px 0 12px 2ch; }
+  .phase-output { max-width: 100ch; overflow-wrap: anywhere; }
+  .phase-output h3 { margin: 12px 0 8px; }
+  .phase-output h4 { margin: 14px 0 6px; color: var(--dim); font-weight: normal; }
+  .phase-output p, .phase-output li { white-space: pre-wrap; }
+  .phase-output li { margin-bottom: 6px; }
+  .phase-output ul, .phase-output ol { margin-top: 0; padding-left: 3ch; }
+  .phase-panel > details { margin-top: 14px; }
+  .phase-panel > details > summary { color: var(--dim); }
   .phase-panel p { margin: 8px 0 4px; }
   #permits section { border-bottom: 1px solid var(--line); padding: 8px 0; }
   #log td:last-child { white-space: normal; width: 100%; }
@@ -180,7 +188,7 @@ const POLL = {overview: 5000, runs: 2000, run: 1000, missing: 0};
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
 // the sum of every response in every try — which is the number worth seeing.
-const spend = new Map(), inputs = new Map(), permits = [];
+const spend = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map(), permits = [];
 let after = 0, done = false;
 let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route();
@@ -215,7 +223,7 @@ function navigate() {
   view = route();
   generation++;
   after = 0; done = false; failure = '';
-  spend.clear(); inputs.clear(); permits.length = 0;
+  spend.clear(); inputs.clear(); outputs.clear(); responses.clear(); permits.length = 0;
   app.innerHTML = '';
   for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs']]) {
     const on = view.page === page || (page === 'runs' && view.page === 'run');
@@ -383,6 +391,11 @@ async function detail(current) {
       inputs.set(e.phase_id, (inputs.get(e.phase_id) || '') +
         `<p>${e.type === 'input' ? 'Agent turn' : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
     }
+    if (e.type === 'output') outputs.set(e.phase_id, e.payload?.report);
+    if ((e.type === 'output' || e.type === 'envelope' || e.type === 'gate') && typeof e.payload?.text === 'string') {
+      responses.set(e.phase_id, (responses.get(e.phase_id) || '') +
+        `<p>Response ${(e.payload.attempt ?? 0) + 1}${e.type !== 'output' ? ' · rejected' : ''}</p><pre>${esc(e.payload.text)}</pre>`);
+    }
     if (e.type === 'permit') permits.push(e);
     if (e.type !== 'usage' || !e.payload) continue;
     const s = spend.get(e.phase_id) || { model: '', tokens: 0, cost: 0 };
@@ -406,7 +419,7 @@ async function detail(current) {
     `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
   // An engineer phase spends nothing and has no model, so its cells stay empty
   // rather than reading "0 tok  $0.00000" as though it had been asked.
-  const expanded = new Set([...document.querySelectorAll('#phases details[open]')].map(x => x.dataset.phase));
+  const expanded = new Set([...document.querySelectorAll('#phases details[open]')].map(x => x.dataset.phase || x.dataset.panel));
   const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
   $('phases').innerHTML = d.phases.map(p => {
     const s = spend.get(p.phase_id) || {};
@@ -426,8 +439,7 @@ async function detail(current) {
         <span class="fail">${esc(p.error)}</span>
       </summary>
       <div class="phase-panel">
-        ${p.error ? `<p class="fail">Error</p><pre class="fail">${esc(p.error)}</pre>` : ''}
-        ${inputs.get(p.phase_id) || '<p class="dim">Input context not recorded.</p>'}
+        ${phasePanel(p, expanded)}
       </div>
     </details>`;
   }).join('');
@@ -482,6 +494,46 @@ function span(from, to) {
   if (!start || !(end >= start)) return '';
   const s = Math.round((end - start) / 1000);
   return s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+}
+
+// Output is rendered as text, never interpreted as HTML or Markdown from an
+// agent. These reports are snapshots of this phase, not the final plan on disk.
+function reportList(title, items, ordered = false, empty = 'None.') {
+  const tag = ordered ? 'ol' : 'ul';
+  const list = Array.isArray(items) ? items : [];
+  return `<h4>${esc(title)}</h4>` + (list.length
+    ? `<${tag}>${list.map(item => `<li>${esc(item)}</li>`).join('')}</${tag}>`
+    : `<p class="dim">${esc(empty)}</p>`);
+}
+
+function phasePanel(p, expanded) {
+  const error = p.error ? `<p class="fail">Error</p><pre class="fail">${esc(p.error)}</pre>` : '';
+  const input = inputs.get(p.phase_id) || '<p class="dim">Input context not recorded.</p>';
+  if (p.owner !== 'planner' && p.owner !== 'plan-reviewer') return error + input;
+
+  const report = outputs.get(p.phase_id);
+  let result;
+  if (!report) {
+    result = `<p class="dim">${p.ended_at ? 'Structured output not recorded for this phase.' : 'Waiting for phase output.'}</p>`;
+  } else if (p.owner === 'planner') {
+    result = `<h3>Plan</h3><p>${esc(report.summary)}</p>`
+      + reportList('Steps', report.steps, true)
+      + reportList('Allowed files', report.files)
+      + reportList('Risks', report.risks, false, 'No risks reported.');
+  } else {
+    const feedback = Array.isArray(report.feedback) ? report.feedback : null;
+    result = `<h3>Review</h3><p>${esc(report.summary)}</p>`
+      + (feedback?.length === 0
+        ? '<p class="ok">Accepted · no objections.</p>'
+        : reportList('Feedback', feedback, false, 'Feedback not recorded.'));
+  }
+  const disclosure = (key, title, body) => {
+    const id = p.phase_id + '-' + key;
+    return `<details data-panel="${esc(id)}" ${expanded.has(id) ? 'open' : ''}><summary>${title}</summary>${body}</details>`;
+  };
+  return `<div class="phase-output">${result}</div>` + error
+    + disclosure('raw', 'Raw responses', responses.get(p.phase_id) || '<p class="dim">Raw response not recorded here. Older responses may be available in the run’s raw.jsonl.</p>')
+    + disclosure('inputs', 'Inputs', input);
 }
 
 const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);

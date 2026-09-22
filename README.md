@@ -73,7 +73,21 @@ outstanding build for the same checkout is rejected immediately. The builder
 may write only the files its own plan named; review the result with `git diff`
 and commit it yourself.
 
-The tester discovers the test command, then lathe runs it and uses its exit code to decide success. A failing suite gets at most two builder fix rounds in the same session. Test commands inherit your environment, run under the tester timeout, and pass the shell deny list.
+The plan and build workflows share a read-only review loop:
+
+```
+request → plan → review → [replan → review, up to four send-backs]
+plan:  → print the reviewed plan
+build: → build → test → verify → [fix → verify, up to four fixes]
+```
+
+The reviewer checks the plan against the repository, including the builder's
+file list. Empty feedback accepts it. The fifth review ends the loop; remaining
+objections or a failed final review become risks in the saved plan and builder
+handoff. Failed reviews consume a send-back and remain visible as failed phases
+even when the run succeeds. Planner failures and cancellation stop the run.
+
+The tester discovers the test command, then lathe runs it and uses its exit code to decide success. A failing suite gets at most four builder fix rounds in the same session. Test commands inherit your environment, run under the tester timeout, and pass the shell deny list.
 
 A guard vetoes every `write`, `edit` or `bash` call before it executes, with the tester alone receiving a shell. The shell deny list is a coarse check, not a sandbox.
 
@@ -87,3 +101,8 @@ The dashboard opens on **Overview**: every run ever recorded and every dollar re
 
 A run is listed from the moment it is queued, with queue time and execution
 time shown separately. A run's detail page shows per-phase model, tokens, and cost. Expand phase inputs or event payloads to read them in full; shell commands and tool errors are always visible. The permissions panel records kept and reverted files for each check. New runs record each agent turn's system prompt, supplied prompt, session ID, and write scope; older traces show when input context was not recorded.
+
+Expand a planner or plan-reviewer phase to read its plan or review first, with
+raw responses and inputs in separate disclosures underneath. Each phase keeps
+its own result, including plans later revised. Structured output is available
+for new runs; older phases indicate when it was not recorded.

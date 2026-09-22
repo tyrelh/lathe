@@ -41,6 +41,7 @@ func buildStub(t *testing.T, action, report string) string {
 	t.Helper()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "test"), piReply(t, "```json\n"+`{"summary":"discovered","command":"true","failures":[],"artifacts":[]}`+"\n```"))
+	write(t, filepath.Join(dir, "review"), reviewOK(t))
 	write(t, filepath.Join(dir, "plan"), planReply(t, `"hello.txt"`))
 	write(t, filepath.Join(dir, "build"), piReply(t, "```json\n"+report+"\n```"))
 	script := fmt.Sprintf(`#!/bin/sh
@@ -51,7 +52,9 @@ printf '%%s\n' "$@" > %[1]q/args$n
 cp "$LATHE_PERMIT" %[1]q/scope$n
 if [ "$n" = 0 ]; then
   cat %[1]q/plan
-elif [ "$n" = 2 ] && [ -f %[1]q/success ]; then
+elif [ "$n" = 1 ]; then
+  cat %[1]q/review
+elif [ "$n" = 3 ] && [ -f %[1]q/success ]; then
   cat %[1]q/test
 else
   %[2]s
@@ -68,11 +71,11 @@ func TestBuild(t *testing.T) {
 		want                          int
 		calls                         string
 	}{
-		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, "3"},
-		{"needed is terminal", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, "2"},
-		{"unplanned write reverted", "printf 'hello world\\n' > hello.txt; echo bad > outside.txt", `["hello.txt"]`, `[]`, 1, "2"},
-		{"false claim", ":", `["hello.txt"]`, `[]`, 1, "4"},
-		{"omitted change", "echo changed > hello.txt", `[]`, `[]`, 1, "4"},
+		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, "4"},
+		{"needed is terminal", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, "3"},
+		{"unplanned write reverted", "printf 'hello world\\n' > hello.txt; echo bad > outside.txt", `["hello.txt"]`, `[]`, 1, "3"},
+		{"false claim", ":", `["hello.txt"]`, `[]`, 1, "5"},
+		{"omitted change", "echo changed > hello.txt", `[]`, `[]`, 1, "5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, repo := buildRepo(t)
@@ -95,13 +98,13 @@ func TestBuild(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, "plan.json")); err != nil {
 				t.Fatal(err)
 			}
-			args, _ := os.ReadFile(filepath.Join(stub, "args1"))
+			args, _ := os.ReadFile(filepath.Join(stub, "args2"))
 			for _, want := range []string{"greet the world", "edit fetch.go", "hello.txt", "read,grep,find,ls,write,edit", "--no-extensions"} {
 				if !strings.Contains(string(args), want) {
 					t.Errorf("builder arguments missing %q: %s", want, args)
 				}
 			}
-			for n, want := range []string{`"allow":[]`, `"allow":["hello.txt"]`} {
+			for n, want := range []string{`"allow":[]`, `"allow":[]`, `"allow":["hello.txt"]`} {
 				scope, _ := os.ReadFile(filepath.Join(stub, fmt.Sprintf("scope%d", n)))
 				if !strings.Contains(string(scope), want) {
 					t.Errorf("scope = %s; want %s", scope, want)
@@ -228,7 +231,7 @@ func TestBuildBlockedWriteTrace(t *testing.T) {
 
 // A report that is both terminal and malformed ends the run rather than being
 // corrected: the corrected reply is free to come back without the needed list.
-// Two spawns is what says the builder was stopped rather than asked again.
+// Three spawns is what says the builder was stopped rather than asked again.
 func TestBuildNeededOutranksAnInvalidEnvelope(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := buildStub(t, ":", `{"summary":"blocked","changed":[],"needed":["missing.txt"]}`)
@@ -236,7 +239,7 @@ func TestBuildNeededOutranksAnInvalidEnvelope(t *testing.T) {
 		t.Fatalf("code = %d; want 1", code)
 	}
 	count, _ := os.ReadFile(filepath.Join(stub, "count"))
-	if strings.TrimSpace(string(count)) != "2" {
-		t.Fatalf("spawn count = %s; want 2 — the builder was corrected instead of stopped", count)
+	if strings.TrimSpace(string(count)) != "3" {
+		t.Fatalf("spawn count = %s; want 3 — the builder was corrected instead of stopped", count)
 	}
 }

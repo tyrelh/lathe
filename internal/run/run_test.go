@@ -197,6 +197,21 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	}
 
 	db := readDB(t)
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'output'`, r.ID); n != 1 {
+		t.Fatalf("phase outputs = %d; want only the corrected result", n)
+	}
+	var output struct {
+		Attempt int         `json:"attempt"`
+		Report  scoutOutput `json:"report"`
+		Text    string      `json:"text"`
+	}
+	payload := scalar[string](t, db, `SELECT payload FROM events WHERE run_id = ? AND type = 'output'`, r.ID)
+	if err := json.Unmarshal([]byte(payload), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Attempt != 1 || output.Report.Summary == nil || *output.Report.Summary != *out.Summary || output.Text != envelope(*out.Summary) {
+		t.Fatalf("output lost report or original response: %+v", output)
+	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM phases WHERE run_id = ?`, r.ID); n != 1 {
 		t.Fatalf("phases = %d; want 1 — a correction is a second turn, not a second phase", n)
 	}
@@ -284,6 +299,9 @@ func TestCallGivesUpAfterMaxCorrections(t *testing.T) {
 	}
 
 	db := readDB(t)
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'output'`, r.ID); n != 0 {
+		t.Fatal("an invalid reply was recorded as a phase output")
+	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'usage'`, r.ID); n != 1+maxCorrections {
 		t.Fatalf("agent turns = %d; want %d", n, 1+maxCorrections)
 	}
@@ -305,6 +323,15 @@ func TestGatesCatchAFalseArtifactClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := readDB(t)
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'output'`, r.ID); n != 1 {
+		t.Fatalf("outputs = %d; want only the reply that passed gates", n)
+	}
+	if summary := scalar[string](t, db, `SELECT json_extract(payload, '$.report.summary') FROM events WHERE run_id = ? AND type = 'output'`, r.ID); summary != "nothing was written" {
+		t.Fatalf("recorded rejected claim: %q", summary)
+	}
+	if raw := scalar[string](t, db, `SELECT json_extract(payload, '$.text') FROM events WHERE run_id = ? AND type = 'gate' ORDER BY event_id LIMIT 1`, r.ID); raw != lie {
+		t.Fatalf("gate rejection lost original response: %q", raw)
+	}
 	if n := scalar[int](t, db,
 		`SELECT count(*) FROM events WHERE run_id = ? AND type = 'gate' AND payload LIKE '%invented.md%'`,
 		r.ID); n != 1 {
