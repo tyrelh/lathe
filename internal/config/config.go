@@ -39,8 +39,12 @@ type Config struct {
 	// determined model gets past it — `python -c` alone does — so it is the
 	// careless case it catches, and it grows by incident.
 	BashDenied []string `toml:"bash_denied"`
-	Defaults   Agent    `toml:"defaults"`
-	Agents     []Agent  `toml:"agents"`
+	// CommandTimeout bounds a code phase's command. It is lathe's own work
+	// rather than an agent's, so it is set here instead of being borrowed from
+	// whichever agent happened to discover the command.
+	CommandTimeout string  `toml:"command_timeout"`
+	Defaults       Agent   `toml:"defaults"`
+	Agents         []Agent `toml:"agents"`
 
 	fsys fs.FS
 }
@@ -171,15 +175,18 @@ func pick(vals ...string) string {
 // the run's flags. It is what a worker executes from, so editing lathe.toml or
 // a prompt cannot change work that is already queued.
 type Snapshot struct {
-	Version    int                 `json:"version"`
-	Protected  []string            `json:"protected"`
-	BashDenied []string            `json:"bash_denied"`
-	Agents     map[string]Resolved `json:"agents"`
+	Version    int      `json:"version"`
+	Protected  []string `json:"protected"`
+	BashDenied []string `json:"bash_denied"`
+	// CommandDeadline is Config.CommandTimeout parsed, so a bad duration fails
+	// at submission rather than when the first code phase reaches for it.
+	CommandDeadline time.Duration       `json:"command_deadline"`
+	Agents          map[string]Resolved `json:"agents"`
 }
 
 // SnapshotVersion is stamped into every captured specification. A worker that
 // does not recognise it refuses the run rather than guessing.
-const SnapshotVersion = 1
+const SnapshotVersion = 2
 
 // Capture resolves every named agent now and freezes the result.
 func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
@@ -188,6 +195,13 @@ func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 		Protected:  c.Protected,
 		BashDenied: c.BashDenied,
 		Agents:     map[string]Resolved{},
+	}
+	if c.CommandTimeout != "" {
+		d, err := time.ParseDuration(c.CommandTimeout)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("command_timeout: %w", err)
+		}
+		s.CommandDeadline = d
 	}
 	for _, name := range agents {
 		r, err := c.Resolve(name, ov)
