@@ -20,7 +20,7 @@ func TestWriteFakeRun(t *testing.T) {
 	seedRun(t, db, runID, "/Users/tyrel/Projects/lathe")
 
 	for i, name := range []string{"request", "scout"} {
-		p := NewPhase(runID, i, name, "agent", name)
+		p := NewPhase(runID, i, name, name)
 		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
 		}

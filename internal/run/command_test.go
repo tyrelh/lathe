@@ -31,7 +31,7 @@ func TestCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			var tail string
-			err := r.Phase(Params{Name: "verify", Kind: "code", Owner: "engineer", RevertOnly: true}, func(h *Handle) error {
+			err := r.Phase(Params{Name: "verify", Owner: "engineer", RevertOnly: true}, func(h *Handle) error {
 				var err error
 				tail, err = h.Command(tc.command)
 				return err
@@ -50,9 +50,6 @@ func TestCommand(t *testing.T) {
 				t.Fatalf("finish %d", code)
 			}
 			db := readDB(t)
-			if got := scalar[string](t, db, "SELECT kind FROM phases WHERE name = 'verify'"); got != "code" {
-				t.Fatal(got)
-			}
 			if got := scalar[string](t, db, "SELECT json_extract(payload,'$') FROM events WHERE type = 'log' AND name = 'output'"); got != tc.want {
 				t.Fatal("output not traced")
 			}
@@ -68,7 +65,7 @@ func TestCommandRejectsBeforeExecution(t *testing.T) {
 			if err := r.EnsureClean(); err != nil {
 				t.Fatal(err)
 			}
-			err := r.Phase(Params{Name: "verify", Kind: "code", Owner: "engineer", RevertOnly: true}, func(h *Handle) error { _, err := h.Command(command); return err })
+			err := r.Phase(Params{Name: "verify", Owner: "engineer", RevertOnly: true}, func(h *Handle) error { _, err := h.Command(command); return err })
 			var red *CommandFailure
 			if err == nil || errors.As(err, &red) {
 				t.Fatalf("error %v", err)
@@ -91,7 +88,7 @@ func TestCommandTimeoutCleansAndStopsChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Now()
-	err := r.Phase(Params{Name: "verify", Kind: "code", Owner: "engineer", RevertOnly: true}, func(h *Handle) error {
+	err := r.Phase(Params{Name: "verify", Owner: "engineer", RevertOnly: true}, func(h *Handle) error {
 		_, err := h.Command("echo junk > coverage.out; (sleep 1; echo late > late.txt) & wait")
 		return err
 	})
@@ -114,7 +111,7 @@ func TestCommandTimeoutCleansAndStopsChildren(t *testing.T) {
 
 func TestCommandRequiresClean(t *testing.T) {
 	r := newRun(t, "")
-	err := r.Phase(Params{Name: "verify", Kind: "code", Owner: "engineer"}, func(h *Handle) error { _, err := h.Command("true"); return err })
+	err := r.Phase(Params{Name: "verify", Owner: "engineer"}, func(h *Handle) error { _, err := h.Command("true"); return err })
 	if err == nil || !strings.Contains(err.Error(), "EnsureClean") {
 		t.Fatal(err)
 	}

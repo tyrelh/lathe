@@ -47,10 +47,10 @@ const budgetSpent = "You have used your tool call budget for this phase. " +
 	"built from what you have already read. Anything you could not determine " +
 	"belongs in \"findings\" as an honest gap, phrased as what is still unknown."
 
-// Params names a phase. Kind is engineer | agent | code; Owner is the agent
-// name from the roster, or "engineer" for a phase lathe performs itself.
+// Params names a phase. Owner is the agent name from the roster, or
+// "engineer" for a phase lathe performs itself.
 type Params struct {
-	Name, Kind, Owner string
+	Name, Owner string
 	// SessionID continues an earlier agent phase; empty starts a new session.
 	SessionID string
 	// RevertOnly tolerates test-generated dirt after enforcement.
@@ -75,13 +75,6 @@ type Failing interface{ Failure() error }
 // Gate checks an agent's claims mechanically and returns violations. It never
 // judges the work — only whether what the agent said it did is true.
 type Gate func(Envelope, *Run) []string
-
-// RecoverableError records a failed phase while leaving its workflow to decide
-// whether the run can continue. Wrap only failures the workflow handles.
-type RecoverableError struct{ Err error }
-
-func (e *RecoverableError) Error() string { return e.Err.Error() }
-func (e *RecoverableError) Unwrap() error { return e.Err }
 
 // Run is one invocation of one workflow against one repository.
 type Run struct {
@@ -189,34 +182,41 @@ func Open(o Options) (*Run, error) {
 // plus defer is what makes that hold through a panic too.
 func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 	r.seq++
-	ph := trace.NewPhase(r.ID, r.seq, p.Name, p.Kind, p.Owner)
+	ph := trace.NewPhase(r.ID, r.seq, p.Name, p.Owner)
 	if err := r.db.PhaseUpsert(ph); err != nil {
 		return r.fail(err)
 	}
 	r.db.Event(r.ID, ph.ID, "phase_start", p.Name, nil)
 
+	h := &Handle{run: r, phase: ph, params: p}
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = fmt.Errorf("panic in phase %s: %v", p.Name, rec)
 		}
+		// h.failed is a failure the phase body chose to absorb: recorded here,
+		// invisible to the caller, and never the run's error.
 		status, msg := "success", ""
-		if err != nil {
+		switch {
+		case err != nil:
 			status, msg = "fail", err.Error()
+		case h.failed != nil:
+			status, msg = "fail", h.failed.Error()
+		}
+		if msg != "" {
 			r.db.Event(r.ID, ph.ID, "error", p.Name, msg)
 		}
 		ph.Finish(status, msg)
 		r.db.PhaseUpsert(ph)
 		r.db.Event(r.ID, ph.ID, "phase_end", p.Name, map[string]string{"status": status})
 		if err != nil {
-			// Keep recoverable failures in the timeline without poisoning a later success.
+			// A measured red suite stays in the timeline without poisoning a later success.
 			var red *CommandFailure
-			var recoverable *RecoverableError
-			if !errors.As(err, &red) && !errors.As(err, &recoverable) {
+			if !errors.As(err, &red) {
 				r.fail(err)
 			}
 		}
 	}()
-	return fn(&Handle{run: r, phase: ph, params: p})
+	return fn(h)
 }
 
 // Finish settles the status, the banner and the exit code in one call, so the
@@ -317,6 +317,7 @@ type Handle struct {
 	phase  *trace.Phase
 	allow  []string
 	params Params
+	failed error // recorded as a failed phase, but not returned to the caller
 }
 
 // SessionID is stable across correction and fix turns.

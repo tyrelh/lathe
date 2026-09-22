@@ -184,7 +184,7 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	r := newRun(t, bin)
 
 	var out scoutOutput
-	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "what is here", ArtifactsExist, FilesNonEmpty) })
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestCallGivesUpAfterMaxCorrections(t *testing.T) {
 	r := newRun(t, bin)
 
 	var out scoutOutput
-	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "what is here") })
 	if err == nil {
 		t.Fatal("a phase whose agent never produced an envelope reported success")
@@ -318,7 +318,7 @@ func TestGatesCatchAFalseArtifactClaim(t *testing.T) {
 	r := newRun(t, bin)
 
 	var out scoutOutput
-	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "write docs", ArtifactsExist, FilesNonEmpty) }); err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestFilesNonEmpty(t *testing.T) {
 // point of the closure form.
 func TestPhaseSurvivesAPanic(t *testing.T) {
 	r := newRun(t, "")
-	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { panic("boom") })
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v; want the panic", err)
@@ -410,7 +410,7 @@ func TestLiveCorrection(t *testing.T) {
 	r.Repo = repo
 
 	var out scoutOutput
-	err = r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
+	err = r.Phase(Params{Name: "scout", Owner: "scout"}, func(h *Handle) error {
 		return h.Call(&out, `Name the Go packages under internal/ and what each one does.
 In your report, deliberately omit the "summary" key so the correction loop is exercised.`,
 			ArtifactsExist, FilesNonEmpty)
@@ -470,7 +470,7 @@ fi
 
 	r := newRun(t, bin)
 	var out scoutOutput
-	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(ph *Handle) error { return ph.Call(&out, "how do I extend the tui") }); err != nil {
 		t.Fatalf("the phase should have produced a report: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestEnforceRevertsWhatTheGuardWouldHaveBlocked(t *testing.T) {
 	}
 
 	var out scoutOutput
-	err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
+	err := r.Phase(Params{Name: "scout", Owner: "scout"}, func(h *Handle) error {
 		h.Scope([]string{"in-scope.go"})
 		return h.Call(&out, "write two files")
 	})
@@ -596,7 +596,7 @@ func TestEnforceStaysOutOfATreeCleanDidNotPass(t *testing.T) {
 	r.Repo = repo // and no EnsureClean
 
 	var out scoutOutput
-	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "write a file") }); err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +619,7 @@ func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
 	r := newRun(t, bin)
 
 	var out scoutOutput
-	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "what is here") }); err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestALaterPhaseKeepsAnEarlierPhasesWork(t *testing.T) {
 	}
 
 	var out scoutOutput
-	if err := r.Phase(Params{Name: "build", Kind: "agent", Owner: "scout"}, func(h *Handle) error {
+	if err := r.Phase(Params{Name: "build", Owner: "scout"}, func(h *Handle) error {
 		h.Scope([]string{"built.go"})
 		return h.Call(&out, "build it")
 	}); err != nil {
@@ -668,7 +668,7 @@ func TestALaterPhaseKeepsAnEarlierPhasesWork(t *testing.T) {
 	// test dirt stops being fatal — but the failure has to be about them and
 	// nothing else.
 	r.PiBin = stubWriter(t, reply(t, envelope("ran the suite")), "coverage.out")
-	err := r.Phase(Params{Name: "test", Kind: "agent", Owner: "scout"},
+	err := r.Phase(Params{Name: "test", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "run the tests") })
 	if err == nil || strings.Contains(err.Error(), "built.go") {
 		t.Fatalf("the later phase blamed the earlier one's work: %v", err)
@@ -723,7 +723,7 @@ func TestSpendIsRecordedPerResponse(t *testing.T) {
 	r := newRun(t, bin)
 
 	var out scoutOutput
-	if err := r.Phase(Params{Name: "scout", Kind: "agent", Owner: "scout"},
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "what is here") }); err != nil {
 		t.Fatal(err)
 	}

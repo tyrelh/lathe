@@ -38,16 +38,16 @@ automatically if none is running.
   files. Changes remain uncommitted. A missed file ends the run as a failure
   naming the needed path. The tester discovers a command; lathe runs it under
   the tester timeout and shell deny list with your inherited environment. A red
-  exit gets up to four fix→verify rounds in the builder's same session. Test dirt
+  exit gets up to four fix rounds in the builder's same session. Test dirt
   outside the accumulated plan scope is reverted. Review with `git diff`, including
   after failure: planned changes remain in the tree.
 
 The plan and build workflows share a read-only review loop:
 
 ```
-request → plan → review → [replan → review, up to four send-backs]
+request → plan → review → [plan → review, up to four send-backs]
 plan:  → print the reviewed plan
-build: → build → test → verify → [fix → verify, up to four fixes]
+build: → build → test → [build → test, up to four fixes]
 ```
 
 The reviewer checks the plan against the repository, including the builder's

@@ -46,7 +46,7 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 		id := fmt.Sprintf("r%02d", i)
 		seedRun(t, db, id, "/repo")
 		for seq := 1; seq <= kimiPhases; seq++ {
-			p := NewPhase(id, seq, "work", "agent", "builder")
+			p := NewPhase(id, seq, "work", "builder")
 			if err := db.PhaseUpsert(p); err != nil {
 				t.Fatal(err)
 			}
@@ -57,7 +57,7 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 		}
 		// A phase pins one model, so a second model means a fourth phase.
 		if i%3 == 0 {
-			p := NewPhase(id, kimiPhases+1, "review", "agent", "reviewer")
+			p := NewPhase(id, kimiPhases+1, "review", "reviewer")
 			if err := db.PhaseUpsert(p); err != nil {
 				t.Fatal(err)
 			}
@@ -159,7 +159,7 @@ func BenchmarkOverview(b *testing.B) {
 	for i := 0; i < runs; i++ {
 		id := fmt.Sprintf("bench%05d", i)
 		seedRun(b, db, id, fmt.Sprintf("/repos/p%d", i%20))
-		p := NewPhase(id, 1, "build", "agent", "builder")
+		p := NewPhase(id, 1, "build", "builder")
 		if err := db.PhaseUpsert(p); err != nil {
 			b.Fatal(err)
 		}

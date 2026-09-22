@@ -41,7 +41,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID, _, _ := claimed(t, db, "scout", "/Users/tyrel/Projects/lathe", "where is the parser")
-	p := trace.NewPhase(runID, 1, "scout", "agent", "scout")
+	p := trace.NewPhase(runID, 1, "scout", "scout")
 	if err := db.PhaseUpsert(p); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestOverviewAndMeta(t *testing.T) {
 		// Finished each time round: a second outstanding build for one
 		// checkout is rejected at submission, which is the point of the rule.
 		id, attempt, token := claimed(t, db, "build", "/Users/tyrel/Projects/lathe", "add retries")
-		p := trace.NewPhase(id, 1, "build", "agent", "builder")
+		p := trace.NewPhase(id, 1, "build", "builder")
 		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
 		}

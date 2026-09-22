@@ -15,7 +15,7 @@ const costEpsilon = 1e-7
 func seed(t *testing.T, db *DB, runID string) string {
 	t.Helper()
 	seedRun(t, db, runID, "/repo")
-	p := NewPhase(runID, 1, "build", "agent", "builder")
+	p := NewPhase(runID, 1, "build", "builder")
 	if err := db.PhaseUpsert(p); err != nil {
 		t.Fatal(err)
 	}

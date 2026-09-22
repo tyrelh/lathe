@@ -118,27 +118,27 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
-			names := []string{"request", "plan", "review", "build", "test", "verify"}
+			names := []string{"request", "plan", "review", "build", "test"}
 			for i := 0; i < fixes; i++ {
-				names = append(names, "fix", "verify")
+				names = append(names, "build", "test")
 			}
 			if len(phases) != len(names) {
 				t.Fatalf("phases: %v", phases)
 			}
-			verify := 0
+			round := 0
 			for i, ph := range phases {
 				if ph.Name != names[i] {
 					t.Fatalf("phase %d: %s", i, ph.Name)
 				}
-				if ph.Name == "verify" {
+				if ph.Name == "test" {
 					status := "fail"
-					if verify >= greenAt {
+					if round >= greenAt {
 						status = "success"
 					}
-					if ph.Owner != "engineer" || ph.Status != status {
-						t.Fatalf("verify: %+v", ph)
+					if ph.Owner != "tester" || ph.Status != status {
+						t.Fatalf("test: %+v", ph)
 					}
-					verify++
+					round++
 				}
 			}
 		})

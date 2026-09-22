@@ -131,7 +131,7 @@ func TestScanStreamsToolCallsToDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ph := trace.NewPhase(runID, 1, "scout", "agent", "scout")
+	ph := trace.NewPhase(runID, 1, "scout", "scout")
 	if err := db.PhaseUpsert(ph); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestLiveScout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ph := trace.NewPhase(runID, 1, "scout", "agent", "scout")
+	ph := trace.NewPhase(runID, 1, "scout", "scout")
 	if err := db.PhaseUpsert(ph); err != nil {
 		t.Fatal(err)
 	}

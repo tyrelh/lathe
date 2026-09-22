@@ -76,9 +76,9 @@ and commit it yourself.
 The plan and build workflows share a read-only review loop:
 
 ```
-request → plan → review → [replan → review, up to four send-backs]
+request → plan → review → [plan → review, up to four send-backs]
 plan:  → print the reviewed plan
-build: → build → test → verify → [fix → verify, up to four fixes]
+build: → build → test → [build → test, up to four fixes]
 ```
 
 The reviewer checks the plan against the repository, including the builder's
