@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/workflow"
 )
 
 // The embedded copy is the one that ships. A //go:embed pattern that missed a
@@ -71,5 +72,33 @@ func TestEmbeddedPlanReviewer(t *testing.T) {
 	}
 	if !strings.Contains(a.SystemPrompt, "You are the plan-reviewer") || !strings.Contains(a.UserPrompt, `"feedback"`) {
 		t.Fatal("reviewer prompts missing")
+	}
+}
+
+// Every workflow's whole roster resolves out of the embedded assets, which is
+// what catches an agent added to a graph with no row in lathe.toml or no prompt
+// file — a failure that would otherwise wait for someone to run that workflow.
+func TestEmbeddedRostersResolve(t *testing.T) {
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, agents := range workflow.Agents {
+		snapshot, err := cfg.Capture(agents, config.Overrides{})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, agent := range agents {
+			a := snapshot.Agents[agent]
+			if !strings.Contains(a.SystemPrompt, "You are the "+agent) {
+				t.Errorf("%s: %s has no system prompt of its own", name, agent)
+			}
+			if !strings.Contains(a.UserPrompt, "## Report") {
+				t.Errorf("%s: %s has no report contract", name, agent)
+			}
+		}
+	}
+	if _, ok := workflow.Graphs["build"]; !ok || len(workflow.Agents["build"]) != 7 {
+		t.Fatalf("build roster: %v", workflow.Agents["build"])
 	}
 }

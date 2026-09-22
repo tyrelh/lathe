@@ -5,7 +5,6 @@
 package worker
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -28,7 +26,7 @@ import (
 
 // SpecVersion is stamped into every recorded specification. A worker that
 // does not recognise the version fails the run rather than guessing at it.
-const SpecVersion = 1
+const SpecVersion = 2
 
 // Spec is everything about a run that configuration could otherwise change
 // while it waits in the queue: the workflow, the request, where it executes
@@ -102,9 +100,6 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 	if err := spec.Workspace.Check(); err != nil {
 		return 0, err
 	}
-	if err := loadEnv(os.Getenv("LATHE_WORKER_ENV")); err != nil {
-		return 0, err
-	}
 
 	// The reservation is the database's record of who owns the checkout; the
 	// lock is what actually keeps a second lathe process out of it. Both,
@@ -131,7 +126,7 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 	}
 	// A checkout with no commits yet has none to record, which is not a
 	// reason to refuse to read it.
-	commit, _ := workspace.Commit(spec.Workspace.Path)
+	commit, _ := workspace.Head(spec.Workspace.Path)
 	if err := db.SetCommit(row.ID, commit); err != nil {
 		return 0, err
 	}
@@ -199,9 +194,10 @@ func revalidate(spec Spec, row trace.Row) error {
 		return fmt.Errorf("%s is on branch %s, but this run was submitted against %s; "+
 			"nothing was changed", spec.Workspace.Path, branch, row.Branch)
 	}
-	// A build queued against a clean checkout that is now dirty fails without
-	// touching what is there: those changes are a person's, not an agent's.
-	if spec.Workflow == "build" {
+	// A writing run queued against a clean checkout that is now dirty fails
+	// without touching what is there: those changes are a person's, not an
+	// agent's.
+	if workflow.Writes[spec.Workflow] {
 		if err := permit.Clean(spec.Workspace.Path); err != nil {
 			return err
 		}
@@ -291,36 +287,4 @@ func AttemptDir(dataRoot, runID, attemptID string) string {
 // LogPath is the per-attempt worker log the manager redirects output to.
 func LogPath(dataRoot, runID, attemptID string) string {
 	return filepath.Join(AttemptDir(dataRoot, runID, attemptID), "worker.log")
-}
-
-// loadEnv applies the worker environment file: credentials, PATH and test
-// settings, kept outside the repository and configured separately from the
-// submitting shell. An empty path is allowed — the failure then surfaces as
-// the agent's own "no API key", which says more than a guess here would.
-func loadEnv(path string) error {
-	if path == "" {
-		return nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("LATHE_WORKER_ENV: %w", err)
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for line := 1; sc.Scan(); line++ {
-		text := strings.TrimSpace(sc.Text())
-		if text == "" || strings.HasPrefix(text, "#") {
-			continue
-		}
-		text = strings.TrimPrefix(text, "export ")
-		key, value, ok := strings.Cut(text, "=")
-		if !ok {
-			return fmt.Errorf("%s:%d: not KEY=VALUE", path, line)
-		}
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		if err := os.Setenv(strings.TrimSpace(key), value); err != nil {
-			return err
-		}
-	}
-	return sc.Err()
 }

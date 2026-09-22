@@ -14,19 +14,28 @@ import (
 // Graphs is every workflow by name: what the worker executes, and the list a
 // submission validates a command against.
 var Graphs = map[string]func(*run.Run) int{
-	"scout": Scout,
-	"plan":  Plan,
-	"build": Build,
+	"scout":     Scout,
+	"plan":      Plan,
+	"implement": Implement,
+	"build":     Build,
 }
+
+// Writes is every workflow that changes the checkout it runs in. It is what
+// decides which runs need a clean tree, which own the checkout while they run,
+// and which exclude each other — so those three questions are asked of the
+// workflow list rather than of a literal workflow name in three packages.
+var Writes = map[string]bool{"implement": true, "build": true}
 
 // Agents is every agent each graph will spawn. Submission resolves all of
 // them before recording a run, so an unknown agent or a bad prompt fails in
 // under a second rather than after an agent turn — and the resolved roster is
 // what the run executes from.
 var Agents = map[string][]string{
-	"scout": {"scout"},
-	"plan":  {"planner", "plan-reviewer"},
-	"build": {"planner", "plan-reviewer", "builder", "tester"},
+	"scout":     {"scout"},
+	"plan":      {"planner", "plan-reviewer"},
+	"implement": {"planner", "plan-reviewer", "builder", "tester"},
+	"build": {"planner", "plan-reviewer", "brancher",
+		"builder", "tester", "committer", "pr-author"},
 }
 
 // ScoutOutput is what the scout must return. Required fields are pointers

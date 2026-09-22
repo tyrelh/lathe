@@ -1,6 +1,6 @@
 ---
 name: lathe
-description: Run a bounded, traced agent workflow against the current repository. Use when asked to scout, map, or investigate a codebase with lathe, to plan a change with lathe, or when the user says "lathe".
+description: Run a bounded, traced agent workflow against the current repository. Use when asked to scout, map, or investigate a codebase with lathe, to plan or implement a change with lathe, to build a change through to a pull request, or when the user says "lathe".
 ---
 
 # lathe
@@ -33,21 +33,31 @@ automatically if none is running.
   file list is the write scope the builder is held to, so a plan that
   names `.git`, `.env*` or key material is rejected before it is printed.
 
-- `build "<request>"` — plan, implement and test a change in a clean Git repository.
-  The builder gets write and edit tools, no shell, and may write only the plan's
-  files. Changes remain uncommitted. A missed file ends the run as a failure
-  naming the needed path. The tester discovers a command; lathe runs it under
-  the tester timeout and shell deny list with your inherited environment. A red
-  exit gets up to four fix rounds in the builder's same session. Test dirt
-  outside the accumulated plan scope is reverted. Review with `git diff`, including
-  after failure: planned changes remain in the tree.
+- `implement "<request>"` — plan, implement and test a change in a clean Git
+  repository. The builder gets write and edit tools, no shell, and may write only
+  the plan's files. Changes remain uncommitted. A missed file ends the run as a
+  failure naming the needed path. The tester discovers a command; lathe runs it
+  under the tester timeout and shell deny list with your inherited environment. A
+  red exit gets up to four fix rounds in the builder's same session. Test dirt
+  outside the accumulated plan scope is reverted. Review with `git diff`,
+  including after failure: planned changes remain in the tree.
 
-The plan and build workflows share a read-only review loop:
+- `build "<request>"` — the same run, then branch, commit and open a pull
+  request. It needs `git` and `gh` on `PATH` and `gh` already authenticated.
+  Each of the three phases is an agent judging text and lathe performing the
+  git: the brancher names the branch, the committer writes the commit message,
+  and the pr-author writes the title and body, while lathe runs `git checkout
+  -b`, stages exactly the accepted scope and commits it, pushes, and runs
+  `gh pr create`. No agent can commit or push: the guard denies both. None of
+  the three sends work back, so a failure in any of them ends the run.
+
+The plan, implement and build workflows share a read-only review loop:
 
 ```
 request → plan → review → [plan → review, up to four send-backs]
-plan:  → print the reviewed plan
-build: → build → test → [build → test, up to four fixes]
+plan:      → print the reviewed plan
+implement: → implement → test → [implement → test, up to four fixes]
+build:     → branch → implement → test → [implement → test] → commit → pr
 ```
 
 The reviewer checks the plan against the repository, including the builder's
@@ -72,18 +82,27 @@ Before the request, not after:
 - `--detach` record the request, print the run ID, exit 0
 - `--model`, `--provider`, `--thinking` override the roster for one run
 
-A build needs a clean checkout and owns it until the run stops: do not edit
-files or switch branches there meanwhile. A second outstanding build for the
-same checkout is rejected.
+`implement` and `build` need a clean checkout and own it until the run stops: do
+not edit files or switch branches there meanwhile. A second outstanding run of
+either for the same checkout is rejected.
+
+A build leaves the checkout on the branch it created, whether it succeeded or
+failed. A failure after its commit keeps that commit on the branch and says so
+in the run's reason, so the work is never lost — check `git log` before assuming
+a failed build produced nothing.
 
 ## Reading the result
 
 The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
-prints; `<dir>/build.json` is the builder's report (also saved when it reports
-needed files); `<dir>/test.json` records the discovered command and observations;
-`<dir>/<attempt>/raw.jsonl` is the full event stream. `lathe runs` lists recent
-runs from every repo, queued and running ones included.
+prints; `<dir>/implement.json` is the builder's report (also saved when it
+reports needed files); `<dir>/test.json` records the discovered command and
+observations; `<dir>/pr.json` holds the pull request a build opened, including
+its URL. Runs from before the rename have `build.json` where `implement.json`
+now is. There is no `branch.json` or `commit.json`: the branch name and the
+commit sha are both in git and in the trace. `<dir>/<attempt>/raw.jsonl` is the
+full event stream. `lathe runs` lists recent runs from every repo, queued and
+running ones included.
 
 `lathe show <id>` prints one run's state, outcome and report locations,
 `lathe wait <id>` blocks until it is terminal and exits with its outcome, and

@@ -98,7 +98,7 @@ func TestPlanReviewLoop(t *testing.T) {
 				t.Fatalf("saved initial plan: %s", b)
 			}
 			for _, risk := range *plan.Risks {
-				if !strings.HasPrefix(risk, "unresolved review: ") || !strings.Contains(terminal.String(), risk) || !strings.Contains(buildRequest("add retry", &plan), risk) {
+				if !strings.HasPrefix(risk, "unresolved review: ") || !strings.Contains(terminal.String(), risk) || !strings.Contains(implementRequest("add retry", &plan), risk) {
 					t.Fatalf("risk missing from terminal or handoff: %s", risk)
 				}
 				if tc.failed > 0 && !strings.Contains(risk, "review failed") {

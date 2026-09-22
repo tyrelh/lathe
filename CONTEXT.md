@@ -9,7 +9,9 @@ for the engineer to inspect.
 One execution of a workflow for an engineer's request against a repository.
 
 **Workflow**:
-The sequence of work needed to investigate, plan or build a requested change.
+The sequence of work needed to investigate, plan, implement or ship a requested
+change. `implement` ends at tested code in the working tree; `build` is the
+same run plus the branch, commit and pull request that ship it.
 
 **Phase**:
 A recorded stage of a run with an owner, an outcome and the work performed.
@@ -48,6 +50,21 @@ write and its known risks.
 **File list / write scope**:
 The exact repository files the plan permits the builder to write. Listing a
 file grants permission; it does not require a change to that file.
+
+**Branch**:
+The branch a build creates for its change before anything is written, named to
+the repository's own convention. Lathe creates it; the agent only names it.
+
+**Commit message**:
+The complete message — subject and body — for the single commit a build makes
+once its tests pass. Lathe stages the accepted scope and makes the commit; the
+agent only writes the message.
+
+**Pull request**:
+The title and body a build opens its pushed branch with, following the
+repository's template and its recently merged pull requests. Lathe pushes and
+runs `gh pr create`; the agent only writes the text. Its URL is the one result a
+run leaves that the checkout cannot reproduce, so it is saved as `pr.json`.
 
 **Review round**:
 One assessment of the current plan against the request and repository.

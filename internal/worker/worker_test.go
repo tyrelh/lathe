@@ -297,32 +297,3 @@ func TestDatabaseOutageStopsExecution(t *testing.T) {
 		t.Fatal("execution was not stopped")
 	}
 }
-
-// The worker environment file is the worker's whole environment story: it is
-// not the submitting shell's, and it is read when the worker starts.
-func TestLoadEnv(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "worker.env")
-	write(t, path, "# a comment\n\nexport MOONSHOT_API_KEY=\"secret\"\nGOFLAGS=-count=1\n")
-	t.Setenv("MOONSHOT_API_KEY", "")
-	if err := loadEnv(path); err != nil {
-		t.Fatal(err)
-	}
-	if got := os.Getenv("MOONSHOT_API_KEY"); got != "secret" {
-		t.Fatalf("MOONSHOT_API_KEY = %q", got)
-	}
-	if got := os.Getenv("GOFLAGS"); got != "-count=1" {
-		t.Fatalf("GOFLAGS = %q", got)
-	}
-	if err := loadEnv(filepath.Join(t.TempDir(), "missing.env")); err == nil {
-		t.Fatal("a missing environment file was accepted")
-	}
-	if err := loadEnv(""); err != nil {
-		t.Fatalf("an unset LATHE_WORKER_ENV is allowed: %v", err)
-	}
-
-	bad := filepath.Join(t.TempDir(), "bad.env")
-	write(t, bad, "NOT_AN_ASSIGNMENT\n")
-	if err := loadEnv(bad); err == nil || !strings.Contains(err.Error(), "KEY=VALUE") {
-		t.Fatalf("a malformed line: %v", err)
-	}
-}

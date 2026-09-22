@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,197 +13,95 @@ import (
 	"github.com/tyrelh/lathe/internal/trace"
 )
 
-func gitBuild(t *testing.T, repo string, args ...string) string {
+const shipURL = "https://github.com/acme/widget/pull/7"
+
+// shipRepo is buildRepo plus a bare repository as its origin, which is what
+// lets the pr phase's push be a real push rather than a mock.
+func shipRepo(t *testing.T) (config.Config, string, string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repo
-	b, err := cmd.CombinedOutput()
+	cfg, repo := buildRepo(t)
+	origin := t.TempDir()
+	gitBuild(t, origin, "init", "-q", "--bare")
+	gitBuild(t, repo, "remote", "add", "origin", origin)
+	return cfg, repo, origin
+}
+
+// jsonReply is one agent answer: a fenced json block inside the single
+// assistant message a Pi stream would carry it in. Built through Marshal so a
+// multi-paragraph commit message escapes the way a real one would.
+func jsonReply(t *testing.T, report map[string]any) string {
+	t.Helper()
+	b, err := json.Marshal(report)
 	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, b)
+		t.Fatal(err)
 	}
-	return string(b)
+	return piReply(t, "```json\n"+string(b)+"\n```")
 }
 
-func buildRepo(t *testing.T) (config.Config, string) {
-	t.Helper()
-	cfg, repo := load(t)
-	gitBuild(t, repo, "init", "-q")
-	write(t, filepath.Join(repo, "hello.txt"), "hello\n")
-	gitBuild(t, repo, "add", ".")
-	gitBuild(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial")
-	return cfg, repo
-}
-
-// Exercise the production CLI lookup, prompt handoff, scopes and enforcement.
-// The stub can bypass the extension, so out-of-scope writes test defense in depth.
-func buildStub(t *testing.T, action, report string) string {
+// shipStub serves one reply per spawn in the order a build's phases run, and
+// puts a `gh` beside `pi` that records what it was asked and prints a URL.
+func shipStub(t *testing.T, branch string) string {
 	t.Helper()
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "test"), piReply(t, "```json\n"+`{"summary":"discovered","command":"true","failures":[],"artifacts":[]}`+"\n```"))
-	write(t, filepath.Join(dir, "review"), reviewOK(t))
 	write(t, filepath.Join(dir, "plan"), planReply(t, `"hello.txt"`))
-	write(t, filepath.Join(dir, "build"), piReply(t, "```json\n"+report+"\n```"))
-	script := fmt.Sprintf(`#!/bin/sh
+	write(t, filepath.Join(dir, "review"), reviewOK(t))
+	write(t, filepath.Join(dir, "branch"), jsonReply(t, map[string]any{
+		"summary": "the history prefixes with feat/", "branch": branch, "artifacts": []string{}}))
+	write(t, filepath.Join(dir, "implement"), jsonReply(t, map[string]any{
+		"summary": "updated greeting", "changed": []string{"hello.txt"},
+		"needed": []string{}, "artifacts": []string{"hello.txt"}}))
+	write(t, filepath.Join(dir, "test"), jsonReply(t, map[string]any{
+		"summary": "discovered", "command": "true", "failures": []string{}, "artifacts": []string{}}))
+	write(t, filepath.Join(dir, "commit"), jsonReply(t, map[string]any{
+		"summary":   "conventional commits, as the history does",
+		"message":   "feat: greet the world\n\nThe greeting now names its audience.",
+		"artifacts": []string{}}))
+	write(t, filepath.Join(dir, "pr"), jsonReply(t, map[string]any{
+		"summary": "filled in the template", "title": "feat: greet the world",
+		"body": "## What\n\nGreets the world.\n", "artifacts": []string{}}))
+
+	gh := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" > %[1]q/gh-args
+for a in "$@"; do [ ! -f "$a" ] || cp "$a" %[1]q/gh-body; done
+if [ -f %[1]q/gh-fail ]; then echo "no git remote found" >&2; exit 1; fi
+echo "Creating pull request for feat/x into main"
+echo %[2]q
+`, dir, shipURL)
+	write(t, filepath.Join(dir, "gh"), gh)
+	if err := os.Chmod(filepath.Join(dir, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dispatch on which agent is being spawned rather than on the spawn index:
+	// a correction round is a second spawn of the same phase, and an index would
+	// serve it the next phase's answer.
+	onPath(t, dir, fmt.Sprintf(`#!/bin/sh
 n=0
 [ ! -f %[1]q/count ] || n=$(cat %[1]q/count)
 echo $((n+1)) > %[1]q/count
 printf '%%s\n' "$@" > %[1]q/args$n
-cp "$LATHE_PERMIT" %[1]q/scope$n
-if [ "$n" = 0 ]; then
-  cat %[1]q/plan
-elif [ "$n" = 1 ]; then
-  cat %[1]q/review
-elif [ "$n" = 3 ] && [ -f %[1]q/success ]; then
-  cat %[1]q/test
-else
-  %[2]s
-  cat %[1]q/build
-fi
-`, dir, action)
-	onPath(t, dir, script)
+case "$*" in
+*"You are the planner"*)       cat %[1]q/plan ;;
+*"You are the plan-reviewer"*) cat %[1]q/review ;;
+*"You are the brancher"*)      cat %[1]q/branch ;;
+*"You are the builder"*)       printf 'hello world\n' > hello.txt; cat %[1]q/implement ;;
+*"You are the tester"*)        cat %[1]q/test ;;
+*"You are the committer"*)     cat %[1]q/commit ;;
+*)                             cat %[1]q/pr ;;
+esac
+`, dir))
 	return dir
 }
 
-func TestBuild(t *testing.T) {
-	for _, tc := range []struct {
-		name, action, changed, needed string
-		want                          int
-		calls                         string
-	}{
-		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, "4"},
-		{"needed is terminal", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, "3"},
-		{"unplanned write reverted", "printf 'hello world\\n' > hello.txt; echo bad > outside.txt", `["hello.txt"]`, `[]`, 1, "3"},
-		{"false claim", ":", `["hello.txt"]`, `[]`, 1, "5"},
-		{"omitted change", "echo changed > hello.txt", `[]`, `[]`, 1, "5"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg, repo := buildRepo(t)
-			report := fmt.Sprintf(`{"summary":"updated greeting","changed":%s,"needed":%s,"artifacts":[]}`, tc.changed, tc.needed)
-			stub := buildStub(t, tc.action, report)
-			if tc.want == 0 {
-				write(t, filepath.Join(stub, "success"), "")
-			}
-			if got := execute(t, cfg, "build", repo, "greet the world"); got != tc.want {
-				t.Fatalf("code = %d, want %d", got, tc.want)
-			}
-			count, _ := os.ReadFile(filepath.Join(stub, "count"))
-			if strings.TrimSpace(string(count)) != tc.calls {
-				t.Fatalf("spawn count = %s", count)
-			}
-			if _, err := os.Stat(filepath.Join(repo, "outside.txt")); !os.IsNotExist(err) {
-				t.Fatalf("out-of-scope file survived: %v", err)
-			}
-			dir := latestRunDir(t)
-			if _, err := os.Stat(filepath.Join(dir, "plan.json")); err != nil {
-				t.Fatal(err)
-			}
-			args, _ := os.ReadFile(filepath.Join(stub, "args2"))
-			for _, want := range []string{"greet the world", "edit fetch.go", "hello.txt", "read,grep,find,ls,write,edit", "--no-extensions"} {
-				if !strings.Contains(string(args), want) {
-					t.Errorf("builder arguments missing %q: %s", want, args)
-				}
-			}
-			for n, want := range []string{`"allow":[]`, `"allow":[]`, `"allow":["hello.txt"]`} {
-				scope, _ := os.ReadFile(filepath.Join(stub, fmt.Sprintf("scope%d", n)))
-				if !strings.Contains(string(scope), want) {
-					t.Errorf("scope = %s; want %s", scope, want)
-				}
-			}
-			db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			rows, err := db.Recent(1)
-			if err != nil || len(rows) != 1 {
-				t.Fatalf("runs: %v %v", rows, err)
-			}
-			status := "ok"
-			if tc.want != 0 {
-				status = "fail"
-			}
-			if rows[0].Status != status {
-				t.Fatalf("status = %s", rows[0].Status)
-			}
-			if tc.want == 0 || tc.needed != `[]` {
-				b, err := os.ReadFile(filepath.Join(dir, "build.json"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				var out BuildOutput
-				if err := json.Unmarshal(b, &out); err != nil {
-					t.Fatal(err)
-				}
-				if got := gitBuild(t, repo, "diff", "--", "hello.txt"); !strings.Contains(got, "+hello world") {
-					t.Fatalf("missing uncommitted diff: %s", got)
-				}
-				if got := gitBuild(t, repo, "diff", "--cached"); got != "" {
-					t.Fatalf("staged changes: %s", got)
-				}
-			}
-		})
-	}
+func spawns(t *testing.T, stub string) string {
+	t.Helper()
+	b, _ := os.ReadFile(filepath.Join(stub, "count"))
+	return strings.TrimSpace(string(b))
 }
 
-func TestBuildDirtyRepoDoesNotSpawn(t *testing.T) {
-	cfg, repo := buildRepo(t)
-	stub := buildStub(t, ":", `{}`)
-	write(t, filepath.Join(repo, "hello.txt"), "my work\n")
-	if code := execute(t, cfg, "build", repo, "change greeting"); code != 1 {
-		t.Fatalf("code = %d", code)
-	}
-	if _, err := os.Stat(filepath.Join(stub, "count")); !os.IsNotExist(err) {
-		t.Fatal("spawned on a dirty repo")
-	}
-	b, _ := os.ReadFile(filepath.Join(repo, "hello.txt"))
-	if string(b) != "my work\n" {
-		t.Fatal("changed user work")
-	}
-}
-
-func TestChangesMatchClaim(t *testing.T) {
-	_, repo := buildRepo(t)
-	gitBuild(t, repo, "mv", "hello.txt", "new name.txt")
-	write(t, filepath.Join(repo, "new\nfile.txt"), "new\n")
-	r := &run.Run{Repo: repo}
-	paths := []string{"hello.txt", "./new name.txt", "new\nfile.txt"}
-	if v := ChangesMatchClaim(&BuildOutput{Changed: &paths}, r); len(v) != 0 {
-		t.Fatalf("rename/newline paths: %v", v)
-	}
-	paths = []string{"invented.txt"}
-	if v := ChangesMatchClaim(&BuildOutput{Changed: &paths}, r); len(v) != 4 {
-		t.Fatalf("bidirectional mismatches: %v", v)
-	}
-	if v := ChangesMatchClaim(&BuildOutput{Changed: &paths}, &run.Run{Repo: t.TempDir()}); len(v) != 1 {
-		t.Fatalf("git failure: %v", v)
-	}
-}
-
-func TestBuildOutputRequiresEveryKey(t *testing.T) {
-	if v := (&BuildOutput{}).Validate(); len(v) != 4 {
-		t.Fatalf("violations: %v", v)
-	}
-	summary, empty := "done", []string{}
-	b := &BuildOutput{Summary: &summary, Changed: &empty, Needed: &empty, Wrote: &empty}
-	if v := b.Validate(); len(v) != 0 {
-		t.Fatalf("empty lists: %v", v)
-	}
-}
-
-func TestBuildBlockedWriteTrace(t *testing.T) {
-	cfg, repo := buildRepo(t)
-	dir := buildStub(t, ":", `{"summary":"blocked","changed":[],"needed":["forbidden.txt"],"artifacts":[]}`)
-	replyPath := filepath.Join(dir, "build")
-	body, err := os.ReadFile(replyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	blocked := `{"type":"tool_execution_start","toolCallId":"blocked","toolName":"write","args":{"path":"forbidden.txt","content":"test"}}` + "\n" +
-		`{"type":"tool_execution_end","toolCallId":"blocked","toolName":"write","isError":true,"result":{"content":[{"type":"text","text":"forbidden.txt is not in the plan"}]}}` + "\n"
-	write(t, replyPath, blocked+string(body))
-	if code := execute(t, cfg, "build", repo, "boundary fixture"); code != 1 {
-		t.Fatalf("code = %d", code)
-	}
+// latestRun is the one run this test recorded, for its status and reason.
+func latestRun(t *testing.T) trace.Row {
+	t.Helper()
 	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
 	if err != nil {
 		t.Fatal(err)
@@ -214,32 +111,190 @@ func TestBuildBlockedWriteTrace(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("runs: %v %v", rows, err)
 	}
-	events, err := db.Events(rows[0].ID, 0, 100)
+	return rows[0]
+}
+
+// The whole workflow: the branch exists and is checked out, one commit carries
+// the change, the branch reached origin, and pr.json holds the URL gh printed.
+func TestBuildShipsTheChange(t *testing.T) {
+	cfg, repo, origin := shipRepo(t)
+	stub := shipStub(t, "feat/greet-the-world")
+
+	if code := execute(t, cfg, "build", repo, "greet the world"); code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if got := spawns(t, stub); got != "7" {
+		t.Fatalf("spawn count = %s; want 7", got)
+	}
+	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != "feat/greet-the-world" {
+		t.Fatalf("checked out %q", got)
+	}
+	if got := gitBuild(t, repo, "status", "--porcelain"); got != "" {
+		t.Fatalf("tree left dirty: %q", got)
+	}
+	if got := gitBuild(t, repo, "log", "--oneline"); strings.Count(got, "\n") != 2 {
+		t.Fatalf("want exactly one commit on top of the initial one: %s", got)
+	}
+	show := gitBuild(t, repo, "show", "--stat", "--format=%s%n%n%b", "HEAD")
+	for _, want := range []string{"feat: greet the world", "The greeting now names its audience.", "hello.txt"} {
+		if !strings.Contains(show, want) {
+			t.Errorf("commit missing %q: %s", want, show)
+		}
+	}
+	if got := gitBuild(t, repo, "show", "HEAD:hello.txt"); got != "hello world\n" {
+		t.Fatalf("committed content = %q", got)
+	}
+	if got := strings.TrimSpace(gitBuild(t, origin, "rev-parse", "feat/greet-the-world")); got != strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD")) {
+		t.Fatalf("origin is not at the pushed commit: %s", got)
+	}
+
+	args, _ := os.ReadFile(filepath.Join(stub, "gh-args"))
+	for _, want := range []string{"pr", "create", "--title", "feat: greet the world", "--body-file"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("gh arguments missing %q: %s", want, args)
+		}
+	}
+	if body, _ := os.ReadFile(filepath.Join(stub, "gh-body")); string(body) != "## What\n\nGreets the world.\n" {
+		t.Errorf("gh body = %q", body)
+	}
+
+	b, err := os.ReadFile(filepath.Join(latestRunDir(t), "pr.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, ev := range events {
-		if ev.Type == "tool_call" {
-			if !strings.Contains(string(ev.Payload), "forbidden.txt is not in the plan") || !strings.Contains(string(ev.Payload), `"isError":true`) {
-				t.Fatalf("blocked reason absent: %s", ev.Payload)
-			}
-			return
-		}
+	var got struct {
+		URL, Title string
 	}
-	t.Fatal("no blocked tool call in trace")
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != shipURL || got.Title != "feat: greet the world" {
+		t.Fatalf("pr.json = %s", b)
+	}
+	if _, err := os.Stat(filepath.Join(latestRunDir(t), "implement.json")); err != nil {
+		t.Fatal(err)
+	}
+	assertShipped(t, repo)
 }
 
-// A report that is both terminal and malformed ends the run rather than being
-// corrected: the corrected reply is free to come back without the needed list.
-// Three spawns is what says the builder was stopped rather than asked again.
-func TestBuildNeededOutranksAnInvalidEnvelope(t *testing.T) {
-	cfg, repo := buildRepo(t)
-	stub := buildStub(t, ":", `{"summary":"blocked","changed":[],"needed":["missing.txt"]}`)
-	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
-		t.Fatalf("code = %d; want 1", code)
+// assertShipped checks the run row names the branch and commit the work landed
+// on, not the ones the run was submitted against.
+func assertShipped(t *testing.T, repo string) {
+	t.Helper()
+	row := latestRun(t)
+	head := strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD"))
+	if row.Branch != "feat/greet-the-world" || row.Commit != head {
+		t.Fatalf("run records %s @ %s; want feat/greet-the-world @ %s", row.Branch, row.Commit, head)
 	}
-	count, _ := os.ReadFile(filepath.Join(stub, "count"))
-	if strings.TrimSpace(string(count)) != "3" {
-		t.Fatalf("spawn count = %s; want 3 — the builder was corrected instead of stopped", count)
+}
+
+// A name that is already taken fails before a file has been written, which is
+// the cheapest place for it to fail: the brancher is corrected twice, the run
+// ends, and the checkout is exactly as it was.
+func TestBuildRefusesATakenBranchName(t *testing.T) {
+	cfg, repo, _ := shipRepo(t)
+	start := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current"))
+	head := strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD"))
+	stub := shipStub(t, start)
+
+	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	// Two plan phases plus three brancher attempts: nothing reached the builder.
+	if got := spawns(t, stub); got != "5" {
+		t.Fatalf("spawn count = %s; want 5", got)
+	}
+	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != start {
+		t.Fatalf("branch = %q, want %q", got, start)
+	}
+	if got := strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD")); got != head {
+		t.Fatal("HEAD moved")
+	}
+	if got := gitBuild(t, repo, "status", "--porcelain"); got != "" {
+		t.Fatalf("tree touched: %q", got)
+	}
+}
+
+// A failure after the commit keeps the commit: the run fails saying where the
+// work is rather than leaving the engineer to find it.
+func TestBuildKeepsTheCommitWhenGhFails(t *testing.T) {
+	cfg, repo, _ := shipRepo(t)
+	stub := shipStub(t, "feat/greet-the-world")
+	write(t, filepath.Join(stub, "gh-fail"), "")
+
+	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if got := spawns(t, stub); got != "7" {
+		t.Fatalf("spawn count = %s; want 7", got)
+	}
+	if got := gitBuild(t, repo, "status", "--porcelain"); got != "" {
+		t.Fatalf("tree left dirty: %q", got)
+	}
+	if got := gitBuild(t, repo, "log", "--oneline"); !strings.Contains(got, "feat: greet the world") {
+		t.Fatalf("the commit was lost: %s", got)
+	}
+	if reason := latestRun(t).Reason; !strings.Contains(reason, "gh pr create") ||
+		!strings.Contains(reason, "committed on feat/greet-the-world") {
+		t.Fatalf("reason = %q", reason)
+	}
+	if _, err := os.Stat(filepath.Join(latestRunDir(t), "pr.json")); !os.IsNotExist(err) {
+		t.Fatal("pr.json was written for a pull request that was never opened")
+	}
+	assertShipped(t, repo)
+}
+
+func TestBranchUsable(t *testing.T) {
+	_, repo := buildRepo(t)
+	current := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current"))
+	gitBuild(t, repo, "tag", "v1.0.0")
+	gitBuild(t, repo, "branch", "feat/taken")
+	// Only origin has it: the plain name does not resolve, but Push would collide.
+	gitBuild(t, repo, "update-ref", "refs/remotes/origin/feat/theirs", "HEAD")
+	r := &run.Run{Repo: repo}
+
+	for _, tc := range []struct {
+		name, branch, want string
+	}{
+		{"usable", "feat/retry-backoff", ""},
+		{"trimmed", "  feat/retry-backoff\n", ""},
+		{"current branch", current, "already checked out"},
+		{"existing branch", "feat/taken", "already exists"},
+		{"existing tag", "v1.0.0", "already exists"},
+		{"branch on origin", "feat/theirs", "already exists"},
+		{"invalid", "feat//retry", "will not accept"},
+		{"space", "feat/retry backoff", "will not accept"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := BranchUsable(&BranchOutput{Branch: &tc.branch}, r)
+			switch {
+			case tc.want == "" && len(v) != 0:
+				t.Fatalf("%q was rejected: %v", tc.branch, v)
+			case tc.want != "" && (len(v) != 1 || !strings.Contains(v[0], tc.want)):
+				t.Fatalf("%q: %v, want %q", tc.branch, v, tc.want)
+			}
+		})
+	}
+	// A different envelope type is another phase's business.
+	if v := BranchUsable(&CommitOutput{}, r); v != nil {
+		t.Fatalf("foreign envelope: %v", v)
+	}
+}
+
+func TestShipEnvelopesRequireEveryKey(t *testing.T) {
+	blank, empty := "  ", []string{}
+	for _, tc := range []struct {
+		name string
+		zero run.Envelope
+		want int
+	}{
+		{"branch", &BranchOutput{}, 3},
+		{"branch blank", &BranchOutput{Summary: &blank, Branch: &blank, Wrote: &empty}, 2},
+		{"commit", &CommitOutput{}, 3},
+		{"pr", &PROutput{}, 4},
+	} {
+		if v := tc.zero.Validate(); len(v) != tc.want {
+			t.Fatalf("%s: %v, want %d violations", tc.name, v, tc.want)
+		}
 	}
 }

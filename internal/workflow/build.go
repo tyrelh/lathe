@@ -1,197 +1,284 @@
 package workflow
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/run"
+	"github.com/tyrelh/lathe/internal/workspace"
 )
 
-// BuildOutput describes the work left in the tree and any missing permission.
-type BuildOutput struct {
+// The three envelopes below share a division of labour: the agent judges the
+// text, lathe performs the git. Nothing an agent returns here is a claim about
+// work it did, so there is nothing to gate after the fact — lathe ran the
+// action, and no report can lie about having run it. The only checks left are
+// on the proposed text, before it is used.
+
+// BranchOutput is the name the change lands on.
+type BranchOutput struct {
 	Summary *string   `json:"summary"`
-	Changed *[]string `json:"changed"`
-	Needed  *[]string `json:"needed"`
+	Branch  *string   `json:"branch"`
 	Wrote   *[]string `json:"artifacts"`
 }
 
-func (b *BuildOutput) Validate() []string {
+func (b *BranchOutput) Validate() []string {
 	var v []string
 	if b.Summary == nil || strings.TrimSpace(*b.Summary) == "" {
 		v = append(v, `"summary" is missing or empty`)
 	}
-	if b.Changed == nil {
-		v = append(v, `"changed" is missing; use [] if nothing changed`)
-	}
-	if b.Needed == nil {
-		v = append(v, `"needed" is missing; use [] if the plan allowed every file you needed`)
+	if b.Branch == nil || strings.TrimSpace(*b.Branch) == "" {
+		v = append(v, `"branch" is missing or empty`)
 	}
 	if b.Wrote == nil {
-		v = append(v, `"artifacts" is missing; use [] if you wrote no nonempty files`)
+		v = append(v, `"artifacts" is missing; use [] if you wrote no files`)
 	}
 	return v
 }
 
-func (b *BuildOutput) Artifacts() []string {
+func (b *BranchOutput) Artifacts() []string {
 	if b.Wrote == nil {
 		return nil
 	}
 	return *b.Wrote
 }
 
-// Failure makes BuildOutput a run.Failing: a missing permission is terminal even
-// when the rest of the report needs correction, because correcting it would turn
-// a plan that was never sufficient into an apparently successful run.
-func (b *BuildOutput) Failure() error {
-	if b.Needed != nil && len(*b.Needed) > 0 {
-		return fmt.Errorf("plan missed files the builder needs: %s", strings.Join(*b.Needed, ", "))
+// Name is the proposed branch, trimmed. The gate and the checkout read it
+// through here so they cannot disagree about surrounding whitespace.
+func (b *BranchOutput) Name() string { return strings.TrimSpace(*b.Branch) }
+
+// BranchUsable asks git, not the agent, whether the proposed name can be
+// created. It runs while the agent still has a session to correct in, and
+// before a single file has been written, which is the cheapest place for a
+// branch name to fail.
+func BranchUsable(e run.Envelope, r *run.Run) []string {
+	// Gates run only on an envelope Validate accepted, so Branch is set.
+	b, ok := e.(*BranchOutput)
+	if !ok {
+		return nil
+	}
+	name := b.Name()
+	if current, err := workspace.Branch(r.Repo); err == nil && current == name {
+		return []string{fmt.Sprintf("%q is the branch that is already checked out; the change needs its own", name)}
+	}
+	switch {
+	case !workspace.ValidBranch(r.Repo, name):
+		return []string{fmt.Sprintf("git will not accept %q as a branch name", name)}
+	case workspace.RefExists(r.Repo, name):
+		return []string{fmt.Sprintf("%q already exists in this repository; propose a name that does not", name)}
 	}
 	return nil
 }
 
-// ChangesMatchClaim compares both directions against Git, not the plan: files
-// permitted to change are not necessarily files the builder actually changed.
-func ChangesMatchClaim(e run.Envelope, r *run.Run) []string {
-	b, ok := e.(*BuildOutput)
-	if !ok || b.Changed == nil {
-		return nil
-	}
-	paths, err := permit.Changed(r.Repo)
-	if err != nil {
-		return []string{err.Error()}
-	}
-	// One map holds both directions: a key is a path git reports, and its value
-	// is whether the builder claimed it. Marking on the accepting branch only is
-	// what keeps "claimed" from also meaning "rejected as invented".
-	claimed := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		claimed[p] = false
-	}
+// CommitOutput carries the complete commit message, subject and body.
+type CommitOutput struct {
+	Summary *string   `json:"summary"`
+	Message *string   `json:"message"`
+	Wrote   *[]string `json:"artifacts"`
+}
+
+func (c *CommitOutput) Validate() []string {
 	var v []string
-	for _, p := range *b.Changed {
-		clean := permit.Norm(p)
-		if _, reported := claimed[clean]; !reported || permit.Escapes(p) {
-			v = append(v, fmt.Sprintf("you listed %q in changed, but git reports no such repo-relative change", p))
-			continue
-		}
-		claimed[clean] = true
+	if c.Summary == nil || strings.TrimSpace(*c.Summary) == "" {
+		v = append(v, `"summary" is missing or empty`)
 	}
-	for _, p := range paths {
-		if !claimed[p] {
-			v = append(v, fmt.Sprintf("git reports %q changed, but you omitted it from changed", p))
-		}
+	if c.Message == nil || strings.TrimSpace(*c.Message) == "" {
+		v = append(v, `"message" is missing or empty; it is the whole commit message, subject and body`)
+	}
+	if c.Wrote == nil {
+		v = append(v, `"artifacts" is missing; use [] if you wrote no files`)
 	}
 	return v
 }
 
-// buildRequest is the handoff: the request, plus the plan the builder is held
-// to. It renders through the same section helper printPlan uses, so what the
-// builder is told and what the engineer was shown cannot drift apart. Every
-// list is non-nil because the plan phase's Validate has already accepted it.
-func buildRequest(request string, plan *PlanOutput) string {
+func (c *CommitOutput) Artifacts() []string {
+	if c.Wrote == nil {
+		return nil
+	}
+	return *c.Wrote
+}
+
+// PROutput is the pull request as the repository's readers expect it.
+type PROutput struct {
+	Summary *string   `json:"summary"`
+	Title   *string   `json:"title"`
+	Body    *string   `json:"body"`
+	Wrote   *[]string `json:"artifacts"`
+}
+
+func (p *PROutput) Validate() []string {
+	var v []string
+	if p.Summary == nil || strings.TrimSpace(*p.Summary) == "" {
+		v = append(v, `"summary" is missing or empty`)
+	}
+	if p.Title == nil || strings.TrimSpace(*p.Title) == "" {
+		v = append(v, `"title" is missing or empty`)
+	}
+	if p.Body == nil || strings.TrimSpace(*p.Body) == "" {
+		v = append(v, `"body" is missing or empty`)
+	}
+	if p.Wrote == nil {
+		v = append(v, `"artifacts" is missing; use [] if you wrote no files`)
+	}
+	return v
+}
+
+func (p *PROutput) Artifacts() []string {
+	if p.Wrote == nil {
+		return nil
+	}
+	return *p.Wrote
+}
+
+// prResult is pr.json: the agent's report plus the URL lathe got back. There is
+// no branch.json or commit.json because the branch name and the commit sha are
+// both recoverable from git and already in the trace; the URL is the one thing
+// here the tree cannot reproduce, which is what earns it a file.
+type prResult struct {
+	*PROutput
+	URL string `json:"url"`
+}
+
+// branchRequest is what the brancher is given. The plan is everything that has
+// happened by the time it runs, and the name has to describe the change rather
+// than the work that has not started yet.
+func branchRequest(request string, plan *PlanOutput) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Request\n\n%s\n\n## Accepted plan\n\n%s\n", request, *plan.Summary)
 	section(&b, "### Steps", *plan.Steps)
-	section(&b, "### Allowed files", *plan.Files)
-	section(&b, "### Risks", *plan.Risks)
 	return b.String()
 }
 
-// maxFixRounds gives the builder four attempts to repair measured test failures
-// after its initial implementation, bounding the cost of a persistently red suite.
-const maxFixRounds = 4
-
-// fixRequest is what the builder is sent back with: the original handoff, the
-// command lathe measured, and the tail of its output. The tester's own
-// observations seed the first round only — after that the measurement is the
-// better evidence and the discovery is stale.
-func fixRequest(handoff string, tests *TestOutput, red error, tail string, first bool) string {
+// commitRequest is the builder's handoff plus what the tree actually holds: the
+// summary is a claim, the diffstat and the path list are measured.
+func commitRequest(c *code, stat string, paths []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n## Fix failing tests\n\nCommand: %s\nResult: %s\n", handoff, *tests.Command, red)
-	if first {
-		section(&b, "### Tester observations", *tests.Failures)
-	}
-	fmt.Fprintf(&b, "\n### Latest output (last 4KB)\n\n%s\n", tail)
+	fmt.Fprintf(&b, "%s\n## Implementation\n\n%s\n\n## git diff --stat\n\n%s\n",
+		c.handoff, *c.out.Summary, stat)
+	section(&b, "### Changed files", paths)
 	return b.String()
 }
 
-// Build plans, implements and verifies a change. Reports live in the run directory; the
-// implementation stays in the target working tree for the user to review.
+// prRequest adds what the two git phases settled: the branch the change is on
+// and the message it was committed with.
+func prRequest(c *code, branch, message string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n## Implementation\n\n%s\n\n## Branch\n\n%s\n\n## Commit message\n\n%s\n",
+		c.handoff, *c.out.Summary, branch, message)
+	return b.String()
+}
+
+// Build plans, implements, tests and ships a change: it ends at a pull request,
+// which is where building one ends for an engineer. Implement is the same run
+// without the three git phases.
+//
+// The three git nodes are forward-only. A failure in any of them ends the run,
+// and a failure after the commit leaves the commit on its branch rather than
+// losing the work; the closing reason says so.
 func Build(r *run.Run) int {
-	var plan PlanOutput
-	var out BuildOutput
-	var tests TestOutput
-	var handoff, feedback string
+	var c code
+	var branch, sha, message, url string
 
 	g := run.NewGraph(r)
-	g.Add(run.Node{Name: "request", Owner: "engineer"}, func(e *run.Entry) (string, error) {
-		if err := e.Log("request", r.Request); err != nil {
+	addRequestNode(g, r)
+	addPlanNodes(g, r, &c.plan)
+
+	// Immediately after the plan nodes, so it runs whether review accepted the
+	// plan or its send-back budget ran out and the objections became risks. The
+	// graph gives both for free; neither needs a condition.
+	g.Add(run.Node{Name: "branch", Owner: "brancher"}, func(e *run.Entry) (string, error) {
+		var out BranchOutput
+		if err := e.Call(&out, branchRequest(r.Request, &c.plan),
+			run.ArtifactsExist, run.FilesNonEmpty, BranchUsable); err != nil {
 			return "", err
 		}
-		return "", r.EnsureClean()
-	})
-	addPlanNodes(g, r, &plan)
-
-	g.Add(run.Node{Name: "build", Owner: "builder"}, func(e *run.Entry) (string, error) {
-		request := feedback
-		if e.Round == 0 {
-			// The plan is settled by the time anything reaches here: review only
-			// ever sends back to the planner, never past this node.
-			handoff = buildRequest(r.Request, &plan)
-			request = handoff
-		}
-		e.Scope(*plan.Files)
-		err := e.Call(&out, request, run.ArtifactsExist, run.FilesNonEmpty, ChangesMatchClaim)
-		// Keep a terminal needed report alongside the plan for diagnosis.
-		if err == nil || out.Failure() != nil {
-			if saveErr := writeResult(r.Dir, "build.json", &out); saveErr != nil {
-				return "", saveErr
-			}
-		}
-		return "", err
+		branch = out.Name()
+		return "", workspace.Checkout(r.Repo, branch)
 	})
 
-	// Discovery is a claim; green and red are a measurement. Both live in this
-	// node, but only the exit code from Command decides where it goes: a tester
-	// that could route on its own report of the suite could end a run green by
-	// saying so.
-	g.Add(run.Node{Name: "test", Owner: "tester", SendBacks: maxFixRounds, RevertOnly: true}, func(e *run.Entry) (string, error) {
-		if e.Round == 0 {
-			if err := e.Call(&tests, handoff+"\n## Implementation\n\n"+*out.Summary); err != nil {
-				return "", err
-			}
-			if err := writeResult(r.Dir, "test.json", &tests); err != nil {
-				return "", err
-			}
+	addCodeNodes(g, r, &c)
+
+	// After test, which only forwards on a measured green exit.
+	g.Add(run.Node{Name: "commit", Owner: "committer"}, func(e *run.Entry) (string, error) {
+		// Captured on entry: the paths are the accumulated accepted scope after
+		// enforcement, which is what lathe stages — an agent's own `git add -A`
+		// would sweep up anything the guard tolerated.
+		paths, err := permit.Changed(r.Repo)
+		if err != nil {
+			return "", err
 		}
-		// ponytail: the command discovered on the first entry is reused for the
-		// rest of the run, so a fix that changes how the suite is invoked leaves
-		// a stale command behind. Re-discover per round if that ever bites.
-		tail, err := e.Command(*tests.Command)
-		var red *run.CommandFailure
-		switch {
-		case err == nil:
-			return "", nil
-		case !errors.As(err, &red):
-			return "", err // denied, timeout, infrastructure: terminal
-		case e.SendBacksLeft == 0:
-			return "", err // out of budget: the run fails red
+		if len(paths) == 0 {
+			return "", fmt.Errorf("the tree holds no changes to commit")
 		}
-		e.Failed(err)
-		feedback = fixRequest(handoff, &tests, err, tail, e.Round == 0)
-		return "build", nil
+		before, err := workspace.Head(r.Repo)
+		if err != nil {
+			return "", err
+		}
+		stat, err := workspace.DiffStat(r.Repo)
+		if err != nil {
+			return "", err
+		}
+
+		var out CommitOutput
+		if err := e.Call(&out, commitRequest(&c, stat, paths),
+			run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+			return "", err
+		}
+		message = *out.Message
+		if err := workspace.Commit(r.Repo, message, paths); err != nil {
+			return "", err
+		}
+		// lathe ran the commit, so all that is left to establish is that git did
+		// what it was asked: HEAD moved, and nothing was left behind.
+		if sha, err = workspace.Head(r.Repo); err != nil {
+			return "", err
+		}
+		if sha == before {
+			return "", fmt.Errorf("git commit left HEAD at %s", before)
+		}
+		// Recorded here rather than at the end, so a failed pull request still
+		// leaves a run that names where its commit is.
+		if err := r.Shipped(branch, sha); err != nil {
+			return "", err
+		}
+		return "", permit.Clean(r.Repo)
+	})
+
+	g.Add(run.Node{Name: "pr", Owner: "pr-author"}, func(e *run.Entry) (string, error) {
+		// lathe pushes, so gh pr create never has to and the deny list that puts
+		// `git push` out of every agent's reach stays intact. It happens before
+		// the turn: a push that fails should not cost one.
+		if err := workspace.Push(r.Repo, branch); err != nil {
+			return "", err
+		}
+		var out PROutput
+		if err := e.Call(&out, prRequest(&c, branch, message),
+			run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+			return "", err
+		}
+		created, err := workspace.CreatePR(r.Repo, *out.Title, *out.Body)
+		if err != nil {
+			return "", err
+		}
+		url = created
+		return "", writeResult(r.Dir, "pr.json", prResult{PROutput: &out, URL: url})
 	})
 
 	err := g.Run()
 	if err == nil {
-		fmt.Fprintf(r.Out, "\n%s\n", *out.Summary)
-		section(r.Out, "changed (uncommitted)", *out.Changed)
+		fmt.Fprintf(r.Out, "\n%s\n\n  %s @ %s\n  %s\n", *c.out.Summary, branch, short(sha), url)
+		return r.Finish(true, "")
 	}
-	reason := ""
-	if err != nil {
-		reason = err.Error()
+	reason := err.Error()
+	if sha != "" {
+		reason += fmt.Sprintf(" (the change is committed on %s as %s)", branch, short(sha))
 	}
-	return r.Finish(err == nil, reason)
+	return r.Finish(false, reason)
+}
+
+func short(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
 }

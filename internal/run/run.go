@@ -296,6 +296,10 @@ func (r *Run) enforce(h *Handle) ([]string, error) {
 	return reverted, nil
 }
 
+// Shipped records the branch and commit a run's work landed on, for a workflow
+// that commits: the run row otherwise still names what it started from.
+func (r *Run) Shipped(branch, sha string) error { return r.db.SetShipped(r.ID, branch, sha) }
+
 // Protected is the roster's deny list, which the plan gate checks a file list
 // against before a builder is ever handed one.
 func (r *Run) Protected() []string { return r.cfg.Protected }

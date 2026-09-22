@@ -8,10 +8,14 @@
 protected = [".git/", ".env*", "*.pem", "*.key"]
 
 # Commands the guard refuses to run, as Go regexps (JavaScript reads the same
-# ones). Only the tester ever gets a shell, and this narrows the obvious ways
-# out of the repo without closing them: a heredoc or `python -c` gets past it.
+# ones). Four agents get a shell — the tester, and the three that read git to
+# judge a branch name, a commit message and a pull request — and this narrows
+# the obvious ways out of the repo without closing them: a heredoc or
+# `python -c` gets past it. `git push` and `git commit` are here because lathe
+# performs both itself, through exec.Command, which never meets this list.
 bash_denied = [
   "\\bgit\\s+push\\b",
+  "\\bgit\\s+commit\\b",
   "\\brm\\s+-[a-zA-Z]*r",
   "\\bcurl\\b",
   "\\bwget\\b",
@@ -78,4 +82,31 @@ name = "tester"
 model = "kimi-k2.6"
 system = "prompts/tester/system.md"
 user = "prompts/tester/user.md"
+tools = ["read", "grep", "find", "ls", "bash"]
+
+# Name the branch the change lands on, following whatever the repository already
+# does. bash to read git history and remote branches; lathe creates the branch.
+[[agents]]
+name = "brancher"
+model = "kimi-k2.6"
+system = "prompts/brancher/system.md"
+user = "prompts/brancher/user.md"
+tools = ["read", "grep", "find", "ls", "bash"]
+
+# Write the commit message for the implemented change. lathe stages the exact
+# paths and runs the commit, so the message is the whole of this agent's work.
+[[agents]]
+name = "committer"
+model = "kimi-k2.6"
+system = "prompts/committer/system.md"
+user = "prompts/committer/user.md"
+tools = ["read", "grep", "find", "ls", "bash"]
+
+# Write the pull request title and body from the repository's template and its
+# recently merged pull requests. lathe pushes and runs gh pr create.
+[[agents]]
+name = "pr-author"
+model = "kimi-k2.6"
+system = "prompts/pr-author/system.md"
+user = "prompts/pr-author/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]

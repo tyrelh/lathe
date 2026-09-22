@@ -44,7 +44,6 @@ type Job struct {
 	AttemptID string
 	DataRoot  string
 	LogPath   string
-	EnvFile   string
 }
 
 // Launcher starts, inspects and stops workers. It is the one seam built for
@@ -76,7 +75,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer) error {
 	defer db.Close()
 
 	m := &manager{db: db, dataRoot: dataRoot, out: out, launcher: Local{},
-		capacity: Capacity(), env: os.Getenv("LATHE_WORKER_ENV")}
+		capacity: Capacity()}
 
 	// Reservations and attempts are reconciled before anything new is
 	// admitted, so a surviving worker keeps its capacity and its checkout.
@@ -123,7 +122,6 @@ type manager struct {
 	out      io.Writer
 	launcher Launcher
 	capacity int
-	env      string
 	// uncertain is the attempt whose worker the launcher could not vouch for.
 	// It holds capacity until a person confirms the process is gone, and the
 	// refusal message is the whole recovery procedure.
@@ -192,7 +190,7 @@ func (m *manager) launch(row trace.Row) error {
 	}
 	handle, err := m.launcher.Launch(Job{
 		RunID: row.ID, AttemptID: attemptID, DataRoot: m.dataRoot,
-		LogPath: logPath, EnvFile: m.env,
+		LogPath: logPath,
 	})
 	if err != nil {
 		// Nothing was started, so nothing has to be confirmed stopped.
