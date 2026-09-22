@@ -41,6 +41,7 @@
   body[data-nav="collapsed"] { --rail: 46px; }
 
   header { grid-area: top; padding: 8px 14px; border-bottom: 1px solid var(--line);
+           background: var(--card);
            display: flex; align-items: center; gap: 10px; }
   header b { letter-spacing: .1em; }
   #version { color: var(--dim); }
@@ -50,6 +51,7 @@
   #theme:hover { color: var(--fg); background: var(--panel); }
 
   nav { grid-area: nav; border-right: 1px solid var(--line); padding: 8px 6px;
+        background: var(--card);
         display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
   nav a, #collapse {
     display: flex; align-items: center; gap: 10px; padding: 5px 8px;
@@ -65,7 +67,7 @@
   body[data-nav="collapsed"] .label { display: none; }
 
   main { grid-area: main; overflow: auto; padding: 16px; }
-  footer { grid-area: bottom; border-top: 1px solid var(--line);
+  footer { grid-area: bottom; border-top: 1px solid var(--line); background: var(--card);
            padding: 4px 14px; color: var(--dim); display: flex; gap: 14px;
            white-space: nowrap; overflow: hidden; }
   #note { margin-left: auto; }
