@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS phases (
   run_id     TEXT REFERENCES runs,
   seq        INTEGER,
   name       TEXT,
-  kind       TEXT,
+  kind       TEXT, -- unwritten since the phase graph; left in place rather than migrated away
   owner      TEXT,
   status     TEXT,
   error      TEXT,
@@ -168,7 +168,6 @@ type Phase struct {
 	RunID  string
 	Seq    int
 	Name   string
-	Kind   string // engineer | agent | code
 	Owner  string // agent name, or 'engineer'
 	Status string // fail until success is earned
 	Error  string
@@ -198,13 +197,12 @@ func randomHex(n int) string {
 
 // NewPhase builds a phase with the canonical ID <runID>_<seq, two digits>_<name>,
 // keeping the ID convention in the package that owns the schema.
-func NewPhase(runID string, seq int, name, kind, owner string) *Phase {
+func NewPhase(runID string, seq int, name, owner string) *Phase {
 	return &Phase{
 		ID:    fmt.Sprintf("%s_%02d_%s", runID, seq, name),
 		RunID: runID,
 		Seq:   seq,
 		Name:  name,
-		Kind:  kind,
 		Owner: owner,
 	}
 }
@@ -226,13 +224,13 @@ func (d *DB) PhaseUpsert(p *Phase) error {
 		p.Status = "fail"
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO phases (phase_id, run_id, seq, name, kind, owner, status, error, started_at, ended_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO phases (phase_id, run_id, seq, name, owner, status, error, started_at, ended_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(phase_id) DO UPDATE SET
-		   seq=excluded.seq, name=excluded.name, kind=excluded.kind, owner=excluded.owner,
+		   seq=excluded.seq, name=excluded.name, owner=excluded.owner,
 		   status=excluded.status, error=excluded.error,
 		   started_at=excluded.started_at, ended_at=excluded.ended_at`,
-		p.ID, p.RunID, p.Seq, p.Name, p.Kind, p.Owner, p.Status, p.Error, p.Start, nullIfEmpty(p.End))
+		p.ID, p.RunID, p.Seq, p.Name, p.Owner, p.Status, p.Error, p.Start, nullIfEmpty(p.End))
 	return err
 }
 

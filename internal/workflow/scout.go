@@ -71,27 +71,23 @@ func (s *ScoutOutput) Artifacts() []string {
 // code: Finish settles the status, the banner and the code together so the
 // three cannot disagree.
 func Scout(r *run.Run) int {
-	request := r.Request
+	var out ScoutOutput
 
+	g := run.NewGraph(r)
 	// The request is a phase so the trace starts with what was asked, in the
 	// same table as everything that followed from it.
-	err := r.Phase(run.Params{Name: "request", Kind: "engineer", Owner: "engineer"},
-		func(ph *run.Handle) error { return ph.Log("request", request) })
+	g.Add(run.Node{Name: "request", Owner: "engineer"},
+		func(e *run.Entry) (string, error) { return "", e.Log("request", r.Request) })
+	g.Add(run.Node{Name: "scout", Owner: "scout"}, func(e *run.Entry) (string, error) {
+		if err := e.Call(&out, r.Request, run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+			return "", err
+		}
+		return "", writeResult(r.Dir, "result.json", &out)
+	})
 
-	// A failed phase does not stop a run on its own; with two phases the
-	// workflow is what decides, and there is nothing to scout for if the run
-	// could not even record the request.
-	if err == nil {
-		var out ScoutOutput
-		r.Phase(run.Params{Name: "scout", Kind: "agent", Owner: "scout"},
-			func(ph *run.Handle) error {
-				if err := ph.Call(&out, request, run.ArtifactsExist, run.FilesNonEmpty); err != nil {
-					return err
-				}
-				return writeResult(r.Dir, "result.json", &out)
-			})
-	}
-
+	// A failed phase already settles the run's status, so there is nothing for
+	// this workflow to decide on top of it.
+	g.Run()
 	return r.Finish(true, "")
 }
 

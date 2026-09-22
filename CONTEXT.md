@@ -14,6 +14,26 @@ The sequence of work needed to investigate, plan or build a requested change.
 **Phase**:
 A recorded stage of a run with an owner, an outcome and the work performed.
 
+**Node**:
+One phase in a workflow graph, declared in the order the happy path runs. A
+node keeps its own state, its own agent session and its own send-back budget
+across every entry.
+
+**Target**:
+Where a node says to go next when it finishes. Naming nothing forwards to the
+node declared after it; naming an earlier node, or the node itself, is a
+send-back.
+
+**Round**:
+How many times a node has been entered, counting from zero on its first entry.
+
+**Send-back budget**:
+How many send-backs one node may issue over a run. It counts send-backs
+issued, not entries made, so a node re-entered by another node's loop keeps
+its own budget intact. What happens once the budget is spent is the node's own
+decision: plan review forwards its remaining objections as risks, and the test
+loop fails the run.
+
 **Agent**:
 A role assigned part of a workflow, with tools and instructions appropriate to
 that role.
@@ -33,8 +53,10 @@ file grants permission; it does not require a change to that file.
 One assessment of the current plan against the request and repository.
 
 **Send-back**:
-A request for the planner to return a complete plan after review feedback or
-an unusable review. It consumes one opportunity to revise, even if nothing changes.
+A node naming an earlier node as its target, returning work to whatever
+produced it: a plan to the planner after review feedback or an unusable
+review, an implementation to the builder after a measured red suite. It spends
+one of the sending node's budget, even if nothing changes.
 
 **Unresolved feedback**:
 Objections remaining at the review limit, carried forward as plan risks. A

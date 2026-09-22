@@ -123,7 +123,7 @@ func TestPlanReviewLoop(t *testing.T) {
 			for i, ph := range phases[2:] {
 				want := "review"
 				if i%2 == 1 {
-					want = "replan"
+					want = "plan"
 				}
 				if ph.Name != want {
 					t.Fatalf("phase %d: %s, want %s", i+2, ph.Name, want)
