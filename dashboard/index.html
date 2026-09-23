@@ -78,6 +78,8 @@
            white-space: nowrap; overflow: hidden; }
   #note { margin-left: auto; }
   #note.stale { color: var(--run); }
+  #follow-label { display: none; align-items: center; gap: 4px; }
+  #follow-label input { margin: 0; }
 
   h2 { font-size: 12px; color: var(--dim); text-transform: uppercase;
        letter-spacing: .1em; margin: 24px 0 8px; }
@@ -221,11 +223,13 @@
 <footer>
   <span id="status"></span>
   <span id="note"></span>
+  <label id="follow-label"><input type="checkbox" id="follow-box"> follow</label>
 </footer>
 
 <script>
 const $ = id => document.getElementById(id);
 const app = $('app'), bar = $('status'), note = $('note');
+const followBox = $('follow-box'), followLabel = $('follow-label');
 const PAGE = 500;   // the server's per-poll event cap
 // How often each page asks for fresh data. Overview aggregates the whole
 // database and changes slowly; a live run's log does not.
@@ -286,6 +290,8 @@ function navigate() {
   draining = false; shown = null; selected = '';
   resized.disconnect(); observed = null;
   app.innerHTML = '';
+  followBox.checked = false;
+  followLabel.style.display = 'none';
   for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs']]) {
     const on = view.page === page || (page === 'runs' && view.page === 'run');
     // Runs stays selected while a single run is open: a run is something
@@ -332,7 +338,7 @@ function stamp() {
     return;
   }
   note.className = '';
-  note.textContent = done ? 'final' : 'updated ' + ago();
+  note.textContent = done ? 'run complete' : 'updated ' + ago();
 }
 const ago = () => {
   const s = Math.max(0, Math.round((Date.now() - fresh) / 1000));
@@ -474,6 +480,7 @@ async function detail(current) {
   // page means the server capped this poll and there is more to fetch first.
   draining = d.events.length >= PAGE;
   if (!live(r.status) && !draining) done = true;
+  followLabel.style.display = (view.page === 'run' && !done) ? 'inline-flex' : 'none';
 
   // The header, chart and details are re-rendered every poll; the log is
   // appended, so scrolling through a finished phase is not undone a second later.
@@ -517,7 +524,7 @@ async function detail(current) {
       <td>${esc(e.name)}</td>
       <td>${eventPayload(e)}</td>`;
   }
-  if (d.events.length && following) app.scrollTop = app.scrollHeight;
+  if (d.events.length && following && followBox.checked) app.scrollTop = app.scrollHeight;
 }
 
 // timings keeps waiting and working apart: a run that sat in the queue for a
