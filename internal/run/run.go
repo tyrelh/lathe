@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
@@ -72,6 +73,15 @@ type Envelope interface {
 // correction so a later reply cannot erase the failure.
 type Failing interface{ Failure() error }
 
+// EnvelopeError is an agent that ran but never returned a usable report:
+// corrections exhausted, or tool calls past the budget. A workflow may absorb
+// it and go round again. Anything else Call returns — a provider refusing the
+// request, Pi failing to start, cancellation — is not the agent's output, and
+// asking the agent again cannot fix it.
+type EnvelopeError struct{ msg string }
+
+func (e *EnvelopeError) Error() string { return e.msg }
+
 // Gate checks an agent's claims mechanically and returns violations. It never
 // judges the work — only whether what the agent said it did is true.
 type Gate func(Envelope, *Run) []string
@@ -95,8 +105,18 @@ type Run struct {
 	ctx   context.Context
 	db    *trace.DB
 	raw   *os.File
-	guard string // the extension, written once and passed to every spawn
-	clean bool   // EnsureClean passed, which is what licenses a revert
+	rawW  io.Writer // raw behind a lock: a validation group's workers stream into it at once
+	guard string    // the extension, written once and passed to every spawn
+	clean bool      // EnsureClean passed, which is what licenses a revert
+
+	// mu guards everything below it. A validation group runs phases in
+	// goroutines, and each of them numbers a phase, charges spend, settles
+	// enforcement and may fail the run.
+	mu sync.Mutex
+	// frozen is set while a validation group runs: enforce leaves the tree
+	// alone, because a reviewer's turn ending must not clean up files the
+	// tester's suite is still using. The group sweeps once, after its join.
+	frozen bool
 	// accepted is every path an earlier phase was allowed to leave behind.
 	// Enforce is handed the whole dirty tree, so without carrying this forward
 	// the tester's empty allow list would revert the builder's work and then
@@ -168,6 +188,7 @@ func Open(o Options) (*Run, error) {
 	if r.raw, err = os.Create(filepath.Join(r.Work, "raw.jsonl")); err != nil {
 		return nil, err
 	}
+	r.rawW = &lockedWriter{w: r.raw}
 	// Every agent runs behind the guard, including the read-only ones: their
 	// empty allow list is what makes "this agent changes nothing" a rule the
 	// tool layer enforces rather than a consequence of the tool list, and the
@@ -184,8 +205,10 @@ func Open(o Options) (*Run, error) {
 // moment it is created; success is earned by returning nil. The named return
 // plus defer is what makes that hold through a panic too.
 func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
+	r.mu.Lock()
 	r.seq++
 	ph := trace.NewPhase(r.ID, r.seq, p.Name, p.Owner)
+	r.mu.Unlock()
 	if err := r.db.PhaseUpsert(ph); err != nil {
 		return r.fail(err)
 	}
@@ -230,6 +253,8 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 // It does not write the run's terminal state. That write is bound to the
 // worker's claim, so the worker makes it — reading Status and Reason here.
 func (r *Run) Finish(accepted bool, reason string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	status, code := trace.StatusOK, 0
 	switch {
 	case r.err != nil:
@@ -274,9 +299,24 @@ func (r *Run) EnsureClean() error {
 // decides which of those is fatal. It reports nothing at all when Clean did not
 // pass, because the tree it would be reverting is not the agent's.
 func (r *Run) enforce(h *Handle) ([]string, error) {
-	if !r.clean {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.clean || r.frozen {
 		return nil, nil
 	}
+	reverted, err := r.sweep(h)
+	// Tolerance is a property of the phase, so it is settled here rather than
+	// at each call site: a later phase that needs it gets it by declaring it,
+	// not by remembering to repeat the check.
+	if err != nil || h.params.RevertOnly {
+		return nil, err
+	}
+	return reverted, nil
+}
+
+// sweep reverts whatever neither h's scope nor an earlier phase accepted, and
+// reports what it reverted. The caller holds mu.
+func (r *Run) sweep(h *Handle) ([]string, error) {
 	scope := h.permit()
 	scope.Allow = append(append([]string{}, scope.Allow...), r.accepted...)
 
@@ -290,12 +330,6 @@ func (r *Run) enforce(h *Handle) ([]string, error) {
 	r.accepted = kept
 	r.db.Event(r.ID, h.phase.ID, "permit", h.phase.Name,
 		map[string]any{"kept": kept, "reverted": reverted})
-	// Tolerance is a property of the phase, so it is settled here rather than
-	// at each call site: a later phase that needs it gets it by declaring it,
-	// not by remembering to repeat the check.
-	if h.params.RevertOnly {
-		return nil, nil
-	}
 	return reverted, nil
 }
 
@@ -308,13 +342,38 @@ func (r *Run) Shipped(branch, sha string) error { return r.db.SetShipped(r.ID, b
 func (r *Run) Protected() []string { return r.cfg.Protected }
 
 // Tokens and Cost are what the run has spent so far.
-func (r *Run) Tokens() int   { return r.tokens }
-func (r *Run) Cost() float64 { return r.cost }
+func (r *Run) Tokens() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tokens
+}
+
+func (r *Run) Cost() float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cost
+}
+
 func (r *Run) fail(err error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err == nil {
 		r.err = err
 	}
 	return err
+}
+
+// lockedWriter serialises writes to raw.jsonl. pi.Scan writes one whole line
+// per call, so a lock per write keeps concurrent workers' lines whole.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // Handle is what a phase body is given: the only way to write to the trace or
@@ -325,6 +384,10 @@ type Handle struct {
 	allow  []string
 	params Params
 	failed error // recorded as a failed phase, but not returned to the caller
+	// corrections is the correction allowance Call draws on. Nil is the usual
+	// maxCorrections per call; a group worker shares one allowance across its
+	// retries, so retries and corrections add rather than multiply.
+	corrections *int
 }
 
 // SessionID is stable across correction and fix turns.
@@ -369,6 +432,11 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 
 	prompt := agent.Prompt(request)
 	nudged := false
+	left := h.corrections
+	if left == nil {
+		n := maxCorrections
+		left = &n
+	}
 	for attempt := 0; ; attempt++ {
 		res, err := r.spawn(h, agent, prompt, attempt)
 		// Pi may report a killed process instead of the context's error. Keep
@@ -381,7 +449,7 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 			nudged, prompt = true, budgetSpent
 			continue
 		case errors.Is(err, errBudget):
-			return fmt.Errorf("%s kept calling tools after its budget was spent", agent.Name)
+			return &EnvelopeError{fmt.Sprintf("%s kept calling tools after its budget was spent", agent.Name)}
 		case err != nil:
 			return err
 		}
@@ -430,10 +498,11 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 			violations = gateViolations
 		}
 
-		if attempt >= maxCorrections {
-			return fmt.Errorf("%s did not produce a valid envelope after %d corrections: %s",
-				agent.Name, maxCorrections, strings.Join(violations, "; "))
+		if *left <= 0 {
+			return &EnvelopeError{fmt.Sprintf("%s did not produce a valid envelope after %d corrections: %s",
+				agent.Name, attempt, strings.Join(violations, "; "))}
 		}
+		*left--
 		prompt = correction(violations)
 	}
 }
@@ -442,9 +511,14 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 // session id, which keeps the builder context across the red loop.
 func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
 	// Rewritten before every spawn rather than once per run: each agent's allow
-	// list differs, and the guard re-reads the file per tool call.
+	// list differs, and the guard re-reads the file per tool call. One file per
+	// phase, because a validation group's workers are spawned at once.
 	scope := h.permit()
-	scopeFile, err := permit.Write(r.Work, scope)
+	scopeDir := filepath.Join(r.Work, h.phase.ID)
+	if err := os.MkdirAll(scopeDir, 0o755); err != nil {
+		return pi.Result{}, err
+	}
+	scopeFile, err := permit.Write(scopeDir, scope)
 	if err != nil {
 		return pi.Result{}, err
 	}
@@ -470,7 +544,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		SessionDir:   r.Work, // the session is thrown away with the attempt that made it
 		Extension:    r.guard,
 		Env:          []string{"LATHE_PERMIT=" + scopeFile},
-		Raw:          r.raw,
+		Raw:          r.rawW,
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
 		},
@@ -538,8 +612,10 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// The stream's own totals stay the CLI's accounting and a consistency check
 	// against what was persisted; the database was charged response by response
 	// as the stream ran, so nothing is written here.
+	r.mu.Lock()
 	r.tokens += res.Tokens
 	r.cost += res.Cost
+	r.mu.Unlock()
 
 	// Enforced before the envelope is read, and after a failed turn too: the
 	// turn that ended badly is the one most likely to have left something
@@ -563,6 +639,11 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// own cancellation before the error is read as one.
 	if err != nil && calls >= toolBudget {
 		return res, errBudget
+	}
+	// Returned as an error rather than an empty reply, so Call stops here
+	// instead of spending its corrections asking a missing model again.
+	if err == nil && res.Failure != "" {
+		return res, fmt.Errorf("%s (%s/%s): provider error: %s", a.Name, a.Provider, a.Model, res.Failure)
 	}
 	return res, err
 }

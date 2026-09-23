@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,65 +37,13 @@ func jsonReply(t *testing.T, report map[string]any) string {
 	return piReply(t, "```json\n"+string(b)+"\n```")
 }
 
-// shipStub serves one reply per spawn in the order a build's phases run, and
-// puts a `gh` beside `pi` that records what it was asked and prints a URL.
+// shipStub is codeStub with the brancher proposing branch.
 func shipStub(t *testing.T, branch string) string {
 	t.Helper()
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "plan"), planReply(t, `"hello.txt"`))
-	write(t, filepath.Join(dir, "review"), reviewOK(t))
-	write(t, filepath.Join(dir, "branch"), jsonReply(t, map[string]any{
+	dir := codeStub(t)
+	write(t, filepath.Join(dir, "brancher"), jsonReply(t, map[string]any{
 		"summary": "the history prefixes with feat/", "branch": branch, "artifacts": []string{}}))
-	write(t, filepath.Join(dir, "implement"), jsonReply(t, map[string]any{
-		"summary": "updated greeting", "changed": []string{"hello.txt"},
-		"needed": []string{}, "artifacts": []string{"hello.txt"}}))
-	write(t, filepath.Join(dir, "test"), jsonReply(t, map[string]any{
-		"summary": "discovered", "command": "true", "failures": []string{}, "artifacts": []string{}}))
-	write(t, filepath.Join(dir, "commit"), jsonReply(t, map[string]any{
-		"summary":   "conventional commits, as the history does",
-		"message":   "feat: greet the world\n\nThe greeting now names its audience.",
-		"artifacts": []string{}}))
-	write(t, filepath.Join(dir, "pr"), jsonReply(t, map[string]any{
-		"summary": "filled in the template", "title": "feat: greet the world",
-		"body": "## What\n\nGreets the world.\n", "artifacts": []string{}}))
-
-	gh := fmt.Sprintf(`#!/bin/sh
-printf '%%s\n' "$@" > %[1]q/gh-args
-for a in "$@"; do [ ! -f "$a" ] || cp "$a" %[1]q/gh-body; done
-if [ -f %[1]q/gh-fail ]; then echo "no git remote found" >&2; exit 1; fi
-echo "Creating pull request for feat/x into main"
-echo %[2]q
-`, dir, shipURL)
-	write(t, filepath.Join(dir, "gh"), gh)
-	if err := os.Chmod(filepath.Join(dir, "gh"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Dispatch on which agent is being spawned rather than on the spawn index:
-	// a correction round is a second spawn of the same phase, and an index would
-	// serve it the next phase's answer.
-	onPath(t, dir, fmt.Sprintf(`#!/bin/sh
-n=0
-[ ! -f %[1]q/count ] || n=$(cat %[1]q/count)
-echo $((n+1)) > %[1]q/count
-printf '%%s\n' "$@" > %[1]q/args$n
-case "$*" in
-*"You are the planner"*)       cat %[1]q/plan ;;
-*"You are the plan-reviewer"*) cat %[1]q/review ;;
-*"You are the brancher"*)      cat %[1]q/branch ;;
-*"You are the builder"*)       printf 'hello world\n' > hello.txt; cat %[1]q/implement ;;
-*"You are the tester"*)        cat %[1]q/test ;;
-*"You are the committer"*)     cat %[1]q/commit ;;
-*)                             cat %[1]q/pr ;;
-esac
-`, dir))
 	return dir
-}
-
-func spawns(t *testing.T, stub string) string {
-	t.Helper()
-	b, _ := os.ReadFile(filepath.Join(stub, "count"))
-	return strings.TrimSpace(string(b))
 }
 
 // latestRun is the one run this test recorded, for its status and reason.
@@ -123,8 +70,8 @@ func TestBuildShipsTheChange(t *testing.T) {
 	if code := execute(t, cfg, "build", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
-	if got := spawns(t, stub); got != "7" {
-		t.Fatalf("spawn count = %s; want 7", got)
+	if got := totalSpawns(t, stub); got != 11 {
+		t.Fatalf("spawn count = %d; want 11", got)
 	}
 	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != "feat/greet-the-world" {
 		t.Fatalf("checked out %q", got)
@@ -174,6 +121,9 @@ func TestBuildShipsTheChange(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(latestRunDir(t), "implement.json")); err != nil {
 		t.Fatal(err)
 	}
+	if args, _ := os.ReadFile(filepath.Join(stub, "gh-args")); strings.Contains(string(args), "--draft") {
+		t.Fatal("an accepted change opened a draft")
+	}
 	assertShipped(t, repo)
 }
 
@@ -201,8 +151,8 @@ func TestBuildRefusesATakenBranchName(t *testing.T) {
 		t.Fatalf("code = %d, want 1", code)
 	}
 	// Two plan phases plus three brancher attempts: nothing reached the builder.
-	if got := spawns(t, stub); got != "5" {
-		t.Fatalf("spawn count = %s; want 5", got)
+	if got := totalSpawns(t, stub); got != 5 {
+		t.Fatalf("spawn count = %d; want 5", got)
 	}
 	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != start {
 		t.Fatalf("branch = %q, want %q", got, start)
@@ -225,8 +175,8 @@ func TestBuildKeepsTheCommitWhenGhFails(t *testing.T) {
 	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
-	if got := spawns(t, stub); got != "7" {
-		t.Fatalf("spawn count = %s; want 7", got)
+	if got := totalSpawns(t, stub); got != 11 {
+		t.Fatalf("spawn count = %d; want 11", got)
 	}
 	if got := gitBuild(t, repo, "status", "--porcelain"); got != "" {
 		t.Fatalf("tree left dirty: %q", got)

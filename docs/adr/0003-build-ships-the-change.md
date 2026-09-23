@@ -95,3 +95,7 @@ A failure after `commit` keeps the commit on its branch and fails the run saying
 so, so the work is not lost. The checkout is left on the new branch either way.
 Both facts are in the banner `lathe build` prints about owning the checkout, and
 in `SKILL.md`.
+
+## Since 0004
+
+`commit` and `pr` now sit after `adjudicate`, not `test`. An accepted change ships as before. An unaccepted one — findings unresolved after four repairs, or validation incomplete — is still committed and opened as a draft pull request carrying the validation report, and the run fails: the draft hands unfinished work to a person, it does not claim it passed. Cancellation, a source change during validation and any other error still end the run before anything is committed.

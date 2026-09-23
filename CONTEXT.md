@@ -9,9 +9,7 @@ for the engineer to inspect.
 One execution of a workflow for an engineer's request against a repository.
 
 **Workflow**:
-The sequence of work needed to investigate, plan, implement or ship a requested
-change. `implement` ends at tested code in the working tree; `build` is the
-same run plus the branch, commit and pull request that ship it.
+The sequence of work needed to investigate, plan, implement or ship a requested change. `implement` ends at validated code in the working tree; `build` is the same run plus the branch, commit and pull request that ship it.
 
 **Phase**:
 A recorded stage of a run with an owner, an outcome and the work performed.
@@ -33,8 +31,22 @@ How many times a node has been entered, counting from zero on its first entry.
 How many send-backs one node may issue over a run. It counts send-backs
 issued, not entries made, so a node re-entered by another node's loop keeps
 its own budget intact. What happens once the budget is spent is the node's own
-decision: plan review forwards its remaining objections as risks, and the test
-loop fails the run.
+decision: plan review forwards its remaining objections as risks, and adjudication hands the implementation off unaccepted with its remaining findings.
+
+**Validation group**:
+The `validate` node: the tester and the three code reviewers run at once against the same uncommitted implementation, each as its own traced phase. The tree is frozen while they run, cleanup waits for all of them, and a source file changed meanwhile invalidates the round.
+
+**Worker**:
+One member of a validation group. A worker that fails to produce a usable result is retried up to twice against the same code; a report with findings, or a red suite, is a result and is not retried.
+
+**Finding**:
+One code reviewer's objection: a stable reference lathe assigns, its source, a location where one applies, evidence, an explanation and the requested outcome.
+
+**Adjudication**:
+The adjudicator's decision on one validation round: every finding fixed or dismissed with a reason, and either acceptance or one set of changes for the builder. Only the adjudicator sends an implementation back.
+
+**Validation outcome**:
+How validation ended. Accepted needs a usable report from every worker and a measured green suite. Unresolved is findings still to fix after the last send-back; incomplete is a worker that exhausted its retries; invalidated is source that changed while the workers ran. `build` publishes unresolved and incomplete work as a draft pull request and still fails the run.
 
 **Agent**:
 A role assigned part of a workflow, with tools and instructions appropriate to
@@ -72,8 +84,10 @@ One assessment of the current plan against the request and repository.
 **Send-back**:
 A node naming an earlier node as its target, returning work to whatever
 produced it: a plan to the planner after review feedback or an unusable
-review, an implementation to the builder after a measured red suite. It spends
-one of the sending node's budget, even if nothing changes.
+review, an implementation to the builder after an adjudication asks for changes. It spends one of the sending node's budget, even if nothing changes.
+
+**Blocking objection**:
+A review objection that means the plan cannot succeed as written. It is sent back like any other, but one still standing at the review limit fails the run instead of becoming a risk.
 
 **Unresolved feedback**:
 Objections remaining at the review limit, carried forward as plan risks. A
@@ -85,4 +99,4 @@ the review limit may still have unresolved feedback and is not reviewer-approved
 
 **Correction**:
 A request for an agent to repair an invalid report or an unsupported claim
-within its current phase; it is separate from a plan send-back or a builder fix.
+within its current phase; it is separate from a plan send-back or a builder repair. A group worker's corrections and retries share one allowance.

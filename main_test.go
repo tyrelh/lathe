@@ -126,7 +126,7 @@ func TestEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	planJSON := "```json\n" + `{"summary":"planned","steps":["edit hello.txt"],"files":["hello.txt"],"risks":[],"feedback":[],"artifacts":[]}` + "\n```"
+	planJSON := "```json\n" + `{"summary":"planned","steps":["edit hello.txt"],"files":["hello.txt"],"risks":[],"feedback":[],"blocking":[],"artifacts":[]}` + "\n```"
 	stream, _ := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "stopReason": "stop", "content": []map[string]string{{"type": "text", "text": planJSON}}}})
 	if err := os.WriteFile(filepath.Join(stub, "reply.jsonl"), append(stream, '\n'), 0o644); err != nil {
 		t.Fatal(err)

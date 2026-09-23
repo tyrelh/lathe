@@ -65,6 +65,9 @@ func TestFilesPermitted(t *testing.T) {
 		{"../outside.go", "not inside the repository"},
 		{"/etc/passwd", "not inside the repository"},
 		{"internal/*.go", "looks like a glob"},
+		{"internal/run?.go", "looks like a glob"},
+		{"pages/blog/[slug].tsx", ""},
+		{"app/[...rest]/page.tsx", ""},
 		{".git/config", "is protected"},
 		{"deploy/server.pem", "is protected"},
 	} {

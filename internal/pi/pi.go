@@ -63,8 +63,11 @@ type Cost struct {
 type Message struct {
 	Role       string  `json:"role"` // user | assistant | toolResult
 	StopReason *string `json:"stopReason"`
-	Usage      *Usage  `json:"usage"`
-	Content    []Block `json:"content"`
+	// ErrorMessage is the provider's refusal when StopReason is "error": a
+	// model that does not exist, a missing key, a rate limit.
+	ErrorMessage string  `json:"errorMessage"`
+	Usage        *Usage  `json:"usage"`
+	Content      []Block `json:"content"`
 }
 
 // Block is one content block. thinking and toolCall blocks carry other keys;
@@ -103,11 +106,15 @@ type Handler func(Event) bool
 
 // Result is what a whole stream added up to.
 type Result struct {
-	Tokens    int     // sum over assistant message_end
-	Cost      float64 // dollars, same sum
-	Text      string  // final assistant reply
-	Events    int     // events parsed
-	Malformed int     // lines that were not JSON, which would mean a Pi change
+	Tokens int     // sum over assistant message_end
+	Cost   float64 // dollars, same sum
+	Text   string  // final assistant reply
+	// Failure is the provider error that ended the stream, if its last
+	// assistant message stopped on one. Pi exits 0 for these, so the empty
+	// Text would otherwise read as an agent that forgot its report.
+	Failure   string
+	Events    int // events parsed
+	Malformed int // lines that were not JSON, which would mean a Pi change
 }
 
 // Options configures one Pi invocation. Empty fields are left off the command
@@ -248,6 +255,13 @@ func Scan(r io.Reader, raw io.Writer, onEvent Handler) (Result, error) {
 				}
 				if m.StopReason != nil && *m.StopReason == "stop" {
 					res.Text = m.Text()
+				}
+				res.Failure = ""
+				if m.StopReason != nil && *m.StopReason == "error" {
+					res.Failure = m.ErrorMessage
+					if res.Failure == "" {
+						res.Failure = "the provider returned an error with no message"
+					}
 				}
 			}
 		}

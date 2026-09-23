@@ -18,7 +18,17 @@ func reviewReply(t *testing.T, feedback ...string) string {
 	if feedback == nil {
 		feedback = []string{}
 	}
-	b, err := json.Marshal(map[string]any{"summary": "reviewed", "feedback": feedback, "artifacts": []string{}})
+	b, err := json.Marshal(map[string]any{"summary": "reviewed", "feedback": feedback, "blocking": []string{}, "artifacts": []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return piReply(t, "```json\n"+string(b)+"\n```")
+}
+
+// blockedReply is a review that says the plan cannot succeed as written.
+func blockedReply(t *testing.T, blocking ...string) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"summary": "blocked", "feedback": []string{}, "blocking": blocking, "artifacts": []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,19 +41,20 @@ func reviewOK(t *testing.T) string {
 }
 
 func TestReviewOutput(t *testing.T) {
-	if got := (&ReviewOutput{}).Validate(); len(got) != 3 {
+	if got := (&ReviewOutput{}).Validate(); len(got) != 4 {
 		t.Fatalf("missing fields: %v", got)
 	}
 	for _, body := range []string{
+		`{"summary":"reviewed","feedback":[],"blocking":[],"artifacts":[]}`,
 		`{"summary":"reviewed","feedback":[],"artifacts":[]}`,
-		`{"summary":"reviewed","feedback":null,"artifacts":[]}`,
-		`{"summary":" ","feedback":[],"artifacts":[]}`,
+		`{"summary":"reviewed","feedback":null,"blocking":[],"artifacts":[]}`,
+		`{"summary":" ","feedback":[],"blocking":[],"artifacts":[]}`,
 	} {
 		var out ReviewOutput
 		if err := json.Unmarshal([]byte(body), &out); err != nil {
 			t.Fatal(err)
 		}
-		wantOK := strings.Contains(body, `"summary":"reviewed","feedback":[]`)
+		wantOK := strings.Contains(body, `"summary":"reviewed","feedback":[],"blocking":[]`)
 		if (len(out.Validate()) == 0) != wantOK {
 			t.Fatalf("validation of %s: %v", body, out.Validate())
 		}
@@ -98,7 +109,7 @@ func TestPlanReviewLoop(t *testing.T) {
 				t.Fatalf("saved initial plan: %s", b)
 			}
 			for _, risk := range *plan.Risks {
-				if !strings.HasPrefix(risk, "unresolved review: ") || !strings.Contains(terminal.String(), risk) || !strings.Contains(implementRequest("add retry", &plan), risk) {
+				if !strings.HasPrefix(risk, "unresolved review: ") || !strings.Contains(terminal.String(), risk) || !strings.Contains(implementRequest("add retry", &plan, nil), risk) {
 					t.Fatalf("risk missing from terminal or handoff: %s", risk)
 				}
 				if tc.failed > 0 && !strings.Contains(risk, "review failed") {
@@ -258,5 +269,77 @@ fi
 	phases, err := db.Phases(filepath.Base(latestRunDir(t)))
 	if err != nil || len(phases) != 3 || phases[2].Name != "review" || phases[2].Status != "fail" {
 		t.Fatalf("continued after cancellation: %v, %v", phases, err)
+	}
+}
+
+// A plan the reviewer says cannot succeed never reaches the builder: blocking
+// objections go back to the planner like feedback, and any still standing at
+// the review limit fail the run instead of becoming risks. One the planner
+// resolves is forgotten like any other objection.
+func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
+	const blocker = "pages/blog/[slug].tsx needs editing but is not in files; the plan says the run will fail"
+	for _, tc := range []struct {
+		name    string
+		clears  bool
+		want    int
+		reviews int
+	}{{"blocked at the limit", false, 1, 5}, {"blocker resolved", true, 0, 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, repo := buildRepo(t)
+			stub := codeStub(t)
+			write(t, filepath.Join(stub, "plan-reviewer"), blockedReply(t, blocker))
+			if tc.clears {
+				write(t, filepath.Join(stub, "plan-reviewer.1"), reviewOK(t))
+			}
+			var out strings.Builder
+			if code := executeWith(t, cfg, "implement", repo, "restyle the metadata", context.Background(), &out); code != tc.want {
+				t.Fatalf("code = %d: %s", code, &out)
+			}
+			if n := spawnsOf(t, stub, "plan-reviewer"); n != tc.reviews {
+				t.Fatalf("reviews = %d", n)
+			}
+			if got := stubFile(t, stub, "args.planner.1"); !strings.Contains(got, "Blocking objections") || !strings.Contains(got, blocker) {
+				t.Fatalf("planner was not told what blocks it: %s", got)
+			}
+			builds := spawnsOf(t, stub, "builder")
+			if tc.clears {
+				if builds != 1 {
+					t.Fatalf("a resolved blocker still stopped the run: %d builds", builds)
+				}
+				return
+			}
+			if builds != 0 {
+				t.Fatal("a blocked plan reached the builder")
+			}
+			if reason := latestRun(t).Reason; !strings.Contains(reason, "cannot succeed as written") || !strings.Contains(reason, blocker) {
+				t.Fatalf("reason = %q", reason)
+			}
+			b, err := os.ReadFile(filepath.Join(latestRunDir(t), "plan.json"))
+			if err != nil {
+				t.Fatal("blocked plan not saved for diagnosis")
+			}
+			if strings.Contains(string(b), "unresolved review") {
+				t.Fatalf("a blocker was forwarded as a risk: %s", b)
+			}
+		})
+	}
+}
+
+// A reviewer that never ran — Pi could not reach its provider — has assessed
+// nothing. The run stops there rather than sending the plan round four more
+// times and forwarding it unreviewed at the limit.
+func TestReviewerThatNeverRanStopsTheRun(t *testing.T) {
+	cfg, repo := buildRepo(t)
+	stub := codeStub(t)
+	write(t, filepath.Join(stub, "plan-reviewer.sh"), "echo 'No API key found for anthropic.' >&2; exit 1\n")
+
+	if code := execute(t, cfg, "implement", repo, "restyle the metadata"); code != 1 {
+		t.Fatalf("code = %d", code)
+	}
+	if p, r, b := spawnsOf(t, stub, "planner"), spawnsOf(t, stub, "plan-reviewer"), spawnsOf(t, stub, "builder"); p != 1 || r != 1 || b != 0 {
+		t.Fatalf("planner %d, reviewer %d, builder %d; want one of each before stopping and no builder", p, r, b)
+	}
+	if reason := latestRun(t).Reason; !strings.Contains(reason, "No API key found for anthropic") {
+		t.Fatalf("reason = %q", reason)
 	}
 }

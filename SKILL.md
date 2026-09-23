@@ -33,14 +33,7 @@ automatically if none is running.
   file list is the write scope the builder is held to, so a plan that
   names `.git`, `.env*` or key material is rejected before it is printed.
 
-- `implement "<request>"` — plan, implement and test a change in a clean Git
-  repository. The builder gets write and edit tools, no shell, and may write only
-  the plan's files. Changes remain uncommitted. A missed file ends the run as a
-  failure naming the needed path. The tester discovers a command; lathe runs it
-  under the tester timeout and shell deny list with your inherited environment. A
-  red exit gets up to four fix rounds in the builder's same session. Test dirt
-  outside the accumulated plan scope is reverted. Review with `git diff`,
-  including after failure: planned changes remain in the tree.
+- `implement "<request>"` — plan, implement and validate a change in a clean Git repository. The builder gets write and edit tools, no shell, and may write only the plan's files. Changes remain uncommitted. A missed file ends the run as a failure naming the needed path. Each implementation round is validated by four workers at once: the tester reassesses the test command and lathe runs it under the command timeout and shell deny list with your inherited environment, while three read-only reviewers check correctness, security and unnecessary complexity. An adjudicator then weighs every report and either accepts or sends the builder back with one set of changes, up to four times. Acceptance needs a measured green suite and a usable report from every worker. Work still unaccepted after the fourth repair, or whose validation could not complete, stays in the tree and the run fails saying why. Test dirt outside the accumulated plan scope is reverted once every worker has finished; a source file changed while the workers ran invalidates the round and stops the run. Review with `git diff`, including after failure: planned changes remain in the tree.
 
 - `build "<request>"` — the same run, then branch, commit and open a pull
   request. It needs `git` and `gh` on `PATH` and `gh` already authenticated.
@@ -49,21 +42,20 @@ automatically if none is running.
   and the pr-author writes the title and body, while lathe runs `git checkout
   -b`, stages exactly the accepted scope and commits it, pushes, and runs
   `gh pr create`. No agent can commit or push: the guard denies both. None of
-  the three sends work back, so a failure in any of them ends the run.
+  the three sends work back, so a failure in any of them ends the run. An accepted change opens a normal pull request. Unresolved findings at the send-back limit, or incomplete validation, still commit and open a draft pull request that carries the validation report, and the run fails: the draft is unfinished work, not an accepted change. Cancellation and a source change during validation publish nothing.
 
 The plan, implement and build workflows share a read-only review loop:
 
 ```
 request → plan → review → [plan → review, up to four send-backs]
 plan:      → print the reviewed plan
-implement: → implement → test → [implement → test, up to four fixes]
-build:     → branch → implement → test → [implement → test] → commit → pr
+implement: → implement → validate → adjudicate → [implement → validate → adjudicate, up to four repairs]
+build:     → branch → implement → validate → adjudicate → [...] → commit → pr (draft when unaccepted)
 ```
 
-The reviewer checks the plan against the repository, including the builder's
-file list. Empty feedback accepts it. The fifth review ends the loop; remaining
-objections or a failed final review become risks in the saved plan and builder
-handoff. Failed reviews consume a send-back and remain visible as failed phases
+`validate` runs `test`, `code-review-general`, `code-review-security` and `code-review-slop` at once, each traced as its own phase. A worker that fails outright is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete.
+
+The reviewer checks the plan against the repository, including the builder's file list. Empty feedback accepts it. The fifth review ends the loop; remaining objections or a failed final review become risks in the saved plan and builder handoff. An objection the reviewer marks blocking, because the plan cannot succeed as written, is the exception: if it survives the fifth review the run fails before the builder starts, with the plan saved for diagnosis. Failed reviews consume a send-back and remain visible as failed phases
 even when the run succeeds. Planner failures and cancellation stop the run.
 
 ## Writing the request
@@ -98,9 +90,7 @@ a failed build produced nothing.
 The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
 prints; `<dir>/implement.json` is the builder's report (also saved when it
-reports needed files); `<dir>/test.json` records the discovered command and
-observations; `<dir>/pr.json` holds the pull request a build opened, including
-its URL. Runs from before the rename have `build.json` where `implement.json`
+reports needed files); `<dir>/validation.json` holds every validation round — the tester's report, lathe's measurement, each reviewer's findings, the adjudicator's decisions, any scope or plan amendments — and how validation ended (`accepted`, `unresolved`, `incomplete` or `invalidated`); `<dir>/pr.json` holds the pull request a build opened, including its URL and whether it is a draft of unaccepted work. Runs from before parallel validation have `test.json` instead. Runs from before the rename have `build.json` where `implement.json`
 now is. There is no `branch.json` or `commit.json`: the branch name and the
 commit sha are both in git and in the trace. `<dir>/<attempt>/raw.jsonl` is the
 full event stream. `lathe runs` lists recent runs from every repo, queued and

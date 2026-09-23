@@ -32,3 +32,5 @@ the only thing that decides where the node goes. It also replaced
 `RecoverableError`: a node that wants a failed phase inside a continuing run
 calls `Entry.Failed` and returns its target, which is the outcome 0001
 describes with no wrapper type at the call site.
+
+Since 0004 the test loop is gone: `test` is one worker in the `validate` group, and the adjudicator owns the send-back to the builder. Its policy at zero is to hand the work off unaccepted with its remaining findings. The group is the one place phases run concurrently; it never sends back, so the counting rule here is unchanged.

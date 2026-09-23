@@ -98,7 +98,7 @@ func TestEmbeddedRostersResolve(t *testing.T) {
 			}
 		}
 	}
-	if _, ok := workflow.Graphs["build"]; !ok || len(workflow.Agents["build"]) != 7 {
+	if _, ok := workflow.Graphs["build"]; !ok || len(workflow.Agents["build"]) != 11 {
 		t.Fatalf("build roster: %v", workflow.Agents["build"])
 	}
 }

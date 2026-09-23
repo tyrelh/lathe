@@ -36,8 +36,8 @@ lathe manager                            # queue and dashboard at http://127.0.0
 
 ```
 plan:      request → plan → review   (up to 4 send-backs)
-implement: … → implement → test      (up to 4 fix rounds)
-build:     … → branch → implement → test → commit → pr
+implement: … → implement → validate → adjudicate   (up to 4 repairs)
+build:     … → branch → implement → validate → adjudicate → commit → pr
 ```
 
 ## Running
