@@ -175,7 +175,6 @@
   #phase > details > summary { color: var(--dim); }
   #phase > details > summary.fail { color: var(--fail); }
   #phase p { margin: 8px 0 4px; }
-  #permits section { border-bottom: 1px solid var(--line); padding: 8px 0; }
   #log td:last-child { white-space: normal; width: 100%; }
 
   /* Two compact lifetime totals, then the rankings in two independent columns. */
@@ -238,7 +237,7 @@ const POLL = {overview: 5000, runs: 2000, run: 1000, missing: 0};
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
 // the sum of every response in every try — which is the number worth seeing.
-const spend = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map(), permits = [];
+const spend = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map();
 // phase_id -> every usage payload, and every captured command output tail, in
 // event order. A phase in tails ran a command even while its list is empty.
 const usage = new Map(), tails = new Map();
@@ -285,7 +284,7 @@ function navigate() {
   view = route();
   generation++;
   after = 0; done = false; failure = '';
-  spend.clear(); inputs.clear(); outputs.clear(); responses.clear(); permits.length = 0;
+  spend.clear(); inputs.clear(); outputs.clear(); responses.clear();
   usage.clear(); tails.clear(); panels.clear();
   draining = false; shown = null; selected = '';
   resized.disconnect(); observed = null;
@@ -479,7 +478,6 @@ async function detail(current) {
       responses.set(e.phase_id, (responses.get(e.phase_id) || '') +
         `<p>Response ${(e.payload.attempt ?? 0) + 1}${e.type !== 'output' ? ' · rejected' : ''}</p><pre>${esc(e.payload.text)}</pre>`);
     }
-    if (e.type === 'permit') permits.push(e);
     if (e.type !== 'usage' || !e.payload) continue;
     bucket(usage, e.phase_id).push(e.payload);
     const s = spend.get(e.phase_id) || { model: '', tokens: 0, cost: 0 };
@@ -504,7 +502,6 @@ async function detail(current) {
       <div class="card"><p id="head"></p></div>
       <section class="card"><h2>phases</h2><div id="phases"></div></section>
       <section class="card" id="phase"></section>
-      <section class="card"><h2>permissions</h2><div id="permits"></div></section>
       <section class="card"><h2>events</h2><table id="log"></table></section>`;
   }
   $('head').innerHTML =
@@ -512,13 +509,6 @@ async function detail(current) {
   const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
   shown = {run: r, phases: d.phases};
   draw();
-
-  const seq = new Map(d.phases.map(p => [p.phase_id, p.seq]));
-  $('permits').innerHTML = permits.map(e => `
-    <section><b>${seq.has(e.phase_id) ? seq.get(e.phase_id) + ' ' : ''}${esc(e.name)}</b> <span class="dim">${time(e.at)}</span>
-      <p>Kept</p><pre>${files(e.payload?.kept)}</pre>
-      <p class="fail">Reverted</p><pre class="fail">${files(e.payload?.reverted)}</pre>
-    </section>`).join('') || '<p class="dim">No permission checks recorded.</p>';
 
   bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
     + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
@@ -883,8 +873,6 @@ const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.
 const isCommand = e => e.type === 'log' && e.name === 'command';
 // Indented for a panel, compact for a one-line preview; one dispatch either way.
 const text = (p, indent) => p == null ? '' : typeof p === 'string' ? p : JSON.stringify(p, null, indent);
-const files = xs => esc((xs || []).join('\n') || 'None');
-
 function eventPayload(e) {
   // Commands and failures stay visible in full, including a blocked call's reason.
   const whole = failed(e) || isCommand(e) || (e.type === 'tool_call' && e.name === 'bash');
