@@ -1,5 +1,7 @@
 # The agent roster. Embedded into the binary at build time, so editing this
 # file means rebuilding — `go run .` during development, `make build` to deploy.
+# A target repository's own lathe.toml can override provider, model and
+# thinking on top of it; nothing else here is settable from the target.
 
 # Paths no agent may write and no plan may name. An entry ending in "/" is a
 # directory name, matched at any depth; anything else is a glob matched against

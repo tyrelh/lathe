@@ -150,3 +150,133 @@ func TestProtectedDecodes(t *testing.T) {
 		t.Fatalf("protected = %q; want at least .git/ and .env*", got)
 	}
 }
+
+// project writes body as root's lathe.toml and loads it into the shipped roster.
+func project(t *testing.T, body string) (Config, bool, error) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "lathe.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := assets(t)
+	loaded, err := c.LoadProject(root)
+	return c, loaded, err
+}
+
+func resolve(t *testing.T, c Config, name string, ov Overrides) Resolved {
+	t.Helper()
+	a, err := c.Resolve(name, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestLoadProjectMissingIsSilent(t *testing.T) {
+	c := assets(t)
+	loaded, err := c.LoadProject(t.TempDir())
+	if loaded || err != nil {
+		t.Fatalf("missing file: loaded = %v, err = %v", loaded, err)
+	}
+	if a := resolve(t, c, "builder", Overrides{}); a.Model != "kimi-k2.7-code" || a.Provider != "moonshotai" {
+		t.Fatalf("a missing file changed the builder: %+v", a)
+	}
+}
+
+// Each field falls through on its own: flag, then [agents.<name>], then the
+// top level, then the roster.
+func TestLoadProjectPrecedence(t *testing.T) {
+	c, loaded, err := project(t, `
+provider = "anthropic"
+model    = "claude-sonnet-5"
+
+[agents.planner]
+model = "claude-opus-5-5"
+`)
+	if !loaded || err != nil {
+		t.Fatalf("valid file: loaded = %v, err = %v", loaded, err)
+	}
+	// The top level beats the builder's own pin.
+	if a := resolve(t, c, "builder", Overrides{}); a.Model != "claude-sonnet-5" || a.Provider != "anthropic" {
+		t.Fatalf("builder: %+v", a)
+	}
+	// The planner's block applies to the planner, and it still picks up the
+	// top-level provider it does not set.
+	if a := resolve(t, c, "planner", Overrides{}); a.Model != "claude-opus-5-5" || a.Provider != "anthropic" {
+		t.Fatalf("planner: %+v", a)
+	}
+	// Thinking is set nowhere in the file, so the roster's default reaches it.
+	if a := resolve(t, c, "scout", Overrides{}); a.Thinking != "medium" {
+		t.Fatalf("scout thinking = %q", a.Thinking)
+	}
+	// A flag beats both.
+	if a := resolve(t, c, "planner", Overrides{Model: "kimi-k3"}); a.Model != "kimi-k3" || a.Provider != "anthropic" {
+		t.Fatalf("flagged planner: %+v", a)
+	}
+}
+
+// A malformed file is ignored whole, so a typo cannot quietly do nothing.
+func TestLoadProjectRejectsMalformed(t *testing.T) {
+	for _, tc := range []struct{ name, body, mention string }{
+		{"invalid toml", `model = `, ""},
+		{"wrong type", `model = 3`, ""},
+		{"unknown key", `modle = "x"`, "modle"},
+		{"unknown agent", "[agents.bulder]\nmodel = \"x\"", "bulder"},
+		// Nothing that loosens a guard is settable from the target repository.
+		{"forbidden nested key", "model = \"x\"\n[agents.builder]\ntools = [\"bash\"]", "agents.builder.tools"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, loaded, err := project(t, tc.body)
+			if loaded || err == nil || !strings.HasPrefix(err.Error(), "lathe.toml:") {
+				t.Fatalf("loaded = %v, err = %v", loaded, err)
+			}
+			if !strings.Contains(err.Error(), tc.mention) {
+				t.Fatalf("err = %v; want it to name %q", err, tc.mention)
+			}
+			a := resolve(t, c, "builder", Overrides{})
+			if a.Model != "kimi-k2.7-code" || strings.Join(a.Tools, ",") != "read,grep,find,ls,write,edit" {
+				t.Fatalf("a rejected file changed the builder: %+v", a)
+			}
+		})
+	}
+}
+
+// Agent names are checked against the whole roster, not the workflow at hand.
+func TestLoadProjectAcceptsAgentsOutsideTheWorkflow(t *testing.T) {
+	c, loaded, err := project(t, "[agents.pr-author]\nmodel = \"x\"")
+	if !loaded || err != nil {
+		t.Fatalf("loaded = %v, err = %v", loaded, err)
+	}
+	s, err := c.Capture([]string{"scout"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Agents["scout"].Model != "kimi-k2.7-code" {
+		t.Fatalf("scout: %+v", s.Agents["scout"])
+	}
+}
+
+// The snapshot is frozen: reloading a changed file does not reach it.
+func TestCaptureFreezesProject(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "lathe.toml")
+	os.WriteFile(path, []byte(`model = "first"`), 0o644)
+	c := assets(t)
+	if _, err := c.LoadProject(root); err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.Capture([]string{"builder"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(path, []byte(`model = "second"`), 0o644)
+	if _, err := c.LoadProject(root); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Agents["builder"].Model; got != "first" {
+		t.Fatalf("captured model = %q; want first", got)
+	}
+	if got := resolve(t, c, "builder", Overrides{}).Model; got != "second" {
+		t.Fatalf("reloaded model = %q; want second", got)
+	}
+}

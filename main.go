@@ -141,6 +141,14 @@ func submit(name string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	// The target's lathe.toml is read here, at submission, so its values are
+	// frozen into the snapshot with everything else. A broken file is a
+	// warning, not a failure: the run goes ahead on the roster.
+	if loaded, err := cfg.LoadProject(root); err != nil {
+		fmt.Fprintln(os.Stderr, "lathe: ignoring", err)
+	} else if loaded {
+		fmt.Fprintln(os.Stderr, "lathe: loaded", filepath.Join(root, "lathe.toml"))
+	}
 	// Resolving now turns an unknown agent, a bad timeout or a missing prompt
 	// into an error before a run row exists — and the resolved roster is what
 	// the worker executes from, so editing a prompt cannot change queued work.
