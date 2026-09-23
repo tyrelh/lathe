@@ -1,2 +1,5 @@
 # Local pipeline harness, not part of the release.
 /test.sh
+
+# Per-machine model overrides; see README "Project config".
+/lathe.toml
