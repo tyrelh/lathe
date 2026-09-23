@@ -152,11 +152,8 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := db.Recent(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phases, err := db.Phases(rows[0].ID)
+	issueRunID := strings.Fields(out)[1]
+	phases, err := db.Phases(issueRunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +161,7 @@ func TestEndToEnd(t *testing.T) {
 	if len(phases) != 4 || phases[1].Name != "issue" || phases[1].Status != "success" {
 		t.Fatalf("phases: %+v", phases)
 	}
-	if _, err := os.Stat(filepath.Join(home, "data", "lathe", "runs", rows[0].ID, "issue.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "data", "lathe", "runs", issueRunID, "issue.json")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte("#!/bin/sh\necho 'issue not found' >&2\nexit 1\n"), 0o755); err != nil {
