@@ -7,6 +7,16 @@ import "database/sql"
 // database with years of runs in it.
 const topN = 10
 
+// ProjectSpend is one repository's share of recorded spend. Runs is how many
+// runs in that repo contributed; a repo with no recorded runs is not ranked.
+type ProjectSpend struct {
+	Repo   string  `json:"repo"`
+	Runs   int     `json:"runs"`
+	Tokens int     `json:"tokens"`
+	Cost   float64 `json:"cost"`
+	Share  float64 `json:"share"`
+}
+
 // ModelSpend is one provider/model pair's share of recorded spend. Phases
 // counts the distinct phases that spent on it, which is the unit that actually
 // pins a model: a run moves between agents and so between models, a phase does
@@ -23,12 +33,13 @@ type ModelSpend struct {
 // Overview is every lifetime figure the dashboard's first page shows, across
 // every repository in the database.
 type Overview struct {
-	Runs      int          `json:"runs"`
-	Tokens    int          `json:"tokens"`
-	Cost      float64      `json:"cost"`
-	TopRuns   []Row        `json:"top_runs"`
-	TopModels []ModelSpend `json:"top_models"`
-	At        string       `json:"at"`
+	Runs        int            `json:"runs"`
+	Tokens      int            `json:"tokens"`
+	Cost        float64        `json:"cost"`
+	TopProjects []ProjectSpend `json:"top_projects"`
+	TopRuns     []Row          `json:"top_runs"`
+	TopModels   []ModelSpend   `json:"top_models"`
+	At          string         `json:"at"`
 }
 
 // Overview reads every figure inside one transaction, so the totals and the
@@ -80,6 +91,28 @@ func (d *DB) Overview() (Overview, error) {
 			m.Share = m.Cost / o.Cost
 		}
 		o.TopModels = append(o.TopModels, m)
+	}
+	if err := rows.Err(); err != nil {
+		return o, err
+	}
+
+	rows, err = tx.Query(
+		`SELECT COALESCE(repo, ''), COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0)
+		 FROM runs GROUP BY repo ORDER BY SUM(cost) DESC, repo LIMIT ?`, topN)
+	if err != nil {
+		return o, err
+	}
+	defer rows.Close()
+	o.TopProjects = []ProjectSpend{}
+	for rows.Next() {
+		var p ProjectSpend
+		if err := rows.Scan(&p.Repo, &p.Runs, &p.Tokens, &p.Cost); err != nil {
+			return o, err
+		}
+		if o.Cost > 0 {
+			p.Share = p.Cost / o.Cost
+		}
+		o.TopProjects = append(o.TopProjects, p)
 	}
 	if err := rows.Err(); err != nil {
 		return o, err

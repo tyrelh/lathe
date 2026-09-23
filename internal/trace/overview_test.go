@@ -18,7 +18,7 @@ func TestOverviewEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Runs != 0 || o.Cost != 0 || len(o.TopRuns) != 0 || len(o.TopModels) != 0 {
+	if o.Runs != 0 || o.Cost != 0 || len(o.TopRuns) != 0 || len(o.TopModels) != 0 || len(o.TopProjects) != 0 {
 		t.Fatalf("empty database: %+v", o)
 	}
 	if o.At == "" {
@@ -44,7 +44,11 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 	opusPhases := 0
 	for i := 0; i < runs; i++ {
 		id := fmt.Sprintf("r%02d", i)
-		seedRun(t, db, id, "/repo")
+		repo := "/repo/alpha"
+		if i >= 42 {
+			repo = "/repo/beta"
+		}
+		seedRun(t, db, id, repo)
 		for seq := 1; seq <= kimiPhases; seq++ {
 			p := NewPhase(id, seq, "work", "builder")
 			if err := db.PhaseUpsert(p); err != nil {
@@ -131,6 +135,31 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 	// whole of recorded spend.
 	if share := kimi.Cost / o.Cost; math.Abs(kimi.Share-share) > 1e-9 || math.Abs(kimi.Share+opus.Share-1) > 1e-9 {
 		t.Fatalf("shares %v %v of $%v", kimi.Share, opus.Share, o.Cost)
+	}
+
+	if len(o.TopProjects) != 3 {
+		t.Fatalf("top projects = %+v", o.TopProjects)
+	}
+	for i := 1; i < len(o.TopProjects); i++ {
+		if o.TopProjects[i-1].Cost < o.TopProjects[i].Cost {
+			t.Fatalf("top projects are not descending: %+v", o.TopProjects)
+		}
+	}
+	alpha, beta, emptyRepo := o.TopProjects[0], o.TopProjects[1], o.TopProjects[2]
+	if alpha.Repo != "/repo/alpha" || alpha.Runs != 42 {
+		t.Fatalf("alpha = %+v; want 42 runs", alpha)
+	}
+	if beta.Repo != "/repo/beta" || beta.Runs != 21 {
+		t.Fatalf("beta = %+v; want 21 runs", beta)
+	}
+	if emptyRepo.Repo != "/repo" || emptyRepo.Runs != 1 || emptyRepo.Cost != 0 {
+		t.Fatalf("empty repo = %+v; want 1 run, $0", emptyRepo)
+	}
+	if math.Abs(alpha.Cost+beta.Cost-o.Cost) > costEpsilon {
+		t.Fatalf("project costs %v+%v != total %v", alpha.Cost, beta.Cost, o.Cost)
+	}
+	if share := alpha.Cost / o.Cost; math.Abs(alpha.Share-share) > 1e-9 || math.Abs(alpha.Share+beta.Share-1) > 1e-9 {
+		t.Fatalf("project shares %v %v of $%v", alpha.Share, beta.Share, o.Cost)
 	}
 
 	if total, err := db.Total(); err != nil || total != runs+1 {
