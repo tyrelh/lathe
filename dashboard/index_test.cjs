@@ -18,7 +18,7 @@ class Element {
   contains() { return false; }
   focus(options) { this.focused = options; }
 }
-for (const id of ['app', 'status', 'note', 'version', 'head', 'phases', 'phase', 'log', 'permits',
+for (const id of ['app', 'status', 'note', 'version', 'head', 'phases', 'phase', 'log',
                   'nav-overview', 'nav-runs', 'follow-box', 'follow-label']) nodes.set(id, new Element());
 let response, resolveFetch, failNext = null, frames = [];
 const observers = [];
@@ -208,7 +208,6 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
   assert.equal(chart().split('class="node"').length - 1, 1, 'both entries share a row');
   assert(panel().includes('Select a phase.'));
-  assert(nodes.get('permits').innerHTML.includes('&lt;bad>'));
   assert.equal(nodes.get('app').scrollTop, 0, 'must not scroll a reader away');
   assert.equal(observers[0].watching[0], nodes.get('phases'), 'the chart is watched for width changes');
   assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow toggle is shown on a run page');
@@ -264,7 +263,10 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   evaluate(`pick('p1')`);
   assert(panel().includes('Select a phase.'), 'clicking the selected block deselects it');
   assert.equal(nodes.get('log').children.length, 505);
-  assert.equal(nodes.get('permits').innerHTML.split('<section>').length - 1, 1, 'permit rendered once');
+  const permitRows = nodes.get('log').children.filter(row => row.innerHTML.includes('>permit<'));
+  assert.equal(permitRows.length, 1, 'permit event appears once across paginated polls');
+  assert(permitRows[0].innerHTML.includes('&lt;bad>') && !permitRows[0].innerHTML.includes('<bad>'),
+    'permit payload is escaped in the events log');
   // The bottom bar carries the run's own context, and a settled run reads run complete.
   const bar = nodes.get('status').innerHTML;
   // Queue time and execution time are separate: 10s waiting, 1m05s working.
