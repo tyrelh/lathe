@@ -78,6 +78,7 @@ error handling" gets a vague one.
 
 Before the request, not after:
 
+- `--issue <number|URL|owner/repo#number>` use a GitHub issue instead of a prompt for `plan`, `implement`, or `build`; bare numbers resolve against the target checkout. The worker fetches the title and body with authenticated `gh` in a traced `issue` phase before planning and saves `issue.json`. Comments are not included.
 - `--repo <dir>` act on another repository
 - `--detach` record the request, print the run ID, exit 0
 - `--model`, `--provider`, `--thinking` override the roster for one run

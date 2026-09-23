@@ -81,6 +81,7 @@ type Run struct {
 	ID       string
 	Workflow string
 	Request  string
+	Issue    string // optional GitHub issue reference, resolved before planning
 	Repo     string // absolute target root: what makes one global database legible
 	Dir      string // per-run directory in the data root; the structured reports live here
 	Work     string // per-attempt directory: raw.jsonl, the guard, the scope and the Pi session
@@ -119,6 +120,7 @@ type Options struct {
 	ID       string
 	Workflow string
 	Request  string
+	Issue    string // optional GitHub issue reference, resolved before planning
 	Repo     string
 	Dir      string
 	Work     string
@@ -137,6 +139,7 @@ func Open(o Options) (*Run, error) {
 		ID:       o.ID,
 		Workflow: o.Workflow,
 		Request:  o.Request,
+		Issue:    o.Issue,
 		Repo:     o.Repo,
 		Dir:      o.Dir,
 		Work:     o.Work,

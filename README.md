@@ -21,6 +21,8 @@ make install   # build ~/.local/bin/lathe and link it into your agents' skills
 
 lathe scout "where is auth handled"      # investigate; writes nothing
 lathe plan "add retry to the client"     # plan; writes nothing
+lathe plan --issue 41                    # plan from an issue in this repo
+lathe implement --issue tyrelh/lathe#41   # implement from a GitHub issue
 lathe implement "add retry"              # plan, implement, test; leave it uncommitted
 lathe build "add retry"                  # implement, then branch, commit and open a PR
 lathe build --detach "add retry"         # queue it and exit
@@ -46,6 +48,8 @@ build:     … → branch → implement → test → commit → pr
 - `build` needs `gh` logged in. A failed build keeps its commit.
 - The builder can only write files its plan named. The shell deny list is a rough filter, not a sandbox.
 - Traces go to `~/.local/share/lathe/lathe.db`, or under `$XDG_DATA_HOME`.
+
+Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `implement`, or `build`. A bare number uses the target checkout’s GitHub remote (`--repo` still selects the local checkout). The worker needs `gh` on `PATH` and authenticated. An `issue` code phase fetches the title and body when the run starts, saves `issue.json`, and passes that task to the planner and subsequent agents. A failed lookup stops the run before planning. Issue comments are not included.
 
 ## Project config
 
