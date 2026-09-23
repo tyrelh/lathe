@@ -19,7 +19,7 @@ class Element {
   focus(options) { this.focused = options; }
 }
 for (const id of ['app', 'status', 'note', 'version', 'head', 'phases', 'phase', 'log', 'permits',
-                  'nav-overview', 'nav-runs']) nodes.set(id, new Element());
+                  'nav-overview', 'nav-runs', 'follow-box', 'follow-label']) nodes.set(id, new Element());
 let response, resolveFetch, failNext = null, frames = [];
 const observers = [];
 const context = vm.createContext({
@@ -211,6 +211,8 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(nodes.get('permits').innerHTML.includes('&lt;bad>'));
   assert.equal(nodes.get('app').scrollTop, 0, 'must not scroll a reader away');
   assert.equal(observers[0].watching[0], nodes.get('phases'), 'the chart is watched for width changes');
+  assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow toggle is shown on a run page');
+  assert.equal(nodes.get('follow-box').checked, undefined, 'follow defaults off');
 
   // Selection renders from cache; missing usage is still loading while the
   // backlog drains, not "not recorded".
@@ -229,11 +231,15 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   nodes.get('phases').querySelectorAll = sel => sel === '[data-focus]' ? [twin] : [];
   context.document.activeElement = focused;
 
+  // With follow disabled, being at the bottom must not pull the page down.
+  nodes.get('follow-box').checked = false;
+  nodes.get('app').scrollTop = nodes.get('app').scrollHeight - nodes.get('app').clientHeight;
   serve([event('input',{prompt:'correction'}),event('usage',{attempt:1,seq:1,provider:'pi',tokens:20,cost:0.2}),
          event('log','test command','p2','command'),event('log','  <b>spaced</b>\n  out','p2','output'),
          event('log','','p2','output')]);
   await evaluate('tick()');
   assert.equal(evaluate('done'), true);
+  assert.equal(nodes.get('app').scrollTop, nodes.get('app').scrollHeight - nodes.get('app').clientHeight, 'follow off preserves scroll position');
   assert.deepEqual({...twin.focused}, {preventScroll: true}, 'focus restored without scrolling');
   twin.focused = null; context.document.activeElement = new Element();
   evaluate('draw()');
@@ -259,11 +265,12 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(panel().includes('Select a phase.'), 'clicking the selected block deselects it');
   assert.equal(nodes.get('log').children.length, 505);
   assert.equal(nodes.get('permits').innerHTML.split('<section>').length - 1, 1, 'permit rendered once');
-  // The bottom bar carries the run's own context, and a settled run reads final.
+  // The bottom bar carries the run's own context, and a settled run reads run complete.
   const bar = nodes.get('status').innerHTML;
   // Queue time and execution time are separate: 10s waiting, 1m05s working.
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
-  assert.equal(nodes.get('note').textContent, 'final');
+  assert.equal(nodes.get('note').textContent, 'run complete');
+  assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
 
   // Label placement reads the rendered pixels, resets what it set last time,
   // and runs again when the chart's width changes.
@@ -287,6 +294,15 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert.deepEqual(blocks.map(b => b.style.top), ['1px', '41px']);
   assert.equal(track.style.height, '80px');
   nodes.get('phases').querySelectorAll = () => [];
+
+  // With follow enabled, the page snaps to the tail when the reader is already at the bottom.
+  evaluate('done = false');
+  nodes.get('follow-box').checked = true;
+  nodes.get('app').scrollTop = nodes.get('app').scrollHeight - nodes.get('app').clientHeight;
+  serve([event('log','tail event')]);
+  await evaluate('tick()');
+  assert.equal(nodes.get('app').scrollTop, nodes.get('app').scrollHeight, 'follow on scrolls to the tail');
+  assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
 
   // Each plan/review keeps its own output across pages. The readable result
   // precedes raw replies and inputs, with nested disclosures retained on polls.
