@@ -4,8 +4,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -46,14 +48,32 @@ type Config struct {
 	Defaults       Agent   `toml:"defaults"`
 	Agents         []Agent `toml:"agents"`
 
-	fsys fs.FS
+	fsys    fs.FS
+	project Project
 }
 
-// Overrides are the per-run flags. Empty fields change nothing.
+// Overrides are the per-run flags, and also what a project's lathe.toml sets.
+// Empty fields change nothing.
 type Overrides struct {
-	Provider string
-	Model    string
-	Thinking string
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+	Thinking string `toml:"thinking"`
+}
+
+// Or fills each empty field from fallback, field by field.
+func (o Overrides) Or(fallback Overrides) Overrides {
+	return Overrides{
+		Provider: pick(o.Provider, fallback.Provider),
+		Model:    pick(o.Model, fallback.Model),
+		Thinking: pick(o.Thinking, fallback.Thinking),
+	}
+}
+
+// Project is the target repository's lathe.toml: overrides for every
+// agent, and for any agent by name.
+type Project struct {
+	Overrides
+	Agents map[string]Overrides `toml:"agents"`
 }
 
 // Resolved is one agent with defaults, roster keys and flags already applied
@@ -71,19 +91,64 @@ type Resolved struct {
 	UserPrompt   string
 }
 
-// Load decodes lathe.toml out of fsys. fsys is the embedded assets in
+// Load decodes roster.toml out of fsys. fsys is the embedded assets in
 // production and a fstest.MapFS in tests.
 func Load(fsys fs.FS) (Config, error) {
-	b, err := fs.ReadFile(fsys, "lathe.toml")
+	b, err := fs.ReadFile(fsys, "roster.toml")
 	if err != nil {
 		return Config{}, err
 	}
 	var c Config
 	if _, err := toml.Decode(string(b), &c); err != nil {
-		return Config{}, fmt.Errorf("lathe.toml: %w", err)
+		return Config{}, fmt.Errorf("roster.toml: %w", err)
 	}
 	c.fsys = fsys
 	return c, nil
+}
+
+// LoadProject reads <root>/lathe.toml, the target repository's overrides. A
+// missing file is the normal case and returns (false, nil). Anything wrong
+// with the file — invalid TOML, a wrong type, an unknown key, an agent the
+// roster does not have — rejects the whole of it, so a typo cannot quietly do
+// nothing; the error says why and the roster applies unchanged. The file can
+// only set provider, model and thinking: it comes from the repository being
+// worked on, so nothing that loosens a guard belongs in it.
+func (c *Config) LoadProject(root string) (loaded bool, err error) {
+	b, err := os.ReadFile(filepath.Join(root, "lathe.toml"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lathe.toml: %w", err)
+	}
+	var p Project
+	md, err := toml.Decode(string(b), &p)
+	if err != nil {
+		return false, fmt.Errorf("lathe.toml: %w", err)
+	}
+	if keys := md.Undecoded(); len(keys) > 0 {
+		names := make([]string, len(keys))
+		for i, k := range keys {
+			names[i] = k.String()
+		}
+		return false, fmt.Errorf("lathe.toml: unknown keys: %s", strings.Join(names, ", "))
+	}
+	for name := range p.Agents {
+		if !c.hasAgent(name) {
+			return false, fmt.Errorf("lathe.toml: [agents.%s]: no such agent in the roster", name)
+		}
+	}
+	c.project = p
+	return true, nil
+}
+
+func (c Config) hasAgent(name string) bool {
+	for _, a := range c.Agents {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Resolve returns the named agent, or an error naming every agent that does
@@ -105,6 +170,8 @@ func (c Config) Resolve(name string, ov Overrides) (Resolved, error) {
 		return Resolved{}, fmt.Errorf("unknown agent %q (have: %s)", name, strings.Join(names, ", "))
 	}
 
+	// Flags, then the project's block for this agent, then its top level.
+	ov = ov.Or(c.project.Agents[name]).Or(c.project.Overrides)
 	r := Resolved{Agent: a}
 	r.Provider = pick(ov.Provider, a.Provider, c.Defaults.Provider)
 	r.Model = pick(ov.Model, a.Model, c.Defaults.Model)
@@ -171,9 +238,9 @@ func pick(vals ...string) string {
 }
 
 // Snapshot is the effective roster captured at submission: every agent the
-// workflow will spawn, already resolved against the roster, the defaults and
-// the run's flags. It is what a worker executes from, so editing lathe.toml or
-// a prompt cannot change work that is already queued.
+// workflow will spawn, already resolved against the roster, the defaults, the
+// project's lathe.toml and the run's flags. It is what a worker executes from,
+// so editing either file or a prompt cannot change work that is already queued.
 type Snapshot struct {
 	Version    int      `json:"version"`
 	Protected  []string `json:"protected"`

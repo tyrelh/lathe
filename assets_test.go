@@ -76,7 +76,7 @@ func TestEmbeddedPlanReviewer(t *testing.T) {
 }
 
 // Every workflow's whole roster resolves out of the embedded assets, which is
-// what catches an agent added to a graph with no row in lathe.toml or no prompt
+// what catches an agent added to a graph with no row in roster.toml or no prompt
 // file — a failure that would otherwise wait for someone to run that workflow.
 func TestEmbeddedRostersResolve(t *testing.T) {
 	cfg, err := config.Load(Assets)

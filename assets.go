@@ -6,5 +6,5 @@ import "embed"
 // the prompts. Compiling them in means there is no install root to resolve and
 // no way to end up reading a half-installed copy's prompts.
 //
-//go:embed lathe.toml prompts
+//go:embed roster.toml prompts
 var Assets embed.FS

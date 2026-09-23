@@ -81,6 +81,7 @@ Before the request, not after:
 - `--repo <dir>` act on another repository
 - `--detach` record the request, print the run ID, exit 0
 - `--model`, `--provider`, `--thinking` override the roster for one run
+- `lathe.toml` at the target's root sets the same three keys for every agent, or per agent under `[agents.<name>]`; flags beat it, and a malformed file is ignored with a warning
 
 `implement` and `build` need a clean checkout and own it until the run stops: do
 not edit files or switch branches there meanwhile. A second outstanding run of
