@@ -44,6 +44,7 @@ commands:
 
 flags (before the request, as Go's flag package stops at the first argument):
   --repo <dir>        act on this repository instead of the working directory
+  --issue <ref>       use a GitHub issue instead of a request (plan, implement, build)
   --detach            record the request, print the run ID and exit
   --provider <name>   override the provider for this run
   --model <name>      override the model for this run
@@ -115,12 +116,33 @@ func submit(name string, args []string) int {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	repo := fs.String("repo", "", "repository to act on (default: the git root of the working directory)")
 	detach := fs.Bool("detach", false, "record the request, print the run ID and exit")
+	issue := fs.String("issue", "", "GitHub issue number, URL, or owner/repo#number (instead of a request)")
 	ov := overrideFlags(fs)
 	fs.Parse(args)
 
 	request := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	var issueRef string
+	issueSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "issue" {
+			issueSet = true
+		}
+	})
+	if issueSet {
+		if name == "scout" || request != "" {
+			fmt.Fprintln(os.Stderr, "lathe: --issue requires plan, implement, or build and cannot be combined with a request")
+			return 2
+		}
+		var err error
+		issueRef, err = workspace.IssueReference(*issue)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "lathe:", err)
+			return 2
+		}
+		request = "GitHub issue " + issueRef
+	}
 	if request == "" {
-		fmt.Fprintf(os.Stderr, "lathe %s: needs a request, e.g. lathe %s %q\n",
+		fmt.Fprintf(os.Stderr, "lathe %s: needs a request or --issue, e.g. lathe %s %q\n",
 			name, name, "add retry with backoff to the fetch client")
 		return 2
 	}
@@ -174,7 +196,7 @@ func submit(name string, args []string) int {
 	}
 
 	spec, err := worker.Spec{
-		Version: worker.SpecVersion, Workflow: name, Request: request,
+		Version: worker.SpecVersion, Workflow: name, Request: request, Issue: issueRef,
 		Workspace: ws, Roster: roster, Overrides: *ov,
 	}.Marshal()
 	if err != nil {
@@ -262,7 +284,7 @@ func outcome(status string) int {
 // directory, in the order they are produced. build.json is what the builder's
 // report was called before the rename, kept so lathe show still reads runs from
 // before it.
-var reportFiles = []string{"result.json", "plan.json", "implement.json", "build.json", "test.json", "pr.json"}
+var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "pr.json"}
 
 // report prints what a finished run produced, including the partial reports
 // of one that failed, was cancelled, or was lost.
@@ -296,8 +318,12 @@ func report(row trace.Row, dataRoot string, asJSON bool) int {
 		}
 		var out struct {
 			Summary string `json:"summary"`
+			Title   string `json:"title"`
 		}
 		json.Unmarshal(b, &out)
+		if name == "issue.json" {
+			out.Summary = out.Title
+		}
 		fmt.Printf("  %s  %s\n", name, out.Summary)
 	}
 	return outcome(row.Status)

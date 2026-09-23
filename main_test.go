@@ -111,6 +111,76 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("lathe show exited %d:\n%s", code, shown)
 	}
 
+	// Issue input survives submission, the manager and worker, then reaches
+	// both planning agents. A lookup failure must never invoke pi.
+	for _, args := range [][]string{
+		{"plan", "--issue", ""}, {"plan", "--issue", "--web"},
+		{"plan", "--issue", "41", "also a prompt"}, {"scout", "--issue", "41"},
+	} {
+		if out, code := lathe(t, args...); code != 2 {
+			t.Fatalf("%v: %d %s", args, code, out)
+		}
+	}
+	issueJSON := `{"number":41,"title":"Issue task title","body":"Issue task body","url":"https://github.com/tyrelh/lathe/issues/41"}`
+	ghScript := "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" > " + filepath.Join(stub, "gh-args") + "\necho '" + issueJSON + "'\n"
+	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planJSON := "```json\n" + `{"summary":"planned","steps":["edit hello.txt"],"files":["hello.txt"],"risks":[],"feedback":[],"artifacts":[]}` + "\n```"
+	stream, _ := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "stopReason": "stop", "content": []map[string]string{{"type": "text", "text": planJSON}}}})
+	if err := os.WriteFile(filepath.Join(stub, "reply.jsonl"), append(stream, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	piScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + filepath.Join(stub, "pi-args") + "\ncat " + filepath.Join(stub, "reply.jsonl") + "\n"
+	if err := os.WriteFile(filepath.Join(stub, "pi"), []byte(piScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code = lathe(t, "plan", "--repo", repo, "--issue", "41")
+	if code != 0 {
+		t.Fatalf("issue plan: %d %s", code, out)
+	}
+	ghArgs, _ := os.ReadFile(filepath.Join(stub, "gh-args"))
+	realRepo, _ := filepath.EvalSymlinks(repo)
+	if string(ghArgs) != realRepo+"\nissue\nview\n41\n--json\nnumber,title,body,url\n" {
+		t.Fatalf("gh invocation: %s", ghArgs)
+	}
+	piArgs, _ := os.ReadFile(filepath.Join(stub, "pi-args"))
+	if strings.Count(string(piArgs), "Issue task body") != 2 || !strings.Contains(string(piArgs), "Issue task title") {
+		t.Fatalf("issue handoff: %s", piArgs)
+	}
+	db, err := trace.Open(filepath.Join(home, "data", "lathe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Recent(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases, err := db.Phases(rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if len(phases) != 4 || phases[1].Name != "issue" || phases[1].Status != "success" {
+		t.Fatalf("phases: %+v", phases)
+	}
+	if _, err := os.Stat(filepath.Join(home, "data", "lathe", "runs", rows[0].ID, "issue.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte("#!/bin/sh\necho 'issue not found' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, workflow := range []string{"plan", "implement", "build"} {
+		out, code = lathe(t, workflow, "--repo", repo, "--issue", "41")
+		if code != 1 || !strings.Contains(out, "issue not found") {
+			t.Fatalf("%s lookup failure: %d %s", workflow, code, out)
+		}
+	}
+	after, _ := os.ReadFile(filepath.Join(stub, "pi-args"))
+	if string(after) != string(piArgs) {
+		t.Fatal("planner ran after failed lookup")
+	}
+
 	// The target's own lathe.toml is loaded, announced, and frozen into the
 	// run's roster.
 	configured := gitRepo(t, "provider = \"anthropic\"\n[agents.scout]\nmodel = \"claude-sonnet-5\"\n")

@@ -26,7 +26,7 @@ import (
 
 // SpecVersion is stamped into every recorded specification. A worker that
 // does not recognise the version fails the run rather than guessing at it.
-const SpecVersion = 2
+const SpecVersion = 3
 
 // Spec is everything about a run that configuration could otherwise change
 // while it waits in the queue: the workflow, the request, where it executes
@@ -36,6 +36,7 @@ type Spec struct {
 	Version   int              `json:"version"`
 	Workflow  string           `json:"workflow"`
 	Request   string           `json:"request"`
+	Issue     string           `json:"issue,omitempty"`
 	Workspace workspace.Desc   `json:"workspace"`
 	Roster    config.Snapshot  `json:"roster"`
 	Overrides config.Overrides `json:"overrides"`
@@ -146,6 +147,7 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 		ID:       row.ID,
 		Workflow: spec.Workflow,
 		Request:  spec.Request,
+		Issue:    spec.Issue,
 		Repo:     spec.Workspace.Path,
 		Dir:      filepath.Join(dataRoot, "runs", row.ID),
 		Work:     AttemptDir(dataRoot, row.ID, attemptID),

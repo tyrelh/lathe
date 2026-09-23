@@ -130,6 +130,16 @@ const maxSendBacks = 4
 // what decides where review forwards to — so nothing here has to know whether
 // a builder comes next.
 func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
+	if r.Issue != "" {
+		g.Add(run.Node{Name: "issue", Owner: "engineer"}, func(e *run.Entry) (string, error) {
+			request, err := e.IssueRequest()
+			if err != nil {
+				return "", err
+			}
+			r.Request = request
+			return "", nil
+		})
+	}
 	// The reviewer's objections, and whether they are a real review or the
 	// reviewer having returned nothing usable. Both are read by the plan node
 	// on its way back round.
