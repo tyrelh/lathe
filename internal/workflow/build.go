@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/permit"
@@ -134,9 +135,14 @@ func (p *PROutput) Artifacts() []string {
 // no branch.json or commit.json because the branch name and the commit sha are
 // both recoverable from git and already in the trace; the URL is the one thing
 // here the tree cannot reproduce, which is what earns it a file.
+//
+// Draft and Validation keep an unaccepted change's pull request from reading as
+// an accepted one in anything that reads the file rather than the banner.
 type prResult struct {
 	*PROutput
-	URL string `json:"url"`
+	URL        string `json:"url"`
+	Draft      bool   `json:"draft"`
+	Validation string `json:"validation"`
 }
 
 // branchRequest is what the brancher is given. The plan is everything that has
@@ -156,6 +162,7 @@ func commitRequest(c *code, stat string, paths []string) string {
 	fmt.Fprintf(&b, "%s\n## Implementation\n\n%s\n\n## git diff --stat\n\n%s\n",
 		c.handoff, *c.out.Summary, stat)
 	section(&b, "### Changed files", paths)
+	unaccepted(&b, c)
 	return b.String()
 }
 
@@ -165,12 +172,29 @@ func prRequest(c *code, branch, message string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n## Implementation\n\n%s\n\n## Branch\n\n%s\n\n## Commit message\n\n%s\n",
 		c.handoff, *c.out.Summary, branch, message)
+	unaccepted(&b, c)
 	return b.String()
 }
 
-// Build plans, implements, tests and ships a change: it ends at a pull request,
-// which is where building one ends for an engineer. Implement is the same run
-// without the three git phases.
+// unaccepted tells a git agent the change it is describing was not accepted,
+// so neither the message nor the title claims it is finished. The validation
+// report itself is appended to the body by lathe, not left to the agent.
+func unaccepted(w io.Writer, c *code) {
+	if !c.v.Accepted() {
+		fmt.Fprintf(w, "\n## Validation not accepted\n\nThis change is unfinished (%s: %s). It ships as a draft pull request; do not describe it as tested or complete.\n",
+			c.v.Outcome, c.v.Reason)
+	}
+}
+
+// Build plans, implements, validates and ships a change: it ends at a pull
+// request, which is where building one ends for an engineer. Implement is the
+// same run without the three git phases.
+//
+// An accepted change opens a normal pull request. One the code nodes handed off
+// unaccepted — findings unresolved at the send-back limit, or validation
+// incomplete — opens a draft carrying the validation report, and the run still
+// fails: publishing it is not accepting it. Nothing else is published: an
+// error, cancellation or changed source ends the run before commit.
 //
 // The three git nodes are forward-only. A failure in any of them ends the run,
 // and a failure after the commit leaves the commit on its branch rather than
@@ -198,7 +222,8 @@ func Build(r *run.Run) int {
 
 	addCodeNodes(g, r, &c)
 
-	// After test, which only forwards on a measured green exit.
+	// After adjudicate, which forwards accepted work and the eligible
+	// unaccepted outcomes; c.v.Outcome says which this is.
 	g.Add(run.Node{Name: "commit", Owner: "committer"}, func(e *run.Entry) (string, error) {
 		// Captured on entry: the paths are the accumulated accepted scope after
 		// enforcement, which is what lathe stages — an agent's own `git add -A`
@@ -256,17 +281,28 @@ func Build(r *run.Run) int {
 			run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 			return "", err
 		}
-		created, err := workspace.CreatePR(r.Repo, *out.Title, *out.Body)
+		draft := !c.v.Accepted()
+		body := *out.Body
+		if draft {
+			body += validationReport(&c.v)
+		}
+		created, err := workspace.CreatePR(r.Repo, *out.Title, body, draft)
 		if err != nil {
 			return "", err
 		}
 		url = created
-		return "", writeResult(r.Dir, "pr.json", prResult{PROutput: &out, URL: url})
+		return "", writeResult(r.Dir, "pr.json", prResult{
+			PROutput: &out, URL: url, Draft: draft, Validation: c.v.Outcome})
 	})
 
 	err := g.Run()
 	if err == nil {
 		fmt.Fprintf(r.Out, "\n%s\n\n  %s @ %s\n  %s\n", *c.out.Summary, branch, short(sha), url)
+		if !c.v.Accepted() {
+			printOutcome(r.Out, &c.v)
+			return r.Finish(false, fmt.Sprintf("validation %s: %s; opened draft pull request %s with the unaccepted change",
+				c.v.Outcome, c.v.Reason, url))
+		}
 		return r.Finish(true, "")
 	}
 	reason := err.Error()

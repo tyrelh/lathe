@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/permit"
@@ -87,46 +88,41 @@ func ChangesMatchClaim(e run.Envelope, r *run.Run) []string {
 }
 
 // implementRequest is the handoff: the request, plus the plan the builder is
-// held to. It renders through the same section helper printPlan uses, so what
-// the builder is told and what the engineer was shown cannot drift apart. Every
-// list is non-nil because the plan phase's Validate has already accepted it.
-func implementRequest(request string, plan *PlanOutput) string {
+// held to, with any amendments the adjudicator has made to it since. It renders
+// through the same section helper printPlan uses, so what the builder is told
+// and what the engineer was shown cannot drift apart. Every list is non-nil
+// because the plan phase's Validate has already accepted it.
+func implementRequest(request string, plan *PlanOutput, amendments []Amendment) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Request\n\n%s\n\n## Accepted plan\n\n%s\n", request, *plan.Summary)
 	section(&b, "### Steps", *plan.Steps)
 	section(&b, "### Allowed files", *plan.Files)
 	section(&b, "### Risks", *plan.Risks)
-	return b.String()
-}
-
-// maxFixRounds gives the builder four attempts to repair measured test failures
-// after its initial implementation, bounding the cost of a persistently red suite.
-const maxFixRounds = 4
-
-// fixRequest is what the builder is sent back with: the original handoff, the
-// command lathe measured, and the tail of its output. The tester's own
-// observations seed the first round only — after that the measurement is the
-// better evidence and the discovery is stale.
-func fixRequest(handoff string, tests *TestOutput, red error, tail string, first bool) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n## Fix failing tests\n\nCommand: %s\nResult: %s\n", handoff, *tests.Command, red)
-	if first {
-		section(&b, "### Tester observations", *tests.Failures)
+	var lines []string
+	for _, a := range amendments {
+		lines = append(lines, a.Change+" (because "+a.Reason+")")
 	}
-	fmt.Fprintf(&b, "\n### Latest output (last 4KB)\n\n%s\n", tail)
+	section(&b, "### Plan amendments", lines)
 	return b.String()
 }
 
-// code is what the implement and test nodes accumulate. Build's git phases read
-// it after those nodes forward: the handoff and the implementation summary are
-// what a commit message and a pull request body are written from, and neither
-// is recoverable from the tree.
+// maxRepairs is how many times the adjudicator may send an implementation back.
+// Four repairs after the initial implementation bound the cost of work that
+// will not converge; the fourth repair still gets a complete validation round.
+// The planning loop keeps its own budget.
+const maxRepairs = 4
+
+// code is what the implement, validate and adjudicate nodes accumulate. Build's
+// git phases read it after those nodes forward: the handoff and the
+// implementation summary are what a commit message and a pull request body are
+// written from, and neither is recoverable from the tree. v says whether what
+// they ship was accepted.
 type code struct {
 	plan     PlanOutput
 	out      ImplementOutput
-	tests    TestOutput
 	handoff  string
 	feedback string
+	v        Validation
 }
 
 // addRequestNode opens a writing workflow. The request is a phase so the trace
@@ -141,17 +137,23 @@ func addRequestNode(g *run.Graph, r *run.Run) {
 	})
 }
 
-// addCodeNodes appends the implement and test nodes both writing workflows
-// share. They are shared rather than repeated for the same reason addPlanNodes
-// is: the graph decides what comes before and after them, so nothing here has
-// to know whether a branch was created first or a commit follows.
+// addCodeNodes appends the implement, validate and adjudicate nodes both
+// writing workflows share. They are shared rather than repeated for the same
+// reason addPlanNodes is: the graph decides what comes before and after them,
+// so nothing here has to know whether a branch was created first or a commit
+// follows.
+//
+// They forward on every outcome that leaves something to hand off — accepted,
+// unresolved at the send-back limit, or incomplete because a worker failed —
+// and c.v.Outcome says which. They end the run only on what nothing should be
+// published from: an error, cancellation, or source that changed under review.
 func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 	g.Add(run.Node{Name: "implement", Owner: "builder"}, func(e *run.Entry) (string, error) {
 		request := c.feedback
 		if e.Round == 0 {
 			// The plan is settled by the time anything reaches here: review only
 			// ever sends back to the planner, never past this node.
-			c.handoff = implementRequest(r.Request, &c.plan)
+			c.handoff = implementRequest(r.Request, &c.plan, nil)
 			request = c.handoff
 		}
 		e.Scope(*c.plan.Files)
@@ -162,44 +164,126 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 				return "", saveErr
 			}
 		}
+		if err == nil {
+			c.v.Rounds = append(c.v.Rounds, newRound(e.Round))
+		}
 		return "", err
 	})
 
-	// Discovery is a claim; green and red are a measurement. Both live in this
-	// node, but only the exit code from Command decides where it goes: a tester
-	// that could route on its own report of the suite could end a run green by
-	// saying so.
-	g.Add(run.Node{Name: "test", Owner: "tester", SendBacks: maxFixRounds, RevertOnly: true}, func(e *run.Entry) (string, error) {
-		if e.Round == 0 {
-			if err := e.Call(&c.tests, c.handoff+"\n## Implementation\n\n"+*c.out.Summary); err != nil {
-				return "", err
-			}
-			if err := writeResult(r.Dir, "test.json", &c.tests); err != nil {
-				return "", err
-			}
+	// Discovery is a claim; green and red are a measurement. The tester
+	// reassesses the command every round, but only the exit code from Command
+	// is evidence: a tester that could report the suite green could end a run
+	// green by saying so.
+	workers := []run.Worker{{Name: "test", Owner: "tester", Run: func(e *run.Entry) error {
+		cur := c.v.current()
+		var out TestOutput
+		if err := e.Call(&out, testRequest(c)); err != nil {
+			return err
 		}
-		// ponytail: the command discovered on the first entry is reused for the
-		// rest of the run, so a fix that changes how the suite is invoked leaves
-		// a stale command behind. Re-discover per round if that ever bites.
-		tail, err := e.Command(*c.tests.Command)
+		cur.Tests = &out
+		tail, err := e.Command(*out.Command)
 		var red *run.CommandFailure
 		switch {
 		case err == nil:
-			return "", nil
-		case !errors.As(err, &red):
-			return "", err // denied, timeout, infrastructure: terminal
-		case e.SendBacksLeft == 0:
-			return "", err // out of budget: the run fails red
+			cur.Measured = &Measured{Command: *out.Command, Green: true, Result: "passed", Tail: tail}
+		case errors.As(err, &red):
+			// A red suite is a result for the adjudicator, not a failed worker.
+			cur.Measured = &Measured{Command: *out.Command, Result: err.Error(), Tail: tail}
+			e.Failed(err)
+		default:
+			return err // denied or timed out: no measurement, so retry
 		}
-		e.Failed(err)
-		c.feedback = fixRequest(c.handoff, &c.tests, err, tail, e.Round == 0)
+		return nil
+	}}}
+	for _, name := range reviewers {
+		workers = append(workers, run.Worker{Name: name, Owner: name, Run: func(e *run.Entry) error {
+			report := c.v.current().Reports[name]
+			if err := e.Call(report, reviewRequest(c), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+				return err
+			}
+			report.stamp(name, e.Round)
+			return nil
+		}})
+	}
+
+	g.AddGroup(run.Node{Name: "validate", Owner: "engineer"}, workers, func(e *run.Entry, res run.GroupResult) (string, error) {
+		cur := c.v.current()
+		for _, name := range res.FailedNames() {
+			cur.Failures = append(cur.Failures, WorkerFailure{Worker: name, Error: res.Failed[name].Error()})
+			// Whatever a failed reviewer decoded is not a report.
+			delete(cur.Reports, name)
+		}
+		cur.Mutated = res.Mutated
+		if len(res.Mutated) > 0 {
+			reason := "source changed while validation ran, so this round cannot approve the implementation: " +
+				strings.Join(res.Mutated, ", ")
+			c.v.settle(outcomeInvalidated, reason)
+			if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+				return "", err
+			}
+			return "", errors.New(reason)
+		}
+		return "", writeResult(r.Dir, "validation.json", &c.v)
+	})
+
+	g.Add(run.Node{Name: "adjudicate", Owner: "adjudicator", SendBacks: maxRepairs}, func(e *run.Entry) (string, error) {
+		cur := c.v.current()
+		// Acceptance needs a usable report from every worker, so a round with a
+		// missing one is handed off as it stands, with whatever evidence it has.
+		if len(cur.Failures) > 0 {
+			var names []string
+			for _, f := range cur.Failures {
+				names = append(names, f.Worker)
+			}
+			c.v.settle(outcomeIncomplete, "validation incomplete: "+strings.Join(names, ", ")+" failed after retries")
+			return "", writeResult(r.Dir, "validation.json", &c.v)
+		}
+
+		findings := cur.findings()
+		var out AdjudicationOutput
+		err := e.Call(&out, adjudicationRequest(c, r.Request, e.Round+1, e.SendBacksLeft),
+			run.ArtifactsExist, run.FilesNonEmpty, Adjudicated(findings, cur.Measured, r.Protected()))
+		if err != nil {
+			return "", err
+		}
+		cur.Adjudication = &out
+
+		if *out.Verdict == verdictAccept {
+			c.v.settle(outcomeAccepted, "")
+			return "", writeResult(r.Dir, "validation.json", &c.v)
+		}
+		fixes := out.fixes(findings)
+		if e.SendBacksLeft == 0 {
+			c.v.Unresolved = fixes
+			reason := fmt.Sprintf("%d send-backs spent; %d findings unresolved", maxRepairs, len(fixes))
+			if !cur.Measured.Green {
+				reason += "; " + cur.Measured.Result
+			}
+			c.v.settle(outcomeUnresolved, reason)
+			return "", writeResult(r.Dir, "validation.json", &c.v)
+		}
+		c.amend(r.Request, &out)
+		c.feedback = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
+		if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+			return "", err
+		}
 		return "implement", nil
 	})
 }
 
-// Implement plans, implements and verifies a change. Reports live in the run
+// printOutcome tells the engineer how validation ended when it did not accept.
+func printOutcome(w io.Writer, v *Validation) {
+	fmt.Fprintf(w, "\nvalidation %s: %s\n", v.Outcome, v.Reason)
+	for _, f := range v.Unresolved {
+		writeFinding(w, f)
+	}
+}
+
+// Implement plans, implements and validates a change. Reports live in the run
 // directory; the implementation stays in the target working tree for the user
-// to review. Build is this run plus the three git phases that ship it.
+// to review, whether or not it was accepted. Implement never commits, pushes or
+// opens anything: an unaccepted change stays local. Build is this run plus the
+// three git phases that ship it.
 func Implement(r *run.Run) int {
 	var c code
 
@@ -208,14 +292,14 @@ func Implement(r *run.Run) int {
 	addPlanNodes(g, r, &c.plan)
 	addCodeNodes(g, r, &c)
 
-	err := g.Run()
-	if err == nil {
-		fmt.Fprintf(r.Out, "\n%s\n", *c.out.Summary)
-		section(r.Out, "changed (uncommitted)", *c.out.Changed)
+	if err := g.Run(); err != nil {
+		return r.Finish(false, err.Error())
 	}
-	reason := ""
-	if err != nil {
-		reason = err.Error()
+	fmt.Fprintf(r.Out, "\n%s\n", *c.out.Summary)
+	section(r.Out, "changed (uncommitted)", *c.out.Changed)
+	if !c.v.Accepted() {
+		printOutcome(r.Out, &c.v)
+		return r.Finish(false, fmt.Sprintf("validation %s: %s; the changes are left uncommitted", c.v.Outcome, c.v.Reason))
 	}
-	return r.Finish(err == nil, reason)
+	return r.Finish(true, "")
 }

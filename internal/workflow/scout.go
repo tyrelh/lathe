@@ -31,11 +31,13 @@ var Writes = map[string]bool{"implement": true, "build": true}
 // under a second rather than after an agent turn — and the resolved roster is
 // what the run executes from.
 var Agents = map[string][]string{
-	"scout":     {"scout"},
-	"plan":      {"planner", "plan-reviewer"},
-	"implement": {"planner", "plan-reviewer", "builder", "tester"},
-	"build": {"planner", "plan-reviewer", "brancher",
-		"builder", "tester", "committer", "pr-author"},
+	"scout": {"scout"},
+	"plan":  {"planner", "plan-reviewer"},
+	"implement": {"planner", "plan-reviewer", "builder", "tester",
+		"code-review-general", "code-review-security", "code-review-slop", "adjudicator"},
+	"build": {"planner", "plan-reviewer", "brancher", "builder", "tester",
+		"code-review-general", "code-review-security", "code-review-slop", "adjudicator",
+		"committer", "pr-author"},
 }
 
 // ScoutOutput is what the scout must return. Required fields are pointers

@@ -6,12 +6,15 @@
 package permit
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -179,6 +182,72 @@ func Changed(repo string) ([]string, error) {
 	return paths, nil
 }
 
+// Fingerprint records the content of every uncommitted path, including new and
+// untracked files. It is taken before a validation group starts, so Mutations
+// can say afterwards whether the code the group judged is still the code in the
+// tree. Committed files need no fingerprint: git status already says when one
+// of them changes.
+func Fingerprint(repo string) (map[string]string, error) {
+	dirty, err := status(repo)
+	if err != nil {
+		return nil, err
+	}
+	fp := make(map[string]string, len(dirty))
+	for _, e := range dirty {
+		fp[e.path] = digest(filepath.Join(repo, e.path))
+	}
+	return fp, nil
+}
+
+// Mutations lists the source paths whose content differs from the fingerprint.
+// Source is everything the fingerprint held plus everything committed; a path
+// that is new since the fingerprint and was never committed is a test's
+// leavings, which the cleanup after it removes. The split is what keeps a
+// changed implementation file from passing as test output: it was dirty when
+// the fingerprint was taken, so any change to it counts.
+//
+// It cannot see a file that was changed and put back while nobody looked, nor
+// a change to an ignored file.
+func Mutations(repo string, before map[string]string) ([]string, error) {
+	dirty, err := status(repo)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(dirty))
+	var changed []string
+	for _, e := range dirty {
+		seen[e.path] = true
+		if sum, ok := before[e.path]; ok {
+			if digest(filepath.Join(repo, e.path)) != sum {
+				changed = append(changed, e.path)
+			}
+			continue
+		}
+		if inHEAD(repo, e.path) {
+			changed = append(changed, e.path)
+		}
+	}
+	// Dirty before and clean now is a change too: something put it back.
+	for p := range before {
+		if !seen[p] {
+			changed = append(changed, p)
+		}
+	}
+	sort.Strings(changed)
+	return changed, nil
+}
+
+// digest is a file's content hash, or "missing" for a path with no file, which
+// is how a deletion compares.
+func digest(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "missing"
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // entry is one line of git status: the path, and whether git has ever seen it.
 type entry struct {
 	path      string
@@ -247,8 +316,10 @@ func inHEAD(repo, path string) bool {
 	return cmd.Run() == nil
 }
 
+// git runs with --literal-pathspecs: a path here is always one exact file, and a
+// Next.js route like pages/blog/[slug].tsx must not also revert pages/blog/s.tsx.
 func git(repo string, args ...string) error {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s in %s: %w: %s",

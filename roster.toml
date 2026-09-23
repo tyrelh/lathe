@@ -78,13 +78,50 @@ system = "prompts/builder/system.md"
 user   = "prompts/builder/user.md"
 tools  = ["read", "grep", "find", "ls", "write", "edit"]
 
-# Discover and exercise the test command; lathe independently verifies its exit.
+# Reassess and exercise the test command every validation round; lathe
+# independently verifies its exit. Runs alongside the three code reviewers.
 [[agents]]
 name = "tester"
 model = "kimi-k2.6"
 system = "prompts/tester/system.md"
 user = "prompts/tester/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]
+
+# The three code reviewers run alongside the tester on every implementation
+# round, read-only, and report findings for the adjudicator. Each is its own
+# row so its model can be set on its own, and its system prompt carries its
+# angle; the report contract is one shared user prompt. None of them is the
+# plan-reviewer, which judges a plan before any code exists.
+
+# Correctness, the request and plan, repository conventions and tests.
+[[agents]]
+name   = "code-review-general"
+model  = "kimi-k3"
+system = "prompts/code-review-general/system.md"
+user   = "prompts/code-review/user.md"
+
+# OWASP Top 10 and whatever else crosses this application's trust boundaries.
+[[agents]]
+name   = "code-review-security"
+model  = "kimi-k3"
+system = "prompts/code-review-security/system.md"
+user   = "prompts/code-review/user.md"
+
+# Unneeded complexity, with the same authority as the other two.
+[[agents]]
+name   = "code-review-slop"
+model  = "kimi-k3"
+system = "prompts/code-review-slop/system.md"
+user   = "prompts/code-review/user.md"
+
+# Weighs every report and the measured suite, and alone decides whether the
+# builder goes round again. Read-only: it instructs the builder, it does not
+# edit. The 1M context is for holding every round's reports at once.
+[[agents]]
+name   = "adjudicator"
+model  = "kimi-k3"
+system = "prompts/adjudicator/system.md"
+user   = "prompts/adjudicator/user.md"
 
 # Name the branch the change lands on, following whatever the repository already
 # does. bash to read git history and remote branches; lathe creates the branch.

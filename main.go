@@ -284,7 +284,9 @@ func outcome(status string) int {
 // directory, in the order they are produced. build.json is what the builder's
 // report was called before the rename, kept so lathe show still reads runs from
 // before it.
-var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "pr.json"}
+// test.json is what the tester's report was called before validation ran in
+// parallel; validation.json now holds every round's reports and how it ended.
+var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "validation.json", "pr.json"}
 
 // report prints what a finished run produced, including the partial reports
 // of one that failed, was cancelled, or was lost.
@@ -319,10 +321,16 @@ func report(row trace.Row, dataRoot string, asJSON bool) int {
 		var out struct {
 			Summary string `json:"summary"`
 			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Draft   bool   `json:"draft"`
 		}
 		json.Unmarshal(b, &out)
 		if name == "issue.json" {
 			out.Summary = out.Title
+		}
+		// A draft is unaccepted work, and says so rather than passing as shipped.
+		if name == "pr.json" && out.Draft {
+			out.Summary = "draft, validation not accepted: " + out.URL
 		}
 		fmt.Printf("  %s  %s\n", name, out.Summary)
 	}

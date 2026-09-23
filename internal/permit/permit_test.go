@@ -291,3 +291,30 @@ func TestGuardMatchesGo(t *testing.T) {
 		t.Fatalf("guard_test.ts failed: %v\n%s", err, out)
 	}
 }
+
+// A Next.js route is a literal filename that git would read as a glob:
+// reverting pages/blog/[slug].tsx must not also revert pages/blog/s.tsx, which
+// the pattern [slug].tsx matches and which the scope allowed.
+func TestEnforceTreatsBracketedPathsLiterally(t *testing.T) {
+	repo := gitRepo(t)
+	write(t, repo, "pages/blog/[slug].tsx", "route\n")
+	write(t, repo, "pages/blog/s.tsx", "sibling\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-qm", "routes")
+	write(t, repo, "pages/blog/[slug].tsx", "out of scope\n")
+	write(t, repo, "pages/blog/s.tsx", "allowed edit\n")
+
+	kept, reverted, err := Enforce(repo, Scope{Allow: []string{"pages/blog/s.tsx"}, Deny: shipped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reverted, []string{"pages/blog/[slug].tsx"}) || !slices.Equal(kept, []string{"pages/blog/s.tsx"}) {
+		t.Fatalf("kept %v, reverted %v", kept, reverted)
+	}
+	if got := read(t, repo, "pages/blog/s.tsx"); got != "allowed edit\n" {
+		t.Fatalf("reverting the bracketed route also reverted its sibling: %q", got)
+	}
+	if got := read(t, repo, "pages/blog/[slug].tsx"); got != "route\n" {
+		t.Fatalf("[slug].tsx = %q", got)
+	}
+}

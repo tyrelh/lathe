@@ -15,10 +15,11 @@ End your reply with a single fenced json block and nothing after it:
 {
   "summary": "brief assessment of whether the plan is ready",
   "feedback": [],
+  "blocking": [],
   "artifacts": []
 }
 ```
 
-All three keys are required. Empty feedback means accept. Otherwise each entry
+All four keys are required. Empty feedback and empty blocking mean accept. Put an objection in exactly one of the two lists. Otherwise each entry
 must describe an unresolved objection; omit objections the revision resolved.
 You write no files, so artifacts must be empty.

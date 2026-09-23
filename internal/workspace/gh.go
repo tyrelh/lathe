@@ -12,8 +12,8 @@ import (
 // long, it has newlines, and it is text an agent wrote.
 //
 // The temporary file lives outside the repository, like everything else lathe
-// writes about a repository.
-func CreatePR(repo, title, body string) (string, error) {
+// writes about a repository. A draft is for work lathe could not accept.
+func CreatePR(repo, title, body string, draft bool) (string, error) {
 	f, err := os.CreateTemp("", "lathe-pr-*.md")
 	if err != nil {
 		return "", err
@@ -27,7 +27,11 @@ func CreatePR(repo, title, body string) (string, error) {
 		return "", err
 	}
 
-	cmd := exec.Command("gh", "pr", "create", "--title", title, "--body-file", f.Name())
+	args := []string{"pr", "create", "--title", title, "--body-file", f.Name()}
+	if draft {
+		args = append(args, "--draft")
+	}
+	cmd := exec.Command("gh", args...)
 	cmd.Dir = repo
 	out, err := cmd.CombinedOutput()
 	if err != nil {

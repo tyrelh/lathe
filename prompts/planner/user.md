@@ -29,6 +29,8 @@ Paths are repo-relative and exact: no globs, no directories, no absolute paths,
 and nothing outside the repository. `.git`, `.env*` and key material are
 rejected outright.
 
+Brackets in a real filename are not a glob: list a route like `pages/blog/[slug].tsx` exactly as it is on disk. Only `*` and `?` are rejected.
+
 ## Report
 
 End your reply with a single fenced `json` block, and nothing after it:

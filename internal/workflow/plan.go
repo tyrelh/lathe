@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -72,26 +71,37 @@ func FilesPermitted(protected []string) run.Gate {
 		}
 		var v []string
 		for _, f := range *p.Files {
-			switch {
-			case permit.Escapes(f):
-				v = append(v, fmt.Sprintf(`%q is not inside the repository; every path in "files" is repo-relative`, f))
-			case globby(f):
-				v = append(v, fmt.Sprintf(`%q looks like a glob; every path in "files" is one exact file`, f))
-			default:
-				if pattern, denied := permit.Denied(f, protected); denied {
-					v = append(v, fmt.Sprintf(`%q is protected (it matches %s) and may never be written; plan the change without it`, f, pattern))
-				}
+			if problem := pathProblem(f, "files", protected); problem != "" {
+				v = append(v, problem)
 			}
 		}
 		return v
 	}
 }
 
+// pathProblem is why one path may not join a write scope, or "" if it may.
+// key names the list it came from, so the agent is told which of its lists to fix.
+func pathProblem(f, key string, protected []string) string {
+	switch {
+	case permit.Escapes(f):
+		return fmt.Sprintf(`%q is not inside the repository; every path in %q is repo-relative`, f, key)
+	case globby(f):
+		return fmt.Sprintf(`%q looks like a glob; every path in %q is one exact file`, f, key)
+	}
+	if pattern, denied := permit.Denied(f, protected); denied {
+		return fmt.Sprintf(`%q is protected (it matches %s) and may never be written; plan the change without it`, f, pattern)
+	}
+	return ""
+}
+
 // globby is why the permission check downstream can be string equality rather
-// than a glob engine.
+// than a glob engine. Brackets are not on it: they are real filenames in the
+// file-routed frameworks (Next.js pages/blog/[slug].tsx, SvelteKit, Remix), and
+// every allow check is equality, so a bracketed path only ever means itself.
+// The git that takes paths runs with --literal-pathspecs for the same reason.
 func globby(path string) bool {
 	for _, c := range path {
-		if c == '*' || c == '?' || c == '[' {
+		if c == '*' || c == '?' {
 			return true
 		}
 	}
@@ -140,10 +150,10 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
 			return "", nil
 		})
 	}
-	// The reviewer's objections, and whether they are a real review or the
-	// reviewer having returned nothing usable. Both are read by the plan node
-	// on its way back round.
-	var feedback []string
+	// The reviewer's objections, which of them block the plan outright, and
+	// whether they are a real review or the reviewer having returned nothing
+	// usable. All three are read by the plan node on its way back round.
+	var feedback, blocking []string
 	var unusable bool
 
 	g.Add(run.Node{Name: "plan", Owner: "planner"}, func(e *run.Entry) (string, error) {
@@ -152,6 +162,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
 			var revision strings.Builder
 			revision.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
 			printPlan(&revision, out)
+			section(&revision, "Blocking objections: the plan cannot succeed until these are resolved", blocking)
 			section(&revision, "Review feedback", feedback)
 			if unusable {
 				revision.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
@@ -174,10 +185,14 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
 
 		var report ReviewOutput
 		callErr := e.Call(&report, message.String(), run.ArtifactsExist, run.FilesNonEmpty)
+		var unusableReport *run.EnvelopeError
 		switch {
 		case callErr == nil:
-			feedback, unusable = *report.Feedback, false
-		case errors.Is(callErr, context.Canceled), errors.Is(callErr, context.DeadlineExceeded):
+			feedback, blocking, unusable = *report.Feedback, *report.Blocking, false
+		case !errors.As(callErr, &unusableReport):
+			// Cancellation, a provider refusing the request, Pi failing to
+			// start: the reviewer never assessed anything, and sending the plan
+			// round again would only forward it unreviewed at the limit.
 			return "", callErr
 		default:
 			// A reviewer that said nothing usable is a failed phase inside a run
@@ -185,10 +200,20 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
 			e.Failed(callErr)
 			e.ResetSession()
 			feedback = []string{"review failed: reviewer returned nothing usable: " + callErr.Error()}
-			unusable = true
+			blocking, unusable = nil, true
 		}
-		if len(feedback) > 0 && e.SendBacksLeft > 0 {
+		if len(feedback)+len(blocking) > 0 && e.SendBacksLeft > 0 {
 			return "plan", nil
+		}
+		if len(blocking) > 0 {
+			// Saved for diagnosis, but never handed on: the reviewer said this
+			// plan cannot succeed, and nothing after this node could change that.
+			if err := writeResult(r.Dir, "plan.json", out); err != nil {
+				return "", err
+			}
+			section(r.Out, "blocking objections", blocking)
+			return "", fmt.Errorf("plan review: the plan cannot succeed as written after %d revisions: %s",
+				round-1, strings.Join(blocking, "; "))
 		}
 
 		for _, objection := range feedback {

@@ -69,9 +69,10 @@ func Commit(repo, message string, paths []string) error {
 func Push(repo, branch string) error { return gitRun(repo, nil, "push", "-u", "origin", branch) }
 
 // gitRun is git for its exit code, with the output folded into the error.
-// These are the calls whose failure a run reports rather than parses.
+// These are the calls whose failure a run reports rather than parses. Paths are
+// literal, as in permit: a route like pages/blog/[slug].tsx is one file, not a glob.
 func gitRun(repo string, stdin io.Reader, args ...string) error {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
 	cmd.Dir = repo
 	cmd.Stdin = stdin
 	if out, err := cmd.CombinedOutput(); err != nil {

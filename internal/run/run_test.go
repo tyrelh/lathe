@@ -3,6 +3,7 @@ package run
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -632,7 +633,8 @@ func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
 		t.Fatalf("args missing %q:\n%s", want, args)
 	}
 	// An empty allow list, and the roster's deny lists rather than the caller's.
-	scope, err := os.ReadFile(filepath.Join(r.Work, permit.ScopeFile))
+	// One scope file per phase, so concurrent workers never share one.
+	scope, err := os.ReadFile(filepath.Join(r.Work, r.ID+"_01_scout", permit.ScopeFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,5 +766,32 @@ func TestSpendIsRecordedPerResponse(t *testing.T) {
 	tool := scalar[int64](t, db, `SELECT min(event_id) FROM events WHERE run_id = ? AND type = 'tool_call'`, r.ID)
 	if !(first < tool) {
 		t.Fatalf("usage event %d is not before the tool call %d it preceded in the stream", first, tool)
+	}
+}
+
+// A provider error arrives as a clean Pi exit whose last message stopped on
+// "error" with no text. It is reported as itself on the first turn, not
+// corrected twice as a missing json block — and it is not an EnvelopeError, so
+// no workflow mistakes it for an agent that answered badly.
+func TestCallReportsAProviderErrorWithoutCorrecting(t *testing.T) {
+	failed := `{"type":"message_end","message":{"role":"assistant","stopReason":"error","content":[],` +
+		`"errorMessage":"OpenAI API error (404): The model does not exist"}}` + "\n"
+	bin, argsFile := stubPi(t, failed, failed, failed)
+	r := newRun(t, bin)
+	defer r.Finish(true, "")
+
+	var out scoutOutput
+	err := r.Phase(Params{Name: "scout", Owner: "scout"},
+		func(h *Handle) error { return h.Call(&out, "what is here") })
+	if err == nil || !strings.Contains(err.Error(), "provider error: OpenAI API error (404)") {
+		t.Fatalf("err = %v", err)
+	}
+	var envelope *EnvelopeError
+	if errors.As(err, &envelope) {
+		t.Fatal("a provider error was classed as a bad report")
+	}
+	args, _ := os.ReadFile(argsFile)
+	if n := strings.Count(string(args), "--session-id"); n != 1 {
+		t.Fatalf("spawns = %d; a provider error must not be corrected", n)
 	}
 }

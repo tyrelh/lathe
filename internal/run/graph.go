@@ -2,7 +2,12 @@ package run
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
+	"sync"
+
+	"github.com/tyrelh/lathe/internal/permit"
 )
 
 // Node is one phase in a workflow graph. A graph is an ordered list of them:
@@ -116,6 +121,156 @@ func (g *Graph) Run() error {
 		i = j
 	}
 	return nil
+}
+
+// Worker is one member of a group: a phase that runs alongside the group's
+// other workers against the same checkout. Like a node, it keeps its own
+// session and round across every entry of the group.
+type Worker struct {
+	Name, Owner string
+	// Run does the worker's job. An error is the worker failing to produce a
+	// usable result — not a finding and not a red suite, both of which are
+	// results — so it is retried against the same code.
+	Run func(*Entry) error
+}
+
+// WorkerRetries is how many more attempts a failed worker gets after its first
+// in one group entry. Retries should be rare, and they share one correction
+// allowance with the attempts before them, so a worker's turns per entry are
+// bounded by 1 + WorkerRetries + maxCorrections rather than their product.
+const WorkerRetries = 2
+
+// GroupResult is what a group entry leaves for the node that judges it.
+type GroupResult struct {
+	// Failed is every worker that exhausted its retries, with its last error.
+	Failed map[string]error
+	// Mutated is every source path that changed while the workers ran, found
+	// before the cleanup that would hide it. A nonempty list means the round
+	// judged code that is no longer the code in the tree.
+	Mutated []string
+}
+
+// FailedNames is Failed's keys in a stable order.
+func (g GroupResult) FailedNames() []string { return slices.Sorted(maps.Keys(g.Failed)) }
+
+// AddGroup appends a node that runs every worker concurrently, waits for all
+// of them to finish or exhaust their retries, and hands the result to done,
+// which returns the target as any node would. Each worker is traced as its own
+// phase; each retry is another phase, so a failed attempt stays in the trace
+// after a retry recovers it.
+//
+// Implementation is frozen while the workers run: enforcement is deferred to a
+// single sweep after the join, and the source is fingerprinted before and
+// compared after, ahead of that sweep. The group itself never sends back.
+func (g *Graph) AddGroup(n Node, workers []Worker, done func(*Entry, GroupResult) (string, error)) {
+	states := make([]*node, len(workers))
+	for i, w := range workers {
+		states[i] = &node{Node: Node{Name: w.Name, Owner: w.Owner}}
+	}
+	g.Add(n, func(e *Entry) (string, error) {
+		res, err := g.parallel(e, workers, states)
+		if err != nil {
+			return "", err
+		}
+		return done(e, res)
+	})
+}
+
+func (g *Graph) parallel(e *Entry, workers []Worker, states []*node) (GroupResult, error) {
+	r := g.run
+	res := GroupResult{Failed: map[string]error{}}
+	var before map[string]string
+	if r.clean {
+		var err error
+		if before, err = permit.Fingerprint(r.Repo); err != nil {
+			return res, err
+		}
+	}
+
+	r.mu.Lock()
+	r.frozen = true
+	r.mu.Unlock()
+	errs := make([]error, len(workers))
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = g.work(workers[i], states[i])
+		}()
+	}
+	wg.Wait()
+	r.mu.Lock()
+	r.frozen = false
+	r.mu.Unlock()
+
+	// A cancelled run has nothing worth judging, and the phases that saw it
+	// have already failed the run.
+	if err := r.ctx.Err(); err != nil {
+		return res, err
+	}
+	for i, err := range errs {
+		if err != nil {
+			res.Failed[workers[i].Name] = err
+		}
+	}
+	if !r.clean {
+		return res, nil
+	}
+	// Evidence first, cleanup second: the sweep reverts a changed file that
+	// nobody accepted, and after it the change would be gone.
+	mutated, err := permit.Mutations(r.Repo, before)
+	if err != nil {
+		return res, err
+	}
+	res.Mutated = mutated
+	if len(mutated) > 0 {
+		e.Log("mutated", strings.Join(mutated, "\n"))
+	}
+	r.mu.Lock()
+	_, err = r.sweep(e.Handle)
+	r.mu.Unlock()
+	return res, err
+}
+
+// work runs one worker for one group entry, retrying a failure up to
+// WorkerRetries times. A retry starts a fresh session: the one that failed may
+// be the thing that is broken, and the prompt carries the round's evidence.
+func (g *Graph) work(w Worker, n *node) error {
+	left := maxCorrections
+	var failed error
+	for try := 0; try <= WorkerRetries; try++ {
+		failed = nil
+		err := g.run.Phase(Params{Name: w.Name, Owner: w.Owner, SessionID: n.session}, func(h *Handle) error {
+			if n.session == "" {
+				n.session = h.SessionID()
+			}
+			h.corrections = &left
+			if try > 0 {
+				if err := h.Log("retry", fmt.Sprintf("attempt %d of %d", try+1, WorkerRetries+1)); err != nil {
+					return err
+				}
+			}
+			failed = w.Run(&Entry{Handle: h, Round: n.round, node: n})
+			// Cancellation is the run's failure, not the worker's. Anything
+			// else fails this attempt without failing the run: a retry may yet
+			// recover it, and the attempt stays in the trace either way.
+			if failed != nil && g.run.ctx.Err() == nil {
+				h.failed = failed
+				return nil
+			}
+			return failed
+		})
+		if err != nil {
+			return err
+		}
+		if failed == nil {
+			break
+		}
+		n.session = ""
+	}
+	n.round++
+	return failed
 }
 
 func (g *Graph) names() []string {
