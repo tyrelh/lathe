@@ -178,7 +178,7 @@
   #permits section { border-bottom: 1px solid var(--line); padding: 8px 0; }
   #log td:last-child { white-space: normal; width: 100%; }
 
-  /* Two compact lifetime totals, then the rankings side by side. */
+  /* Two compact lifetime totals, then the rankings in two independent columns. */
   .totals { display: flex; gap: 40px; margin-bottom: 8px; }
   .totals b { display: block; font-size: 20px; font-weight: normal;
               font-variant-numeric: tabular-nums; }
@@ -391,18 +391,20 @@ async function overview(current) {
     <p class="dim">Every run in every repository, for all time.
       Spend updates after each model response.</p>
     <div class="cols">
-      <div class="card">
-        <h2>top projects by spend</h2>
-        <table>${o.top_projects.map(projectRow).join('') || empty('project spend')}</table>
+      <div>
+        <div class="card">
+          <h2>top projects by spend</h2>
+          <table>${o.top_projects.map(projectRow).join('') || empty('project spend')}</table>
+        </div>
+        <div class="card">
+          <h2>top runs by spend</h2>
+          <table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>
+        </div>
       </div>
       <div class="card">
         <h2>top models by spend</h2>
         <table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table>
         <p class="dim">${attribution(o)}</p>
-      </div>
-      <div class="card">
-        <h2>top runs by spend</h2>
-        <table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>
       </div>
     </div>`;
 

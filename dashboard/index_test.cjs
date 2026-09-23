@@ -415,7 +415,7 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   const modelsH2 = over.indexOf('top models by spend');
   const runsH2 = over.indexOf('top runs by spend');
   assert(projectsH2 >= 0 && modelsH2 >= 0 && runsH2 >= 0, 'all three ranking headings present');
-  assert(projectsH2 < modelsH2 && modelsH2 < runsH2, 'cards are ordered projects, models, runs');
+  assert(projectsH2 < runsH2 && runsH2 < modelsH2, 'projects and runs stack in the first column, models in the second');
 
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');
