@@ -9,6 +9,8 @@
     --bg: #1a1b26; --panel: #292e42; --line: #3b4261; --card: #16161e;
     --fg: #c0caf5; --dim: #565f89;
     --ok: #9ece6a; --fail: #f7768e; --run: #e0af68; --cost: #bb9af7;
+    --blue: #7aa2f7; --cyan: #7dcfff; --sky: #2ac3de; --teal: #73daca;
+    --orange: #ff9e64; --purple: #9d7cd8; --green: #9ece6a; --magenta: #bb9af7;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -16,6 +18,8 @@
       --bg: #d5d6db; --panel: #cbccd1; --line: #9699a3; --card: #e6e7ed;
       --fg: #343b58; --dim: #4c505e;
       --ok: #385f0d; --fail: #8c4351; --run: #8f5e15; --cost: #5a3e8e;
+      --blue: #34548a; --cyan: #0f4b6e; --sky: #166775; --teal: #33635c;
+      --orange: #965027; --purple: #5a4a78; --green: #485e30; --magenta: #8c4a7a;
     }
   }
   :root[data-theme="light"] {
@@ -23,6 +27,8 @@
     --bg: #d5d6db; --panel: #cbccd1; --line: #9699a3; --card: #e6e7ed;
     --fg: #343b58; --dim: #4c505e;
     --ok: #385f0d; --fail: #8c4351; --run: #8f5e15; --cost: #5a3e8e;
+    --blue: #34548a; --cyan: #0f4b6e; --sky: #166775; --teal: #33635c;
+    --orange: #965027; --purple: #5a4a78; --green: #485e30; --magenta: #8c4a7a;
   }
   * { box-sizing: border-box; }
 
@@ -103,32 +109,70 @@
   details[open] > summary { margin-bottom: 8px; }
   details pre { padding: 8px; background: var(--panel); }
   pre.fail { color: var(--fail); }
-  /* One line per phase, and the line itself is the disclosure control. A
-     table cannot hold a <details>, so phases are a grid instead — and fixed
-     ch columns line up exactly in a monospace face, which a table's
-     content-derived widths do not do across a rebuild. */
-  #phases { border-bottom: 1px solid var(--line); }
-  .phase { border-top: 1px solid var(--line); }
-  .phase > summary {
-    display: grid; align-items: baseline; gap: 0 10px; padding: 4px 0;
-    grid-template-columns: 2ch 3ch 8ch 9ch 17ch 8ch 19ch 11ch 10ch minmax(0, 1fr);
-    white-space: nowrap; list-style: none; cursor: pointer;
+  /* The phase chart: one row per graph node, time running left to right from
+     the run's start. Block geometry is in percent so it follows the width;
+     sublanes and label placement are pixels, measured after render by
+     layout(). */
+  .gantt { display: grid; grid-template-columns: fit-content(18ch) minmax(0, 1fr);
+           gap: 4px 10px; align-items: start; }
+  .node { color: var(--dim); line-height: 40px; white-space: nowrap;
+          overflow: hidden; text-overflow: ellipsis; }
+  .axis { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; }
+  .track { position: relative; height: 40px; background: var(--panel); border-radius: 3px; }
+  /* The fill says what kind of phase a block is, one hue per owning agent;
+     the border says how it went, and the label says both in words. */
+  .block {
+    --hue: var(--dim);
+    position: absolute; top: 1px; height: 38px; min-width: 0; padding: 0; margin: 0;
+    border: 1px solid var(--hue); border-radius: 3px; overflow: visible;
+    background: color-mix(in srgb, var(--hue) 40%, var(--card));
+    color: var(--fg); font: inherit; font-size: 12px; line-height: 16px;
+    text-align: left; cursor: pointer;
   }
-  .phase > summary::-webkit-details-marker { display: none; }
-  .phase > summary::before { content: '\25b8'; color: var(--dim); }
-  .phase[open] > summary::before { content: '\25be'; }
-  .phase > summary:hover { background: var(--panel); }
-  .phase > summary > span { overflow: hidden; text-overflow: ellipsis; }
-  .phase-panel { padding: 4px 0 12px 2ch; }
+  .block[data-owner="scout"] { --hue: var(--cyan); }
+  .block[data-owner="planner"] { --hue: var(--blue); }
+  .block[data-owner="plan-reviewer"] { --hue: var(--purple); }
+  .block[data-owner="builder"] { --hue: var(--teal); }
+  .block[data-owner="tester"] { --hue: var(--orange); }
+  .block[data-owner="brancher"] { --hue: var(--sky); }
+  .block[data-owner="committer"] { --hue: var(--green); }
+  .block[data-owner="pr-author"] { --hue: var(--magenta); }
+  .block.fail { border: 2px solid var(--fail); }
+  .block.running { border: 2px solid var(--run); }
+  .block.interrupted { border: 1px dashed var(--fg); }
+  .block[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); z-index: 1; }
+  /* Two lines, the name over model · status · cost. layout() places each
+     piece inside the block or beside it; a dot fills the gap between pieces
+     sharing a line. */
+  .block .piece { position: absolute; left: 4px; white-space: nowrap;
+                  overflow: hidden; text-overflow: ellipsis; }
+  .block .piece[data-line="0"] { top: calc(50% - 16px); }
+  .block .piece[data-line="1"] { top: 50%; }
+  .block[data-lines="1"] .piece { top: calc(50% - 8px); }
+  .block .piece[data-sep="1"] { padding-left: 14px; }
+  .block .piece[data-sep="1"]::before { content: '·'; position: absolute; left: 0; width: 14px;
+                                        text-align: center; opacity: .6; }
+  /* A status mark sits a space from the name, not a dot: pulled into the gap
+     layout() left for one, which only leaves more room after it. */
+  .block .piece.mark[data-sep="1"] { margin-left: -8px; }
+  .block .piece.mark[data-sep="1"]::before { content: none; }
+  .untimed { display: flex; flex-wrap: wrap; gap: 6px; }
+  .untimed .block { position: static; height: auto; padding: 1px 4px; }
+  .untimed .block .piece { position: static; }
+  .untimed .piece + .piece::before { content: ' · '; color: var(--dim); }
+  .untimed .piece.mark::before { content: ' '; }
+  .facts { width: auto; margin: 8px 0; }
   .phase-output { max-width: 100ch; overflow-wrap: anywhere; }
   .phase-output h3 { margin: 12px 0 8px; }
   .phase-output h4 { margin: 14px 0 6px; color: var(--dim); font-weight: normal; }
   .phase-output p, .phase-output li { white-space: pre-wrap; }
   .phase-output li { margin-bottom: 6px; }
+  .phase-output li > h4:first-child { margin-top: 0; }
   .phase-output ul, .phase-output ol { margin-top: 0; padding-left: 3ch; }
-  .phase-panel > details { margin-top: 14px; }
-  .phase-panel > details > summary { color: var(--dim); }
-  .phase-panel p { margin: 8px 0 4px; }
+  #phase > details { margin-top: 14px; }
+  #phase > details > summary { color: var(--dim); }
+  #phase > details > summary.fail { color: var(--fail); }
+  #phase p { margin: 8px 0 4px; }
   #permits section { border-bottom: 1px solid var(--line); padding: 8px 0; }
   #log td:last-child { white-space: normal; width: 100%; }
 
@@ -191,7 +235,17 @@ const POLL = {overview: 5000, runs: 2000, run: 1000, missing: 0};
 // stream past. A phase spends once per model response, so a corrected phase is
 // the sum of every response in every try — which is the number worth seeing.
 const spend = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map(), permits = [];
+// phase_id -> every usage payload, and every captured command output tail, in
+// event order. A phase in tails ran a command even while its list is empty.
+const usage = new Map(), tails = new Map();
+// Which disclosures are open, keyed "<phase_id>-<panel>", so switching phases
+// and redrawing on each poll leave them as the reader set them.
+const panels = new Map();
 let after = 0, done = false;
+// draining: the last page was full, so rows may be ahead of their events.
+// shown: the last poll's run and phases, so a click can redraw after polling
+// has stopped. selected: the phase_id in the details card, or ''.
+let draining = false, shown = null, selected = '';
 let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route();
 
@@ -205,6 +259,8 @@ const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 const money = n => '$' + (n || 0).toFixed(5);
 const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
+// bucket is the list stored under key, created empty on first use.
+const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
 
 // route maps the hash to a page. `#/overview` is the landing page and an empty
 // hash means the same; `#<run-id>` without a slash is the deep link shape
@@ -226,6 +282,9 @@ function navigate() {
   generation++;
   after = 0; done = false; failure = '';
   spend.clear(); inputs.clear(); outputs.clear(); responses.clear(); permits.length = 0;
+  usage.clear(); tails.clear(); panels.clear();
+  draining = false; shown = null; selected = '';
+  resized.disconnect(); observed = null;
   app.innerHTML = '';
   for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs']]) {
     const on = view.page === page || (page === 'runs' && view.page === 'run');
@@ -388,11 +447,13 @@ async function detail(current) {
   // polling at the end of this pass, so a total added later never gets drawn.
   for (const e of d.events) {
     if (e.type === 'input' || isCommand(e)) {
-      // Rendered once, on arrival: the phases table is rebuilt every poll, and
+      // Rendered once, on arrival: the details card is redrawn every poll, and
       // re-escaping every system prompt each second is the cost of not doing it.
       inputs.set(e.phase_id, (inputs.get(e.phase_id) || '') +
         `<p>${e.type === 'input' ? 'Agent turn' : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
     }
+    if (isCommand(e)) bucket(tails, e.phase_id);
+    if (e.type === 'log' && e.name === 'output') bucket(tails, e.phase_id).push(text(e.payload));
     if (e.type === 'output') outputs.set(e.phase_id, e.payload?.report);
     if ((e.type === 'output' || e.type === 'envelope' || e.type === 'gate') && typeof e.payload?.text === 'string') {
       responses.set(e.phase_id, (responses.get(e.phase_id) || '') +
@@ -400,6 +461,7 @@ async function detail(current) {
     }
     if (e.type === 'permit') permits.push(e);
     if (e.type !== 'usage' || !e.payload) continue;
+    bucket(usage, e.phase_id).push(e.payload);
     const s = spend.get(e.phase_id) || { model: '', tokens: 0, cost: 0 };
     s.tokens += e.payload.tokens || 0;
     s.cost += e.payload.cost || 0;
@@ -407,44 +469,28 @@ async function detail(current) {
     spend.set(e.phase_id, s);
   }
 
-  // The header and phases are re-rendered every poll; the log is appended, so
-  // scrolling through a finished phase is not undone a second later.
+  // A settled run is final: the phases and the log below are the whole of it,
+  // so the poll stops rather than re-running three queries every second. A full
+  // page means the server capped this poll and there is more to fetch first.
+  draining = d.events.length >= PAGE;
+  if (!live(r.status) && !draining) done = true;
+
+  // The header, chart and details are re-rendered every poll; the log is
+  // appended, so scrolling through a finished phase is not undone a second later.
   if (!$('log')) {
     app.innerHTML = `
       <p><a href="#/runs">&larr; all runs</a></p>
       <div class="card"><p id="head"></p></div>
       <section class="card"><h2>phases</h2><div id="phases"></div></section>
+      <section class="card" id="phase"></section>
       <section class="card"><h2>permissions</h2><div id="permits"></div></section>
       <section class="card"><h2>events</h2><table id="log"></table></section>`;
   }
   $('head').innerHTML =
     `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
-  // An engineer phase spends nothing and has no model, so its cells stay empty
-  // rather than reading "0 tok  $0.00000" as though it had been asked.
-  const expanded = new Set([...document.querySelectorAll('#phases details[open]')].map(x => x.dataset.phase || x.dataset.panel));
   const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
-  $('phases').innerHTML = d.phases.map(p => {
-    const s = spend.get(p.phase_id) || {};
-    // The error is truncated to keep the line to one row; the panel below
-    // carries it in full, so nothing is only available on hover.
-    return `
-    <details class="phase" data-phase="${esc(p.phase_id)}" ${expanded.has(p.phase_id) ? 'open' : ''}>
-      <summary title="${esc(p.error || p.name)}">
-        <span class="dim">${p.seq}</span>
-        <span>${esc(p.name)}</span>
-        <span class="dim">${esc(p.owner)}</span>
-        <span class="dim">${esc(s.model || '')}</span>
-        <span class="${cls(p.status)}">${esc(p.status)}</span>
-        <span class="dim">${time(p.started_at)}${p.ended_at ? ' → ' + time(p.ended_at) : ''}</span>
-        <span class="num dim">${s.tokens ? count(s.tokens) + ' tok' : ''}</span>
-        <span class="num cost">${s.cost ? money(s.cost) : ''}</span>
-        <span class="fail">${esc(p.error)}</span>
-      </summary>
-      <div class="phase-panel">
-        ${phasePanel(p, expanded)}
-      </div>
-    </details>`;
-  }).join('');
+  shown = {run: r, phases: d.phases};
+  draw();
 
   const seq = new Map(d.phases.map(p => [p.phase_id, p.seq]));
   $('permits').innerHTML = permits.map(e => `
@@ -452,11 +498,6 @@ async function detail(current) {
       <p>Kept</p><pre>${files(e.payload?.kept)}</pre>
       <p class="fail">Reverted</p><pre class="fail">${files(e.payload?.reverted)}</pre>
     </section>`).join('') || '<p class="dim">No permission checks recorded.</p>';
-
-  // A settled run is final: the phases and the log above are the whole of it,
-  // so the poll stops rather than re-running three queries every second. A full
-  // page means the server capped this poll and there is more to fetch first.
-  if (!live(r.status) && d.events.length < PAGE) done = true;
 
   bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
     + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
@@ -494,9 +535,233 @@ function timings(r) {
 function span(from, to) {
   const start = Date.parse(from), end = to ? Date.parse(to) : Date.now();
   if (!start || !(end >= start)) return '';
-  const s = Math.round((end - start) / 1000);
-  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+  return dur(end - start);
 }
+const dur = ms => {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+};
+
+// draw renders the chart and the selected phase from the last poll's data, so
+// a click redraws the same run even after polling has stopped. Now is read
+// once, so the axis, the blocks and the durations all agree.
+function draw() {
+  const chart = $('phases');
+  if (!shown || !chart) return;
+  const {run: r, phases} = shown, now = Date.now();
+  swap(chart, gantt(r, phases, now));
+  swap($('phase'), details(phases.find(p => p.phase_id === selected), r, now));
+  layout();
+  if (observed !== chart) { resized.observe(chart); observed = chart; }
+}
+
+// Clicking the selected block again clears the details card.
+function pick(id) {
+  selected = selected === id ? '' : id;
+  draw();
+}
+
+// swap replaces a region's markup and, only when focus was inside it, puts
+// focus back on the matching control without scrolling the reader anywhere.
+function swap(el, html) {
+  const a = document.activeElement;
+  const key = a && el.contains(a) ? a.dataset?.focus : undefined;
+  el.innerHTML = html;
+  if (!key) return;
+  for (const x of el.querySelectorAll('[data-focus]')) {
+    if (x.dataset.focus === key) { x.focus({preventScroll: true}); return; }
+  }
+}
+
+// phaseTiming is the one reading of a phase's status and span the chart and
+// the details card share. The stored status is fail until Finish earns
+// success, so a phase with no end reads running while its run is live and
+// interrupted once it is not — bounded by the run's end, never by now, or a
+// finished run's phase would keep growing.
+function phaseTiming(p, r, now) {
+  const start = Date.parse(p.started_at);
+  if (p.ended_at) return {status: p.status, start, end: Date.parse(p.ended_at), bound: false};
+  if (live(r.status)) return {status: 'running', start, end: now, bound: false};
+  return {status: 'interrupted', start, end: Date.parse(r.ended_at), bound: true};
+}
+const tone = s => s === 'interrupted' ? 'interrupted' : cls(s);
+// The chart marks status beside the name; the word stays in the accessible
+// name and the details card.
+const MARK = {success: '✅', ok: '✅', fail: '❌', running: '⏳', interrupted: '⚠️'};
+
+// axis spans the run's own execution: queue time is left out, as in timings().
+// A span of at least 1ms keeps a zero-duration run from dividing by zero.
+function axis(r, now) {
+  const start = Date.parse(r.started_at);
+  if (!(start >= 0)) {
+    return {note: live(r.status) ? 'Waiting for run to start.' : 'Timing unavailable: the run has no recorded start.'};
+  }
+  const end = r.ended_at ? Date.parse(r.ended_at) : live(r.status) ? Math.max(now, start) : NaN;
+  if (!(end >= start)) return {note: 'Timing unavailable: the run has no valid end.'};
+  return {start, end, span: Math.max(1, end - start), live: !r.ended_at};
+}
+
+// geometry places an interval on the axis in percent, clamped to it, or null
+// when its timestamps are missing, invalid or reversed. NaN fails every
+// comparison, so nothing here can emit NaN, infinity or a negative width.
+function geometry(t, ax) {
+  if (!(t.start >= 0 && t.end >= t.start)) return null;
+  const clamp = ms => Math.min(Math.max(ms, ax.start), ax.end);
+  const s = clamp(t.start), e = clamp(t.end);
+  return {left: (s - ax.start) / ax.span * 100, width: (e - s) / ax.span * 100};
+}
+
+// gantt draws one row per graph node, in the order each was first entered. A
+// re-entry after a send-back is another block on the same row.
+function gantt(r, phases, now) {
+  const ax = axis(r, now);
+  if (!phases.length) return `<p class="dim">${ax.note && live(r.status) ? ax.note : 'No phases recorded yet.'}</p>`;
+  const rows = new Map(), untimed = [];
+  for (const p of [...phases].sort((a, b) => a.seq - b.seq)) {
+    const t = phaseTiming(p, r, now), g = ax.note ? null : geometry(t, ax);
+    if (!g) { untimed.push(block(p, t)); continue; }
+    bucket(rows, p.name).push(block(p, t, g));
+  }
+  // UTC throughout, matching every other timestamp on the page.
+  const edge = ms => time(new Date(ms).toISOString()) + ' UTC';
+  return (ax.note ? `<p class="dim">${ax.note}</p>` : '')
+    + (rows.size ? `<div class="gantt"><span></span>
+        <div class="axis"><span>${edge(ax.start)}</span><span>${ax.live ? 'now' : edge(ax.end)}</span></div>
+        ${[...rows].map(([name, blocks]) =>
+          `<div class="node" title="${esc(name)}">${esc(name)}</div><div class="track">${blocks.join('')}</div>`).join('')}
+      </div>` : '')
+    + (untimed.length ? `<p class="dim">Untimed · timestamps missing or invalid</p><div class="untimed">${untimed.join('')}</div>` : '');
+}
+
+// block is one phase entry. Model and cost are omitted when no usage was
+// recorded, so an engineer phase does not read "$0.00000" as though it had
+// been asked; a recorded zero still shows. The 2px floor is only visual, and
+// min() keeps that floor inside the track at its right edge.
+function block(p, t, g) {
+  const s = spend.get(p.phase_id);
+  const lines = [[p.name, MARK[t.status] || '❔'], [s?.model, s && money(s.cost)].filter(Boolean)];
+  const name = [`#${p.seq} ${p.name}`, s?.model, t.status, s && money(s.cost)].filter(Boolean).join(' · ');
+  const at = g ? ` style="left:min(${g.left.toFixed(3)}%, calc(100% - 2px));width:max(2px, ${g.width.toFixed(3)}%)"` : '';
+  return `<button type="button" class="block ${tone(t.status)}"${at} data-owner="${esc(p.owner)}" data-lines="${lines[1].length ? 2 : 1}" data-phase="${esc(p.phase_id)}"`
+    + ` data-focus="${esc('block-' + p.phase_id)}" aria-pressed="${selected === p.phase_id}"`
+    + ` aria-label="${esc(name)}" title="${esc(name)}" onclick="pick(this.dataset.phase)">`
+    + lines.map((line, l) => line.map((x, j) =>
+      `<span class="piece${!l && j ? ' mark' : ''}" data-line="${l}">${esc(x)}</span>`).join('')).join('')
+    + '</button>';
+}
+
+// Labels keep a gap from their block and from whatever they sit beside, and
+// pieces sharing a line sit SEP apart. A lane is one block's height plus the
+// space between sublanes. Cut below FEW pixels, a piece is a stray glyph, so
+// it is hidden instead.
+const GAP = 4, SEP = 14, LANE = 40, FEW = 24;
+// fit counts the leading pieces of a line that fit in room; spread is the width
+// those pieces take side by side.
+const spread = ws => ws.reduce((a, w, i) => a + w + (i ? SEP : 0), 0);
+const fit = (ws, room) => { let n = 0; while (n < ws.length && spread(ws.slice(0, n + 1)) <= room) n++; return n; };
+
+// arrange lays one node row out from measured pixels. Each block takes the
+// first sublane it does not overlap, so minimum-width blocks stay selectable.
+// Its label is two lines of pieces, and each line keeps inside the block the
+// leading pieces that fit there, in reading order. The rest of every line go
+// to the right, else the left, else the wider of the two, where a piece that
+// still does not fit is cut, or hidden when too narrow to read. A label never
+// reaches over another block or another block's label.
+//
+// Each block is {left, width, lines: [[piece width, …], …]}; each placement
+// is {x, sep, cut?} or {hidden}, with x from the block's left edge.
+function arrange(blocks, width) {
+  const out = blocks.map(() => ({lane: 0, side: '', lines: []}));
+  const order = blocks.map((b, i) => i).sort((a, b) => blocks[a].left - blocks[b].left);
+  const ends = [], lanes = [];
+  for (const i of order) {
+    const b = blocks[i];
+    let lane = ends.findIndex(end => b.left >= end);
+    if (lane < 0) lane = ends.length;
+    ends[lane] = b.left + b.width;
+    out[i].lane = lane;
+    (lanes[lane] ||= []).push(i);
+  }
+  for (const members of lanes) {
+    let used = 0;   // right edge of the previous block or its right-hand label
+    members.forEach((i, k) => {
+      const b = blocks[i], right = b.left + b.width;
+      const next = k + 1 < members.length ? blocks[members[k + 1]].left : width;
+      const room = {right: next - right - 2 * GAP, left: b.left - used - 2 * GAP};
+      const inside = b.width - 2 * GAP;
+      const kept = b.lines.map(ws => fit(ws, inside));
+      const need = Math.max(0, ...b.lines.map((ws, l) => spread(ws.slice(kept[l]))));
+      const side = need <= room.right ? 'right' : need <= room.left ? 'left' : room.right >= room.left ? 'right' : 'left';
+      const space = room[side];
+      let reach = 0;   // widest line put beside the block
+      out[i].side = need ? side : '';
+      out[i].lines = b.lines.map((ws, l) => {
+        const spots = [];
+        let x = GAP;
+        const place = (w, sep, cut) => { spots.push(cut === undefined ? {x, sep} : {x, sep, cut}); x += cut ?? (w + (sep ? SEP : 0)); };
+        let n = kept[l];
+        // A name too long for either side is better cut inside a block
+        // that has more room for it than the side does.
+        if (!n && ws.length && ws[0] > space && inside > space && inside >= FEW) { place(ws[0], false, inside); n = 1; }
+        else ws.slice(0, n).forEach((w, j) => place(w, j > 0));
+        const rest = ws.slice(n);
+        if (!rest.length) return spots;
+        const shown = fit(rest, space);
+        const left = space - spread(rest.slice(0, shown)) - (shown ? SEP : 0);
+        const cut = shown < rest.length && left >= FEW ? left + (shown ? SEP : 0) : undefined;
+        const total = spread(rest.slice(0, shown)) + (cut ?? 0);
+        x = side === 'right' ? b.width + GAP : -GAP - total;
+        rest.forEach((w, j) => {
+          if (j < shown) place(w, j > 0);
+          else if (j === shown && cut !== undefined) place(w, j > 0, cut);
+          else spots.push({hidden: true});
+        });
+        if (side === 'right') reach = Math.max(reach, total);
+        return spots;
+      });
+      used = right + (reach ? GAP + reach : 0);
+    });
+  }
+  return out;
+}
+
+// layout measures each row and applies arrange(). Placements are cleared
+// first, so the last one does not decide this one.
+function layout() {
+  const chart = $('phases');
+  if (!chart) return;
+  // Every reset, then every read, then every write: one reflow, not one per row.
+  const rows = [...chart.querySelectorAll('.track')].map(track => ({track, blocks: [...track.querySelectorAll('.block')].map(el =>
+    ({el, lines: [0, 1].map(l => [...el.children].filter(c => c.dataset.line === String(l)))}))}));
+  for (const {blocks} of rows) for (const b of blocks) for (const c of b.lines.flat()) {
+    c.style.left = ''; c.style.maxWidth = ''; c.style.display = ''; c.dataset.sep = '';
+  }
+  for (const row of rows) row.spots = arrange(row.blocks.map(b =>
+    ({left: b.el.offsetLeft, width: b.el.offsetWidth, lines: b.lines.map(cs => cs.map(c => c.scrollWidth))})),
+    row.track.clientWidth);
+  for (const {track, blocks, spots} of rows) {
+    spots.forEach((s, i) => {
+      blocks[i].el.style.top = s.lane * LANE + 1 + 'px';
+      s.lines.forEach((line, l) => line.forEach((spot, j) => {
+        const c = blocks[i].lines[l][j];
+        if (spot.hidden) { c.style.display = 'none'; return; }
+        c.style.left = spot.x + 'px';
+        c.dataset.sep = spot.sep ? '1' : '';
+        if (spot.cut !== undefined) c.style.maxWidth = spot.cut + 'px';
+      }));
+    });
+    track.style.height = (Math.max(0, ...spots.map(s => s.lane)) + 1) * LANE + 'px';
+  }
+}
+
+// Label room depends on the track's pixel width, which moves with the window
+// and the navigation rail. One frame coalesces a burst of resize callbacks.
+let observed = null, measuring = false;
+const resized = new ResizeObserver(() => {
+  if (measuring) return;
+  measuring = true;
+  requestAnimationFrame(() => { measuring = false; layout(); });
+});
 
 // Output is rendered as text, never interpreted as HTML or Markdown from an
 // agent. These reports are snapshots of this phase, not the final plan on disk.
@@ -508,34 +773,89 @@ function reportList(title, items, ordered = false, empty = 'None.') {
     : `<p class="dim">${esc(empty)}</p>`);
 }
 
-function phasePanel(p, expanded) {
-  const error = p.error ? `<p class="fail">Error</p><pre class="fail">${esc(p.error)}</pre>` : '';
-  const input = inputs.get(p.phase_id) || '<p class="dim">Input context not recorded.</p>';
-  if (p.owner !== 'planner' && p.owner !== 'plan-reviewer') return error + input;
+// renderReport walks any other agent's report as data: strings are
+// paragraphs, arrays lists, objects labelled fields, and every other value is
+// spelled out so null, false and zero do not vanish. Keys go through esc() too.
+function renderReport(v) {
+  if (Array.isArray(v)) {
+    return v.length ? `<ul>${v.map(x => `<li>${x !== null && typeof x === 'object' ? renderReport(x) : esc(String(x))}</li>`).join('')}</ul>`
+      : '<p class="dim">Empty list.</p>';
+  }
+  if (v !== null && typeof v === 'object') {
+    const keys = Object.keys(v);
+    return keys.length ? keys.map(k => `<h4>${esc(k)}</h4>${renderReport(v[k])}`).join('')
+      : '<p class="dim">Empty object.</p>';
+  }
+  return `<p>${esc(String(v))}</p>`;
+}
 
-  const report = outputs.get(p.phase_id);
-  let result;
-  if (!report) {
-    result = `<p class="dim">${p.ended_at ? 'Structured output not recorded for this phase.' : 'Waiting for phase output.'}</p>`;
-  } else if (p.owner === 'planner') {
+function details(p, r, now) {
+  if (!p) return '<h2>phase</h2><p class="dim">Select a phase.</p>';
+  const id = p.phase_id, t = phaseTiming(p, r, now), s = spend.get(id);
+  // Rows can arrive before their events: say so until the backlog is drained,
+  // and only then that something was not recorded.
+  const absent = (what, none) =>
+    `<p class="dim">${draining ? `Loading ${what}…` : t.status === 'running' ? `Waiting for ${what}.` : none}</p>`;
+  const disclosure = (key, title, body, cls = '') => {
+    const k = id + '-' + key;
+    return `<details data-panel="${esc(k)}" ${panels.get(k) ? 'open' : ''} ontoggle="panels.set(this.dataset.panel, this.open)">`
+      + `<summary data-focus="${esc(k)}"${cls ? ` class="${cls}"` : ''}>${title}</summary>${body}</details>`;
+  };
+
+  const valid = t.start >= 0 && t.end >= t.start;
+  const took = !valid ? 'Unavailable'
+    : dur(t.end - t.start) + (t.status === 'running' ? ' so far' : t.bound ? ' · bounded by the run’s end' : '');
+  const facts = `<table class="facts">
+      <tr><th>Started</th><td>${esc(p.started_at || 'Not recorded')}</td></tr>
+      <tr><th>Ended</th><td>${esc(p.ended_at || 'Not recorded')}${t.bound && r.ended_at ? ` <span class="dim">· run ended ${esc(r.ended_at)}</span>` : ''}</td></tr>
+      <tr><th>Duration</th><td>${took}</td></tr>
+    </table>`;
+
+  // The first line stays in the summary, so a collapsed error still reads.
+  const first = (p.error || '').split('\n')[0];
+  const error = p.error ? disclosure('error', `Error · ${esc(first.length > 120 ? first.slice(0, 120) + '…' : first)}`,
+    `<pre class="fail">${esc(p.error)}</pre>`, 'fail') : '';
+
+  const report = outputs.get(id);
+  let result = '';
+  if (report && p.owner === 'planner') {
     result = `<h3>Plan</h3><p>${esc(report.summary)}</p>`
       + reportList('Steps', report.steps, true)
       + reportList('Allowed files', report.files)
       + reportList('Risks', report.risks, false, 'No risks reported.');
-  } else {
+  } else if (report && p.owner === 'plan-reviewer') {
     const feedback = Array.isArray(report.feedback) ? report.feedback : null;
     result = `<h3>Review</h3><p>${esc(report.summary)}</p>`
       + (feedback?.length === 0
         ? '<p class="ok">Accepted · no objections.</p>'
         : reportList('Feedback', feedback, false, 'Feedback not recorded.'));
+  } else if (report !== undefined) {
+    result = `<h3>Output</h3>${renderReport(report)}`;
+  } else if (p.owner !== 'engineer' && !tails.has(id)) {
+    // A later test round only runs the command, so it has no report to miss.
+    result = absent('phase output', 'Structured output not recorded for this phase.');
   }
-  const disclosure = (key, title, body) => {
-    const id = p.phase_id + '-' + key;
-    return `<details data-panel="${esc(id)}" ${expanded.has(id) ? 'open' : ''}><summary>${title}</summary>${body}</details>`;
-  };
-  return `<div class="phase-output">${result}</div>` + error
-    + disclosure('raw', 'Raw responses', responses.get(p.phase_id) || '<p class="dim">Raw response not recorded here. Older responses may be available in the run’s raw.jsonl.</p>')
-    + disclosure('inputs', 'Inputs', input);
+
+  const outs = tails.get(id);
+  const command = !outs ? '' : '<h3>Command output</h3>' + (outs.length
+    ? outs.map(o => o ? `<pre>${esc(o)}</pre>` : '<p class="dim">The command produced no output.</p>').join('')
+    : absent('command output', 'Command output not recorded.'));
+
+  const uses = usage.get(id);
+  const spent = p.owner === 'engineer' ? '' : '<h3>Usage</h3>' + (uses ? `
+    <p>${count(s.tokens)} tok · <span class="cost">${money(s.cost)}</span></p>
+    <table class="facts">${uses.map(u => `<tr>
+      <td class="dim">attempt ${(u.attempt ?? 0) + 1}</td><td class="dim">response ${esc(u.seq ?? '?')}</td>
+      <td>${esc((u.provider || 'unknown') + '/' + (u.model || 'unknown'))}</td>
+      <td class="num">${count(u.tokens)} tok</td><td class="num cost">${money(u.cost)}</td></tr>`).join('')}</table>`
+    : absent('usage', 'Usage not recorded.'));
+
+  return `<h2>phase</h2>
+    <p><b>${esc(p.name)}</b> <span class="dim">· #${p.seq} · ${esc(p.owner)} ·</span> <span class="${tone(t.status)}">${esc(t.status)}</span></p>`
+    + facts + error
+    + `<div class="phase-output">${result}${command}${spent}</div>`
+    + disclosure('raw', 'Raw responses', responses.get(id) || '<p class="dim">Raw response not recorded here. Older responses may be available in the run’s raw.jsonl.</p>')
+    + disclosure('inputs', 'Inputs', inputs.get(id) || '<p class="dim">Input context not recorded.</p>');
 }
 
 const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);

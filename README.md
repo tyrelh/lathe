@@ -113,9 +113,20 @@ exact `kill` to use, and you restart the manager afterwards.
 The dashboard opens on **Overview**: every run ever recorded and every dollar recorded against them, across every repository, plus the ten costliest runs and the ten costliest `provider/model` pairs.
 
 A run is listed from the moment it is queued, with queue time and execution
-time shown separately. A run's detail page shows per-phase model, tokens, and cost. Expand phase inputs or event payloads to read them in full; shell commands and tool errors are always visible. The permissions panel records kept and reverted files for each check. New runs record each agent turn's system prompt, supplied prompt, session ID, and write scope; older traces show when input context was not recorded.
+time shown separately. A run's detail page draws its phases as a timeline from
+the run's start to its end, or to now while it runs: one row per workflow node,
+with each re-entry after a send-back as another block on the same row. Each
+block carries its name, model, status and cost. A phase that never finished
+reads running while its run is live and interrupted once it is not. Expand
+event payloads to read them in full; shell commands and tool errors are always
+visible. The permissions panel records kept and reverted files for each check.
+New runs record each agent turn's system prompt, supplied prompt, session ID,
+and write scope; older traces show when input context was not recorded.
 
-Expand a planner or plan-reviewer phase to read its plan or review first, with
-raw responses and inputs in separate disclosures underneath. Each phase keeps
-its own result, including plans later revised. Structured output is available
-for new runs; older phases indicate when it was not recorded.
+Select a block to open that phase underneath: its timestamps and duration, its
+output, the captured tail of any command it ran, one usage row per model
+response, and its error, raw responses and inputs in disclosures. Planner and
+plan-reviewer phases show their plan or review; every other agent's report is
+laid out field by field. Each phase keeps its own result, including plans later
+revised. Structured output is available for new runs; older phases indicate
+when it was not recorded.
