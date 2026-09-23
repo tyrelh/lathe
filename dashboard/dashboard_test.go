@@ -183,11 +183,14 @@ func TestOverviewAndMeta(t *testing.T) {
 	if err := json.Unmarshal(do("/api/overview").Body.Bytes(), &o); err != nil {
 		t.Fatal(err)
 	}
-	if o.Runs != 3 || len(o.TopRuns) != 3 || len(o.TopModels) != 1 {
+	if o.Runs != 3 || len(o.TopRuns) != 3 || len(o.TopModels) != 1 || len(o.TopProjects) != 1 {
 		t.Fatalf("overview = %+v", o)
 	}
 	if o.TopModels[0].Model != "kimi" || o.TopModels[0].Phases != 3 {
 		t.Fatalf("models = %+v", o.TopModels)
+	}
+	if o.TopProjects[0].Repo != "/Users/tyrel/Projects/lathe" || o.TopProjects[0].Runs != 3 {
+		t.Fatalf("projects = %+v", o.TopProjects)
 	}
 	// A dashboard opened on nothing at all: Init creates the database, and the
 	// empty rankings marshal as [] so the client can map over them.
@@ -203,7 +206,8 @@ func TestOverviewAndMeta(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler(fresh, "dev").ServeHTTP(w, httptest.NewRequest("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
-		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"runs":0`) {
+		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_projects":[]`) ||
+		!strings.Contains(body, `"runs":0`) {
 		t.Errorf("empty overview = %s", body)
 	}
 }

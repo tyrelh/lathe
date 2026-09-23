@@ -391,11 +391,13 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(queuedRow.includes('class="running">queued'), queuedRow);
   assert(queuedRow.includes('queued</td>') || queuedRow.includes(' queued'), queuedRow);
 
-  // Overview: lifetime totals, both rankings, and the attribution caveats.
+  // Overview: lifetime totals, all three rankings, and the attribution caveats.
   context.location.hash = '#/overview';
   evaluate('view = route(); generation++');
   response = json({
     runs: 1284, tokens: 9_000_000, cost: 42.18374,
+    top_projects: [{repo:'/repos/alpha', runs:900, cost:38, share:0.9},
+                   {repo:'', runs:100, cost:4, share:0.1}],
     top_runs: [{...run, run_id:'top', cost: 9.5}],
     top_models: [{provider:'moonshotai', model:'kimi', cost:30, share:0.7113, phases:2700},
                  {provider:'', model:'', cost:2, share:0.0474, phases:12}],
@@ -403,19 +405,26 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   });
   await evaluate('tick()');
   const over = nodes.get('app').innerHTML;
-  for (const text of ['1,284','$42.18374','$9.50000','moonshotai/kimi','71.1%','unknown/unknown',
+  for (const text of ['1,284','$42.18374','$9.50000','alpha','$38.00000','90.0%','900 runs',
+                      'moonshotai/kimi','71.1%','unknown/unknown',
                       '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
     assert(over.includes(text), `overview: ${text}`);
   }
   assert(nodes.get('status').innerHTML.includes('all repositories · all time'));
+  const projectsH2 = over.indexOf('top projects by spend');
+  const modelsH2 = over.indexOf('top models by spend');
+  const runsH2 = over.indexOf('top runs by spend');
+  assert(projectsH2 >= 0 && modelsH2 >= 0 && runsH2 >= 0, 'all three ranking headings present');
+  assert(projectsH2 < runsH2 && runsH2 < modelsH2, 'projects and runs stack in the first column, models in the second');
 
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');
-  response = json({runs:0, tokens:0, cost:0, top_runs:[], top_models:[], at:''});
+  response = json({runs:0, tokens:0, cost:0, top_projects:[], top_runs:[], top_models:[], at:''});
   await evaluate('tick()');
   const empty = nodes.get('app').innerHTML;
   assert(empty.includes('$0.00000') && empty.includes('No runs recorded yet.')
-         && empty.includes('No model spend recorded yet.'), empty);
+         && empty.includes('No model spend recorded yet.')
+         && empty.includes('No project spend recorded yet.'), empty);
 
   // A failed refresh keeps the last good values and says they are stale.
   failNext = 'database is locked';
