@@ -316,23 +316,25 @@ function providerCosts() {
 // no authoritative ranking exists. An unlisted model is matched to its provider
 // by name prefix and drawn at full strength, since new models are usually
 // flagships; an unknown provider takes #7A9EFB, and a phase with no model at
-// all (a code phase) stays dim.
+// all (a code phase) stays dim. A provider is drawn at its full hue.
 const MODEL_SHADES = [100, 75, 50];
 const MODEL_TIERS = [
-  ['#D57355', 'claude-', [['claude-fable-5-1'], ['claude-opus-5-5', 'claude-opus-5'], ['claude-sonnet-5', 'claude-haiku-4-5']]],
-  ['#439F7C', 'gpt-', [['gpt-6-astra'], ['gpt-6-sol', 'gpt-5-6-sol', 'gpt-5-6-terra'], ['gpt-6-luna', 'gpt-5-6-luna']]],
-  ['#1C81FA', 'kimi-', [['kimi-k3'], ['kimi-k2-7-code', 'kimi-k2-6'], []]],
+  ['#D57355', 'claude-', 'anthropic', [['claude-fable-5-1'], ['claude-opus-5-5', 'claude-opus-5'], ['claude-sonnet-5', 'claude-haiku-4-5']]],
+  ['#439F7C', 'gpt-', 'openai', [['gpt-6-astra'], ['gpt-6-sol', 'gpt-5-6-sol', 'gpt-5-6-terra'], ['gpt-6-luna', 'gpt-5-6-luna']]],
+  ['#1C81FA', 'kimi-', 'moonshotai', [['kimi-k3'], ['kimi-k2-7-code', 'kimi-k2-6'], []]],
 ];
 function modelColour(model) {
   if (!model) return 'var(--dim)';
   const m = String(model).replace(/\./g, '-');
-  for (const [hue, prefix, tiers] of MODEL_TIERS) {
+  for (const [hue, prefix, , tiers] of MODEL_TIERS) {
     if (!m.startsWith(prefix)) continue;
     const shade = MODEL_SHADES[tiers.findIndex(t => t.includes(m))] ?? 100;
     return `color-mix(in srgb, ${hue} ${shade}%, var(--card))`;
   }
   return '#7A9EFB';
 }
+const providerColour = provider =>
+  MODEL_TIERS.find(([, , name]) => String(provider).startsWith(name))?.[0] ?? '#7A9EFB';
 // Spend per model, aggregating across providers. A missing model reads as
 // 'unknown'. The identity used for stable sorting is the bare model name.
 function modelSpend() {
@@ -353,7 +355,7 @@ function renderCosts(r) {
         <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span>
         <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div>`
     : '';
-  const providerList = list(providers.map(p => ({name: p.provider, cost: p.cost, colour: modelColour(p.provider)})), 'providers');
+  const providerList = list(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers');
   const modelList = list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models');
   const loading = draining ? '<p class="dim">Loading usage…</p>' : '';
   const empty = !providers.length && !models.length && !draining

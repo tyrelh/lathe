@@ -144,6 +144,9 @@ assert.equal(call('modelColour', 'kimi-k2.6'), 'color-mix(in srgb, #1C81FA 75%, 
 assert.equal(call('modelColour', 'claude-haiku-4-5'), 'color-mix(in srgb, #D57355 50%, var(--card))');
 assert.equal(call('modelColour', 'kimi-k9'), call('modelColour', 'kimi-k3'), 'unlisted models take the full provider hue');
 assert.equal(call('modelColour', 'mystery'), '#7A9EFB', 'unknown providers take the default hue');
+assert.equal(call('providerColour', 'anthropic'), '#D57355', 'providers draw at their full hue');
+assert.equal(call('providerColour', 'openai-codex'), '#439F7C', 'provider variants share a hue');
+assert.equal(call('providerColour', 'unknown'), '#7A9EFB', 'unknown providers take the default hue');
 assert(call('gantt', settled, [ph(1,'x',T(0),T(5),{owner:'"><b>'})], 0).includes('data-owner="&quot;>&lt;b>"'), 'owner is escaped');
 
 // Before the run starts, with no phases, with no length, and with bad times.
