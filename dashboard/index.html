@@ -176,6 +176,8 @@
   .run-project h2 { text-transform: none; letter-spacing: normal; color: var(--fg); font-size: 14px; }
   .phase-inspector { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
   .run-cost-total { font-size: 28px; line-height: 1.2; overflow-wrap: anywhere; }
+  /* Providers and models side by side once each list has room for its rows. */
+  .cost-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(32ch, 1fr)); gap: 0 24px; }
   .model-costs { list-style: none; padding: 0; margin: 12px 0 0; }
   .model-costs li { display: flex; align-items: baseline; gap: 8px;
                     padding: 5px 0; border-bottom: 1px solid var(--line); }
@@ -347,9 +349,9 @@ function modelSpend() {
 function renderCosts(r) {
   const providers = providerCosts(), models = modelSpend();
   const list = (rows, label) => rows.length
-    ? `<h3 class="dim">${esc(label)}</h3><ul class="model-costs">${rows.map(m => `<li style="--model-color:${m.colour}">
+    ? `<div><h3 class="dim">${esc(label)}</h3><ul class="model-costs">${rows.map(m => `<li style="--model-color:${m.colour}">
         <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span>
-        <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul>`
+        <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div>`
     : '';
   const providerList = list(providers.map(p => ({name: p.provider, cost: p.cost, colour: modelColour(p.provider)})), 'providers');
   const modelList = list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models');
@@ -357,7 +359,7 @@ function renderCosts(r) {
   const empty = !providers.length && !models.length && !draining
     ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '';
   return `<div class="run-cost-total cost">${money(r.cost)}</div><div class="dim">total cost</div>`
-    + providerList + modelList + loading + empty;
+    + `<div class="cost-lists">${providerList}${modelList}</div>` + loading + empty;
 }
 
 // route maps the hash to a page. `#/overview` is the landing page and an empty
