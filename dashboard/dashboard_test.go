@@ -203,6 +203,49 @@ func TestOverviewAndMeta(t *testing.T) {
 	if o.TopProjects[0].Repo != "/Users/tyrel/Projects/lathe" || o.TopProjects[0].Runs != 3 {
 		t.Fatalf("projects = %+v", o.TopProjects)
 	}
+	var projects []trace.ProjectSpend
+	if err := json.Unmarshal(do("/api/projects").Body.Bytes(), &projects); err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 1 || projects[0].Runs != 3 {
+		t.Fatalf("all projects = %+v", projects)
+	}
+	var project trace.ProjectSpend
+	if err := json.Unmarshal(do("/api/projects/detail?repo=%2FUsers%2Ftyrel%2FProjects%2Flathe").Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if project.Runs != 3 || project.Cost != o.Cost || project.Tokens != o.Tokens {
+		t.Fatalf("project totals = %+v, overview = %+v", project, o)
+	}
+	var page struct {
+		Runs []trace.Row `json:"runs"`
+		More bool        `json:"more"`
+	}
+	if err := json.Unmarshal(do("/api/projects/runs?repo=%2FUsers%2Ftyrel%2FProjects%2Flathe&n=2").Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 2 || !page.More {
+		t.Fatalf("first project runs page = %+v", page)
+	}
+	next := "/api/projects/runs?repo=%2FUsers%2Ftyrel%2FProjects%2Flathe&n=2&before_at=" +
+		page.Runs[1].Submitted + "&before_id=" + page.Runs[1].ID
+	if err := json.Unmarshal(do(next).Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 1 || page.More {
+		t.Fatalf("second project runs page = %+v", page)
+	}
+	for _, path := range []string{"/api/projects/detail?repo=%2Fmissing", "/api/projects/detail"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		want := 404
+		if path == "/api/projects/detail" {
+			want = 400
+		}
+		if w.Code != want {
+			t.Errorf("GET %s: %d, want %d", path, w.Code, want)
+		}
+	}
 	// A dashboard opened on nothing at all: Init creates the database, and the
 	// empty rankings marshal as [] so the client can map over them.
 	blank := t.TempDir()

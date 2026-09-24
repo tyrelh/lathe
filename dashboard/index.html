@@ -99,12 +99,15 @@
   th { color: var(--dim); }
   td.wrap { white-space: normal; color: var(--dim); width: 100%; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.run { cursor: pointer; }
-  tr.run:hover td { background: var(--panel); }
+  tr.run, tr.project { cursor: pointer; }
+  tr.run:hover td, tr.project:hover td { background: var(--panel); }
   .dim { color: var(--dim); }
   .cost { color: var(--cost); font-variant-numeric: tabular-nums; }
   .ok { color: var(--ok); } .fail { color: var(--fail); } .running { color: var(--run); }
   a { color: var(--fg); cursor: pointer; }
+  .more { margin-top: 10px; padding: 5px 10px; border: 1px solid var(--line);
+          border-radius: 4px; background: var(--panel); color: var(--fg);
+          font: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--cost); outline-offset: 1px; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
   summary { cursor: pointer; overflow-wrap: anywhere; }
@@ -219,6 +222,11 @@
       <path d="M1.5 3.5h13M1.5 8h13M1.5 12.5h13"/>
     </svg><span class="label">Runs</span>
   </a>
+  <a id="nav-projects" href="#/projects" title="Projects">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+      <path d="M1.5 4.5h5l1.5 2h6.5v7h-13zM1.5 4.5v-2h5l1.5 2"/>
+    </svg><span class="label">Projects</span>
+  </a>
   <button id="collapse" type="button" aria-expanded="true" title="Collapse navigation">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
       <path d="M10 3.5 5.5 8l4.5 4.5"/>
@@ -241,7 +249,7 @@ const followBox = $('follow-box'), followLabel = $('follow-label');
 const PAGE = 500;   // the server's per-poll event cap
 // How often each page asks for fresh data. Overview aggregates the whole
 // database and changes slowly; a live run's log does not.
-const POLL = {overview: 5000, runs: 2000, run: 1000, missing: 0};
+const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 1000, missing: 0};
 
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
@@ -258,6 +266,7 @@ let after = 0, done = false;
 // shown: the last poll's run and phases, so a click can redraw after polling
 // has stopped. selected: the phase_id in the details card, or ''.
 let draining = false, shown = null, selected = '';
+let projectRows = [], projectMore = false, projectLoaded = false, projectLoading = false, projectSummary = null;
 let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route();
 
@@ -273,6 +282,7 @@ const clip = (s, n) => { const cs = [...(s || '')]; return cs.length > n ? cs.sl
 const money = n => '$' + (n || 0).toFixed(5);
 const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
+const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo).replace(/'/g, '%27');
 // bucket is the list stored under key, created empty on first use.
 const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
 
@@ -284,6 +294,11 @@ function route() {
   if (h === '' || h === '/' || h === '/overview') return {page: 'overview'};
   if (h === '/runs') return {page: 'runs'};
   if (h.startsWith('/runs/')) return {page: 'run', id: h.slice(6)};
+  if (h === '/projects') return {page: 'projects'};
+  if (h.startsWith('/projects/detail?')) {
+    const params = new URLSearchParams(h.slice('/projects/detail?'.length));
+    if (params.has('repo')) return {page: 'project', repo: params.get('repo')};
+  }
   if (!h.startsWith('/')) return {page: 'run', id: h};
   return {page: 'missing'};
 }
@@ -298,12 +313,14 @@ function navigate() {
   spend.clear(); inputs.clear(); outputs.clear(); responses.clear();
   usage.clear(); tails.clear(); panels.clear();
   draining = false; shown = null; selected = '';
+  projectRows = []; projectMore = false; projectLoaded = false; projectLoading = false; projectSummary = null;
   resized.disconnect(); observed = null;
   app.innerHTML = '';
   followBox.checked = false;
   followLabel.style.display = 'none';
-  for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs']]) {
-    const on = view.page === page || (page === 'runs' && view.page === 'run');
+  for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs'], ['nav-projects', 'projects']]) {
+    const on = view.page === page || (page === 'runs' && view.page === 'run')
+      || (page === 'projects' && view.page === 'project');
     // Runs stays selected while a single run is open: a run is something
     // inside Runs, not a third place to be.
     if (on) $(id).setAttribute('aria-current', 'page');
@@ -319,6 +336,8 @@ async function tick() {
   const current = generation;
   try {
     if (view.page === 'overview') await overview(current);
+    else if (view.page === 'projects') await projects(current);
+    else if (view.page === 'project') await project(current);
     else if (view.page === 'runs') await list(current);
     else if (view.page === 'run') await detail(current);
     else missing();
@@ -357,10 +376,22 @@ const ago = () => {
 
 function missing() {
   app.innerHTML = `<h2>not found</h2><p class="dim">No page at <code>${esc(location.hash)}</code>.</p>
-    <p><a href="#/overview">Overview</a> · <a href="#/runs">Runs</a></p>`;
+    <p><a href="#/overview">Overview</a> · <a href="#/projects">Projects</a> · <a href="#/runs">Runs</a></p>`;
   bar.textContent = 'Page not found';
   fresh = Date.now();
 }
+
+const projectRow = (p, i, withTokens) => {
+  const href = esc(projectHref(p.repo));
+  return `<tr class="project" onclick="location.hash='${href}'">
+    <td class="dim">${i + 1}</td>
+    <td title="${esc(p.repo)}"><a href="${href}">${esc(base(p.repo) || 'unknown repo')}</a></td>
+    <td class="num cost">${money(p.cost)}</td>
+    <td class="num dim">${pct(p.share)}</td>
+    <td class="num dim${withTokens ? '' : ' lo'}">${count(p.runs)} run${p.runs === 1 ? '' : 's'}</td>
+    ${withTokens ? `<td class="num dim lo">${count(p.tokens)} tok</td>` : ''}
+  </tr>`;
+};
 
 async function overview(current) {
   const {body: o} = await get('/api/overview');
@@ -383,14 +414,6 @@ async function overview(current) {
       <td class="num dim">${pct(m.share)}</td>
       <td class="num dim lo">${count(m.phases)} phase${m.phases === 1 ? '' : 's'}</td>
     </tr>`;
-  const projectRow = (p, i) => `
-    <tr>
-      <td class="dim">${i + 1}</td>
-      <td title="${esc(p.repo)}">${esc(base(p.repo))}</td>
-      <td class="num cost">${money(p.cost)}</td>
-      <td class="num dim">${pct(p.share)}</td>
-      <td class="num dim lo">${count(p.runs)} run${p.runs === 1 ? '' : 's'}</td>
-    </tr>`;
   const empty = what => `<tr><td class="dim">No ${what} recorded yet.</td></tr>`;
 
   app.innerHTML = `
@@ -404,7 +427,7 @@ async function overview(current) {
       <div>
         <div class="card">
           <h2>top projects by spend</h2>
-          <table>${o.top_projects.map(projectRow).join('') || empty('project spend')}</table>
+          <table>${o.top_projects.map((p, i) => projectRow(p, i, false)).join('') || empty('project spend')}</table>
         </div>
         <div class="card">
           <h2>top runs by spend</h2>
@@ -433,6 +456,98 @@ function attribution(o) {
   return esc(parts.join(' ').replace(/\s+/g, ' '));
 }
 
+async function projects(current) {
+  const {body: rows} = await get('/api/projects');
+  if (current !== generation) return;
+  const total = rows.reduce((n, p) => n + p.cost, 0);
+  app.innerHTML = `<div class="card totals">
+      <div><b>${count(rows.length)}</b><span>projects recorded</span></div>
+      <div class="cost"><b>${money(total)}</b><span>recorded spend</span></div>
+    </div>
+    <p class="dim">Every repository with a run, for all time. Sorted by spend.</p>
+    <section class="card"><h2>projects by spend</h2><table>${rows.map((p, i) => projectRow(p, i, true)).join('') || '<tr><td class="dim">No projects recorded yet.</td></tr>'}</table></section>`;
+  bar.textContent = `Projects · ${count(rows.length)} repositories · all time`;
+  stamp();
+}
+
+const projectQuery = repo => 'repo=' + encodeURIComponent(repo);
+const runListRow = r => `<tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
+  <td class="dim">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
+  <td class="${cls(r.status)}">${esc(r.status)}</td>
+  <td>${esc(r.workflow)}</td>
+  <td class="num dim lo">${esc(took(r))}</td>
+  <td class="num dim">${count(r.tokens)} tok</td>
+  <td class="num cost">${money(r.cost)}</td>
+  <td class="wrap" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
+</tr>`;
+
+function mergeProjectRows(rows) {
+  const byID = new Map([...projectRows, ...rows].map(r => [r.run_id, r]));
+  projectRows = [...byID.values()].sort((a, b) =>
+    (b.submitted_at || '').localeCompare(a.submitted_at || '') || b.run_id.localeCompare(a.run_id));
+}
+
+async function project(current) {
+  const query = projectQuery(view.repo);
+  const [{body: summary}, {body: page}] = await Promise.all([
+    get('/api/projects/detail?' + query), get('/api/projects/runs?' + query + '&n=50'),
+  ]);
+  if (current !== generation) return;
+  projectSummary = summary;
+  if (!projectLoaded) {
+    projectRows = page.runs;
+    projectMore = page.more;
+    projectLoaded = true;
+  } else {
+    mergeProjectRows(page.runs);
+  }
+  renderProject();
+}
+
+function renderProject() {
+  const p = projectSummary;
+  if (!p) return;
+  app.innerHTML = `<p><a href="#/projects">&larr; all projects</a></p>
+    <div class="card"><b>${esc(base(p.repo) || 'unknown repo')}</b><br>
+      <span class="dim">${esc(p.repo || 'Repository path not recorded')}</span></div>
+    <div class="card totals">
+      <div><b>${count(p.runs)}</b><span>runs recorded</span></div>
+      <div><b>${count(p.tokens)}</b><span>tokens</span></div>
+      <div class="cost"><b>${money(p.cost)}</b><span>recorded spend</span></div>
+    </div>
+    <p class="dim">Lifetime metrics for this repository. ${pct(p.share)} of total recorded spend.</p>
+    <section class="card"><h2>runs</h2>
+      <table>${projectRows.map(runListRow).join('') || '<tr><td class="dim">No runs recorded yet.</td></tr>'}</table>
+      ${projectMore ? `<button class="more" type="button" onclick="moreProjectRuns()" ${projectLoading ? 'disabled' : ''}>${projectLoading ? 'Loading…' : 'Load more runs'}</button>` : ''}
+    </section>`;
+  bar.innerHTML = `Projects · ${esc(base(p.repo) || 'unknown repo')} · showing ${count(projectRows.length)} of ${count(p.runs)} runs`;
+  stamp();
+}
+
+async function moreProjectRuns() {
+  if (projectLoading || !projectMore || !projectRows.length) return;
+  projectLoading = true;
+  renderProject();
+  const current = generation, last = projectRows[projectRows.length - 1];
+  const query = projectQuery(view.repo) + '&n=50&before_at=' + encodeURIComponent(last.submitted_at || '')
+    + '&before_id=' + encodeURIComponent(last.run_id);
+  try {
+    const {body: page} = await get('/api/projects/runs?' + query);
+    if (current !== generation) return;
+    mergeProjectRows(page.runs);
+    projectMore = page.more;
+    failure = '';
+    fresh = Date.now();
+  } catch (e) {
+    if (current === generation) failure = String(e);
+  } finally {
+    if (current === generation) {
+      projectLoading = false;
+      renderProject();
+    }
+  }
+}
+
 async function list(current) {
   const {body: runs, total} = await get('/api/runs?n=50');
   if (current !== generation) return;
@@ -448,16 +563,7 @@ async function list(current) {
   app.innerHTML = [...repos].map(([repo, rows]) => `
     <section class="card">
     <h2>${esc(repo)}</h2>
-    <table>${rows.map(r => `
-      <tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
-        <td class="dim">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
-        <td class="${cls(r.status)}">${esc(r.status)}</td>
-        <td>${esc(r.workflow)}</td>
-        <td class="num dim lo">${esc(took(r))}</td>
-        <td class="num dim">${count(r.tokens)} tok</td>
-        <td class="num cost">${money(r.cost)}</td>
-        <td class="wrap" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
-      </tr>`).join('')}</table></section>`).join('')
+    <table>${rows.map(runListRow).join('')}</table></section>`).join('')
     || '<p class="dim">No runs yet. Start one with <code>lathe scout</code>.</p>';
 
   // Explicitly "displayed", because these are the 50 most recent and the

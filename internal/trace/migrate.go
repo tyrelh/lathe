@@ -36,6 +36,8 @@ CREATE INDEX IF NOT EXISTS usage_model ON usage (provider, model);
 ALTER TABLE runs ADD COLUMN exclusive INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS runs_exclusive ON runs (repo, exclusive, status);
 `,
+	// 3: project run pages read one repository in newest-first order.
+	`CREATE INDEX IF NOT EXISTS runs_repo_recent ON runs (COALESCE(repo, ''), COALESCE(submitted_at, '') DESC, run_id DESC);`,
 }
 
 // migrate applies every migration the database has not seen yet.

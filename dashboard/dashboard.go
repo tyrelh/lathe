@@ -1,6 +1,5 @@
-// Package dashboard serves a read-only view of the trace database: one page
-// from the binary, two JSON routes, and no router — three routes do not earn a
-// dependency.
+// Package dashboard serves a read-only view of the trace database through an
+// embedded page and JSON endpoints.
 package dashboard
 
 import (
@@ -54,6 +53,41 @@ func handler(db *trace.DB, version string) http.Handler {
 		o, err := db.Overview()
 		writeJSON(w, o, err)
 	})
+	mux.HandleFunc("GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
+		projects, err := db.Projects()
+		writeJSON(w, projects, err)
+	})
+	mux.HandleFunc("GET /api/projects/detail", func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := projectParam(w, r)
+		if !ok {
+			return
+		}
+		project, err := db.Project(repo)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "no such project", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, project, err)
+	})
+	mux.HandleFunc("GET /api/projects/runs", func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := projectParam(w, r)
+		if !ok {
+			return
+		}
+		beforeAt, beforeID := r.URL.Query().Get("before_at"), r.URL.Query().Get("before_id")
+		_, hasAt := r.URL.Query()["before_at"]
+		_, hasID := r.URL.Query()["before_id"]
+		if hasAt != hasID || (hasID && beforeID == "") {
+			http.Error(w, "incomplete run cursor", http.StatusBadRequest)
+			return
+		}
+		limit := intParam(r, "n", 50)
+		if limit < 1 || limit > 100 {
+			limit = 50
+		}
+		runs, more, err := db.ProjectRuns(repo, beforeAt, beforeID, limit)
+		writeJSON(w, map[string]any{"runs": runs, "more": more}, err)
+	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
@@ -90,6 +124,15 @@ func handler(db *trace.DB, version string) http.Handler {
 		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events}, err)
 	})
 	return mux
+}
+
+func projectParam(w http.ResponseWriter, r *http.Request) (string, bool) {
+	values, ok := r.URL.Query()["repo"]
+	if !ok || len(values) != 1 {
+		http.Error(w, "repo is required", http.StatusBadRequest)
+		return "", false
+	}
+	return values[0], true
 }
 
 func intParam(r *http.Request, name string, def int) int {
