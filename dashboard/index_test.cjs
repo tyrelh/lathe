@@ -19,15 +19,16 @@ class Element {
   focus(options) { this.focused = options; }
 }
 for (const id of ['app', 'status', 'note', 'version', 'head', 'summary', 'phases', 'phase', 'log',
-                  'nav-overview', 'nav-runs', 'follow-box', 'follow-label']) nodes.set(id, new Element());
+                  'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label']) nodes.set(id, new Element());
 let response, resolveFetch, failNext = null, frames = [];
+let routeResponses = null;
 const observers = [];
 const context = vm.createContext({
   document: {
     getElementById: id => nodes.get(id), createElement: () => new Element(),
     body: {scrollHeight: 1000}, activeElement: null,
   },
-  location: {hash: '#run'}, addEventListener() {}, setInterval() {}, Date,
+  location: {hash: '#run'}, addEventListener() {}, setInterval() {}, Date, URLSearchParams,
   innerHeight: 100, scrollY: 0, scrollTo() { throw Error('must not scroll a reader away'); },
   ResizeObserver: class {
     constructor(callback) { this.callback = callback; this.watching = []; observers.push(this); }
@@ -38,6 +39,7 @@ const context = vm.createContext({
   fetch: async url => {
     if (url === '/api/meta') return json({version: 'v0.2.0-test'});
     if (failNext) { const e = failNext; failNext = null; return {ok: false, text: async () => e}; }
+    if (routeResponses?.has(url)) return routeResponses.get(url);
     return response || await new Promise(resolve => { resolveFetch = resolve; });
   },
 });
@@ -58,6 +60,7 @@ const call = (fn, ...args) => { context.args = args; return evaluate(`${fn}(...a
 // an unknown hash that must not be mistaken for a run id.
 for (const [hash, want] of [
   ['', 'overview'], ['#/', 'overview'], ['#/overview', 'overview'], ['#/runs', 'runs'],
+  ['#/projects', 'projects'], ['#/projects/detail?repo=%2Frepos%2Falpha', 'project'],
   ['#/runs/20260920T120000Z_build_1', 'run'], ['#20260920T120000Z_build_1', 'run'],
   ['#/nope', 'missing'],
 ]) {
@@ -65,6 +68,7 @@ for (const [hash, want] of [
   const r = evaluate('route()');
   assert.equal(r.page, want, `${hash} -> ${r.page}`);
   if (want === 'run') assert.equal(r.id, '20260920T120000Z_build_1', hash);
+  if (want === 'project') assert.equal(r.repo, '/repos/alpha', hash);
 }
 
 const long = 'x'.repeat(400) + '<script>tail</script>';
@@ -403,6 +407,42 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(queuedRow.includes('class="running">queued'), queuedRow);
   assert(!queuedRow.includes('s queued'), 'no wait in the list');
 
+  // Projects list is complete, sorted by the API, and uses full paths for links.
+  context.location.hash = '#/projects';
+  evaluate('view = route(); generation++');
+  response = json([{repo:'/one/alpha',runs:3,tokens:300,cost:3,share:0.75},
+                   {repo:'/two/alpha',runs:1,tokens:100,cost:1,share:0.25}]);
+  await evaluate('tick()');
+  const projects = nodes.get('app').innerHTML;
+  assert(projects.includes('4 runs') === false, projects);
+  assert(projects.includes('2</b><span>projects recorded'), projects);
+  assert(projects.includes('#/projects/detail?repo=%2Fone%2Falpha'), projects);
+  assert(projects.includes('#/projects/detail?repo=%2Ftwo%2Falpha'), projects);
+  assert(projects.indexOf('$3.00000') < projects.indexOf('$1.00000'), projects);
+
+  // One project shows lifetime totals and pages its own runs into run links.
+  context.location.hash = '#/projects/detail?repo=%2Fone%2Falpha';
+  evaluate('view = route(); generation++; projectRows = []; projectLoaded = false; projectMore = false');
+  const first = {...run, run_id:'r3', repo:'/one/alpha'};
+  const second = {...run, run_id:'r2', repo:'/one/alpha'};
+  const third = {...run, run_id:'r1', repo:'/one/alpha'};
+  routeResponses = new Map([
+    ['/api/projects/detail?repo=%2Fone%2Falpha', json({repo:'/one/alpha',runs:3,tokens:300,cost:3,share:0.75})],
+    ['/api/projects/runs?repo=%2Fone%2Falpha&n=50', json({runs:[first,second],more:true})],
+    ['/api/projects/runs?repo=%2Fone%2Falpha&n=50&before_at=2026-09-20T11%3A59%3A50Z&before_id=r2',
+      json({runs:[third],more:false})],
+  ]);
+  await evaluate('tick()');
+  let project = nodes.get('app').innerHTML;
+  assert(project.includes('300</b><span>tokens') && project.includes('$3.00000'), project);
+  assert(project.includes("location.hash='/runs/r3'") && project.includes('Load more runs'), project);
+  assert(nodes.get('status').innerHTML.includes('showing 2 of 3 runs'));
+  await evaluate('moreProjectRuns()');
+  project = nodes.get('app').innerHTML;
+  assert(project.includes("location.hash='/runs/r1'") && !project.includes('Load more runs'), project);
+  assert(nodes.get('status').innerHTML.includes('showing 3 of 3 runs'));
+  routeResponses = null;
+
   // Overview: lifetime totals, all three rankings, and the attribution caveats.
   context.location.hash = '#/overview';
   evaluate('view = route(); generation++');
@@ -430,6 +470,7 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   const runsH2 = over.indexOf('top runs by spend');
   assert(projectsH2 >= 0 && modelsH2 >= 0 && runsH2 >= 0, 'all three ranking headings present');
   assert(projectsH2 < runsH2 && runsH2 < modelsH2, 'projects and runs stack in the first column, models in the second');
+  assert(over.includes('#/projects/detail?repo=%2Frepos%2Falpha'), 'overview project links to its detail');
 
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');

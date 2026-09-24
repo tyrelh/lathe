@@ -98,23 +98,12 @@ func (d *DB) Overview() (Overview, error) {
 
 	rows, err = tx.Query(
 		`SELECT COALESCE(repo, ''), COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0)
-		 FROM runs GROUP BY repo ORDER BY SUM(cost) DESC, repo LIMIT ?`, topN)
+		 FROM runs GROUP BY COALESCE(repo, '') ORDER BY SUM(cost) DESC, COALESCE(repo, '') LIMIT ?`, topN)
 	if err != nil {
 		return o, err
 	}
-	defer rows.Close()
-	o.TopProjects = []ProjectSpend{}
-	for rows.Next() {
-		var p ProjectSpend
-		if err := rows.Scan(&p.Repo, &p.Runs, &p.Tokens, &p.Cost); err != nil {
-			return o, err
-		}
-		if o.Cost > 0 {
-			p.Share = p.Cost / o.Cost
-		}
-		o.TopProjects = append(o.TopProjects, p)
-	}
-	if err := rows.Err(); err != nil {
+	o.TopProjects, err = scanProjects(rows, o.Cost)
+	if err != nil {
 		return o, err
 	}
 
