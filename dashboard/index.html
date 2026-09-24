@@ -295,18 +295,16 @@ const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo)
 // bucket is the list stored under key, created empty on first use.
 const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
 
-// Group every response (including zero-cost responses) from the event cache.
-// JSON array keys cannot collide when either half of an identity contains '/'.
-function modelCosts() {
+// Aggregate usage by provider. A missing provider reads as 'unknown'.
+function providerCosts() {
   const groups = new Map();
   for (const uses of usage.values()) for (const u of uses) {
-    const provider = u.provider || 'unknown', model = u.model || 'unknown';
-    const key = JSON.stringify([provider, model]);
-    if (!groups.has(key)) groups.set(key, {provider, model, key, cost: 0});
-    groups.get(key).cost += u.cost || 0;
+    const provider = u.provider || 'unknown';
+    if (!groups.has(provider)) groups.set(provider, {provider, cost: 0});
+    groups.get(provider).cost += u.cost || 0;
   }
   return [...groups.values()].sort((a, b) => b.cost - a.cost ||
-    (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0));
 }
 
 // Each provider has a hue, and its models fall into three tiers, strongest
@@ -333,14 +331,33 @@ function modelColour(model) {
   }
   return '#7A9EFB';
 }
+// Spend per model, aggregating across providers. A missing model reads as
+// 'unknown'. The identity used for stable sorting is the bare model name.
+function modelSpend() {
+  const groups = new Map();
+  for (const uses of usage.values()) for (const u of uses) {
+    const model = u.model || 'unknown';
+    if (!groups.has(model)) groups.set(model, {model, cost: 0});
+    groups.get(model).cost += u.cost || 0;
+  }
+  return [...groups.values()].sort((a, b) => b.cost - a.cost ||
+    (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
+}
+
 function renderCosts(r) {
-  const rows = modelCosts();
+  const providers = providerCosts(), models = modelSpend();
+  const list = (rows, label) => rows.length
+    ? `<h3 class="dim">${esc(label)}</h3><ul class="model-costs">${rows.map(m => `<li style="--model-color:${m.colour}">
+        <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span>
+        <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul>`
+    : '';
+  const providerList = list(providers.map(p => ({name: p.provider, cost: p.cost, colour: modelColour(p.provider)})), 'providers');
+  const modelList = list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models');
+  const loading = draining ? '<p class="dim">Loading usage…</p>' : '';
+  const empty = !providers.length && !models.length && !draining
+    ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '';
   return `<div class="run-cost-total cost">${money(r.cost)}</div><div class="dim">total cost</div>`
-    + (rows.length ? `<ul class="model-costs">${rows.map(m => `<li style="--model-color:${modelColour(m.model)}">
-        <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.provider)}/${esc(m.model)}</span>
-        <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul>` : '')
-    + (draining ? '<p class="dim">Loading usage…</p>' : !rows.length
-      ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '');
+    + providerList + modelList + loading + empty;
 }
 
 // route maps the hash to a page. `#/overview` is the landing page and an empty
@@ -474,6 +491,14 @@ async function overview(current) {
       <td class="num dim">${pct(m.share)}</td>
       <td class="num dim lo">${count(m.phases)} phase${m.phases === 1 ? '' : 's'}</td>
     </tr>`;
+  const providerRow = (p, i) => `
+    <tr>
+      <td class="dim">${i + 1}</td>
+      <td>${esc(p.provider || 'unknown')}</td>
+      <td class="num cost">${money(p.cost)}</td>
+      <td class="num dim">${pct(p.share)}</td>
+      <td class="num dim lo">${count(p.phases)} phase${p.phases === 1 ? '' : 's'}</td>
+    </tr>`;
   const empty = what => `<tr><td class="dim">No ${what} recorded yet.</td></tr>`;
 
   app.innerHTML = `
@@ -494,10 +519,16 @@ async function overview(current) {
           <table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>
         </div>
       </div>
-      <div class="card">
-        <h2>top models by spend</h2>
-        <table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table>
-        <p class="dim">${attribution(o)}</p>
+      <div>
+        <div class="card">
+          <h2>top models by spend</h2>
+          <table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table>
+          <p class="dim">${attribution(o)}</p>
+        </div>
+        <div class="card">
+          <h2>top providers by spend</h2>
+          <table>${o.top_providers.map(providerRow).join('') || empty('provider spend')}</table>
+        </div>
       </div>
     </div>`;
 

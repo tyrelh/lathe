@@ -183,13 +183,18 @@ func TestReaderAndWriterShareTheDatabase(t *testing.T) {
 		}
 		// A partially applied response would show the run total and the usage
 		// records disagreeing, which is exactly what the transaction prevents.
-		var attributed float64
+		// Each ranking independently accounts for the full recorded spend, so
+		// they are checked separately rather than added together.
+		var sumModels, sumProviders float64
 		for _, m := range o.TopModels {
-			attributed += m.Cost
+			sumModels += m.Cost
 		}
-		if math.Abs(o.Cost-attributed) > costEpsilon {
-			t.Fatalf("read %d saw a half-applied response: total $%v, models $%v",
-				reads, o.Cost, attributed)
+		for _, p := range o.TopProviders {
+			sumProviders += p.Cost
+		}
+		if math.Abs(o.Cost-sumModels) > costEpsilon || math.Abs(o.Cost-sumProviders) > costEpsilon {
+			t.Fatalf("read %d saw a half-applied response: total $%v, models $%v, providers $%v",
+				reads, o.Cost, sumModels, sumProviders)
 		}
 		select {
 		case err := <-done:

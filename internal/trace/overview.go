@@ -30,16 +30,27 @@ type ModelSpend struct {
 	Phases   int     `json:"phases"`
 }
 
+// ProviderSpend is one provider's share of recorded spend. Phases counts the
+// distinct phases that spent with it, the same way ModelSpend does.
+type ProviderSpend struct {
+	Provider string  `json:"provider"`
+	Tokens   int     `json:"tokens"`
+	Cost     float64 `json:"cost"`
+	Share    float64 `json:"share"`
+	Phases   int     `json:"phases"`
+}
+
 // Overview is every lifetime figure the dashboard's first page shows, across
 // every repository in the database.
 type Overview struct {
-	Runs        int            `json:"runs"`
-	Tokens      int            `json:"tokens"`
-	Cost        float64        `json:"cost"`
-	TopProjects []ProjectSpend `json:"top_projects"`
-	TopRuns     []Row          `json:"top_runs"`
-	TopModels   []ModelSpend   `json:"top_models"`
-	At          string         `json:"at"`
+	Runs         int             `json:"runs"`
+	Tokens       int             `json:"tokens"`
+	Cost         float64         `json:"cost"`
+	TopProjects  []ProjectSpend  `json:"top_projects"`
+	TopRuns      []Row           `json:"top_runs"`
+	TopModels    []ModelSpend    `json:"top_models"`
+	TopProviders []ProviderSpend `json:"top_providers"`
+	At           string          `json:"at"`
 }
 
 // Overview reads every figure inside one transaction, so the totals and the
@@ -91,6 +102,29 @@ func (d *DB) Overview() (Overview, error) {
 			m.Share = m.Cost / o.Cost
 		}
 		o.TopModels = append(o.TopModels, m)
+	}
+	if err := rows.Err(); err != nil {
+		return o, err
+	}
+
+	rows, err = tx.Query(
+		`SELECT COALESCE(provider, ''), SUM(tokens), SUM(cost), COUNT(DISTINCT phase_id)
+		 FROM usage GROUP BY provider
+		 ORDER BY SUM(cost) DESC, provider LIMIT ?`, topN)
+	if err != nil {
+		return o, err
+	}
+	defer rows.Close()
+	o.TopProviders = []ProviderSpend{}
+	for rows.Next() {
+		var p ProviderSpend
+		if err := rows.Scan(&p.Provider, &p.Tokens, &p.Cost, &p.Phases); err != nil {
+			return o, err
+		}
+		if o.Cost > 0 {
+			p.Share = p.Cost / o.Cost
+		}
+		o.TopProviders = append(o.TopProviders, p)
 	}
 	if err := rows.Err(); err != nil {
 		return o, err
