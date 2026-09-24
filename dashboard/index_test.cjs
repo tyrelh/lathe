@@ -387,14 +387,16 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(runsBar.includes('showing 1 of 1,284 runs'), runsBar);
   assert(runsBar.includes('displayed:'), runsBar);
   assert(nodes.get('app').innerHTML.includes("location.hash='/runs/r1'"));
+  assert(nodes.get('app').innerHTML.includes('>1m05s</td>'), 'the list shows how long a run took');
+  assert(!nodes.get('app').innerHTML.includes('10s queued'), 'the list leaves out the wait');
 
-  // A queued run is a live run, not a failed one, and it shows its wait.
+  // A queued run is a live run, not a failed one.
   evaluate('generation++');
   response = json([{...run, run_id:'r2', status:'queued', started_at:'', ended_at:''}], {'X-Total-Runs': '1'});
   await evaluate('tick()');
   const queuedRow = nodes.get('app').innerHTML;
   assert(queuedRow.includes('class="running">queued'), queuedRow);
-  assert(queuedRow.includes('queued</td>') || queuedRow.includes(' queued'), queuedRow);
+  assert(!queuedRow.includes('s queued'), 'no wait in the list');
 
   // Overview: lifetime totals, all three rankings, and the attribution caveats.
   context.location.hash = '#/overview';

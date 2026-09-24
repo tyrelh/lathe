@@ -448,7 +448,7 @@ async function list(current) {
         <td class="dim">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
         <td class="${cls(r.status)}">${esc(r.status)}</td>
         <td>${esc(r.workflow)}</td>
-        <td class="num dim lo">${esc(timings(r))}</td>
+        <td class="num dim lo">${esc(took(r))}</td>
         <td class="num dim">${count(r.tokens)} tok</td>
         <td class="num cost">${money(r.cost)}</td>
         <td class="wrap" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
@@ -538,14 +538,14 @@ async function detail(current) {
 }
 
 // timings keeps waiting and working apart: a run that sat in the queue for a
-// minute is not a run that took a minute to do.
+// minute is not a run that took a minute to do. The runs list shows only took().
 function timings(r) {
   const queued = span(r.submitted_at, r.started_at);
+  return [queued && queued + ' queued', took(r)].filter(Boolean).join(' · ');
+}
+function took(r) {
   const ran = span(r.started_at, r.ended_at);
-  const parts = [];
-  if (queued) parts.push(queued + ' queued');
-  if (ran) parts.push(ran + (r.ended_at ? '' : ' elapsed'));
-  return parts.join(' · ');
+  return ran && ran + (r.ended_at ? '' : ' elapsed');
 }
 
 // span is one stage's duration; an unfinished stage is measured against now.
