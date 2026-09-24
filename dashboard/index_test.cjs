@@ -18,7 +18,7 @@ class Element {
   contains() { return false; }
   focus(options) { this.focused = options; }
 }
-for (const id of ['app', 'status', 'note', 'version', 'head', 'phases', 'phase', 'log',
+for (const id of ['app', 'status', 'note', 'version', 'head', 'summary', 'phases', 'phase', 'log',
                   'nav-overview', 'nav-runs', 'follow-box', 'follow-label']) nodes.set(id, new Element());
 let response, resolveFetch, failNext = null, frames = [];
 const observers = [];
@@ -108,9 +108,10 @@ const planRow = html.split('class="node"')[1];
 assert(planRow.indexOf('data-phase="c1"') < planRow.indexOf('data-phase="c3"'), 'blocks follow seq');
 assert(!planRow.split('class="track"')[1].split('</div>')[0].includes('c2'), 'review is its own row');
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
-assert(html.includes('<span class="piece" data-line="0">plan</span><span class="piece mark" data-line="0">✅</span>'), 'status marks the name');
+assert(html.includes('<span class="piece" data-line="0">✅</span>'), 'the status mark leads the label');
+assert(!html.includes('data-line="0">plan<'), 'the row names the phase, so the block does not');
 assert(!html.includes('data-line="1">success'), 'the status word is only in the accessible name');
-assert(html.includes('data-lines="1"'), 'a label with nothing under the name sits on one centred line');
+assert(html.includes('data-lines="1"'), 'a label with nothing under the status sits on one centred line');
 assert(html.includes('class="block ok" style=') && html.includes('data-owner="builder"'), 'fill follows the owner, border the status');
 assert(call('gantt', settled, [ph(1,'x',T(0),T(5),{owner:'"><b>'})], 0).includes('data-owner="&quot;>&lt;b>"'), 'owner is escaped');
 
@@ -152,7 +153,7 @@ assert(call('gantt', settled, [ph(1,'test',T(0),T(9),{status:'fail'})], 0).inclu
 const arrange = (blocks, width) => JSON.parse(JSON.stringify(call('arrange', blocks, width)));
 const lines = (blocks, width) => arrange(blocks, width).map(b => b.lines);
 const at = (x, sep = false) => ({x, sep});
-// Everything fits: the name, then model · status side by side under it.
+// Everything fits: one piece, then two side by side under it.
 assert.deepEqual(lines([{left:0, width:200, lines:[[40], [50, 50]]}], 400),
   [[[at(4)], [at(4), at(54, true)]]]);
 // Pieces choose one by one, in reading order: what fits stays inside, the
@@ -205,6 +206,8 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   await evaluate('tick()');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
   assert(chart().includes('fix · model · success · $0.10000'), chart());
+  assert(chart().includes('data-line="0">✅</span><span class="piece tight" data-line="0">model</span><span class="piece" data-line="1">$0.10000</span>'),
+    'status and model share the first line, cost the second');
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
   assert.equal(chart().split('class="node"').length - 1, 1, 'both entries share a row');
   assert(panel().includes('Select a phase.'));
@@ -271,6 +274,11 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   const bar = nodes.get('status').innerHTML;
   // Queue time and execution time are separate: 10s waiting, 1m05s working.
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
+  const summary = nodes.get('summary').innerHTML;
+  for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
+                      '<dt>cost</dt><dd class="cost">$0.30000</dd>', '<dt>queued</dt><dd>10s</dd>',
+                      '<dt>duration</dt><dd>1m05s</dd>', '<dt>repo</dt><dd>repo</dd>', '<dt>run id</dt><dd>run</dd>'])
+    assert(summary.includes(text), `run card: ${text}`);
   assert.equal(nodes.get('note').textContent, 'run complete');
   assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
 
@@ -384,14 +392,16 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   assert(runsBar.includes('showing 1 of 1,284 runs'), runsBar);
   assert(runsBar.includes('displayed:'), runsBar);
   assert(nodes.get('app').innerHTML.includes("location.hash='/runs/r1'"));
+  assert(nodes.get('app').innerHTML.includes('>1m05s</td>'), 'the list shows how long a run took');
+  assert(!nodes.get('app').innerHTML.includes('10s queued'), 'the list leaves out the wait');
 
-  // A queued run is a live run, not a failed one, and it shows its wait.
+  // A queued run is a live run, not a failed one.
   evaluate('generation++');
   response = json([{...run, run_id:'r2', status:'queued', started_at:'', ended_at:''}], {'X-Total-Runs': '1'});
   await evaluate('tick()');
   const queuedRow = nodes.get('app').innerHTML;
   assert(queuedRow.includes('class="running">queued'), queuedRow);
-  assert(queuedRow.includes('queued</td>') || queuedRow.includes(' queued'), queuedRow);
+  assert(!queuedRow.includes('s queued'), 'no wait in the list');
 
   // Overview: lifetime totals, all three rankings, and the attribution caveats.
   context.location.hash = '#/overview';
@@ -400,7 +410,7 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
     runs: 1284, tokens: 9_000_000, cost: 42.18374,
     top_projects: [{repo:'/repos/alpha', runs:900, cost:38, share:0.9},
                    {repo:'', runs:100, cost:4, share:0.1}],
-    top_runs: [{...run, run_id:'top', cost: 9.5}],
+    top_runs: [{...run, run_id:'top', cost: 9.5}, {...run, run_id:'long', request:'x'.repeat(149) + '😀tail'}],
     top_models: [{provider:'moonshotai', model:'kimi', cost:30, share:0.7113, phases:2700},
                  {provider:'', model:'', cost:2, share:0.0474, phases:12}],
     at: '2026-09-20T12:00:00Z',
@@ -412,6 +422,8 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
                       '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
     assert(over.includes(text), `overview: ${text}`);
   }
+  assert(over.includes('>' + 'x'.repeat(149) + '😀…</td>'), 'a long request is cut to 150 characters');
+  assert(over.includes('>fix</td>'), 'a short request is not cut');
   assert(nodes.get('status').innerHTML.includes('all repositories · all time'));
   const projectsH2 = over.indexOf('top projects by spend');
   const modelsH2 = over.indexOf('top models by spend');
