@@ -109,6 +109,12 @@
           border-radius: 4px; background: var(--panel); color: var(--fg);
           font: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--cost); outline-offset: 1px; }
+  #new-run label { display: block; color: var(--dim); margin: 8px 0 4px; }
+  #new-run textarea, #new-run input, #new-run select {
+    width: 100%; font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+  #new-run textarea { resize: vertical; }
+  #new-run select { width: auto; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
   summary { cursor: pointer; overflow-wrap: anywhere; }
   details[open] > summary { margin-bottom: 8px; }
@@ -267,6 +273,9 @@ let after = 0, done = false;
 // has stopped. selected: the phase_id in the details card, or ''.
 let draining = false, shown = null, selected = '';
 let projectRows = [], projectMore = false, projectLoaded = false, projectLoading = false, projectSummary = null;
+// runSubmitting: a New run POST is in flight. Everything else the form shows
+// lives in its own DOM, which polling never rewrites.
+let runSubmitting = false;
 let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route();
 
@@ -315,7 +324,10 @@ function navigate() {
   draining = false; shown = null; selected = '';
   projectRows = []; projectMore = false; projectLoaded = false; projectLoading = false; projectSummary = null;
   resized.disconnect(); observed = null;
-  app.innerHTML = '';
+  runSubmitting = false;
+  // A project page is built once, as three parts: polling redraws the summary
+  // and the runs around the form, so a draft and its focus survive.
+  app.innerHTML = view.page === 'project' ? projectShell(view.repo) : '';
   followBox.checked = false;
   followLabel.style.display = 'none';
   for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs'], ['nav-projects', 'projects']]) {
@@ -504,10 +516,77 @@ async function project(current) {
   renderProject();
 }
 
+function projectShell(repo) {
+  return `<div id="project-head"></div>
+    <form id="new-run" class="card" onsubmit="submitRun(event)">
+      <h2>new run</h2>
+      <p class="dim">Target: <code>${esc(repo)}</code></p>
+      <label for="run-prompt">Prompt</label>
+      <textarea id="run-prompt" rows="4"></textarea>
+      <label for="run-issue">Issue reference</label>
+      <input id="run-issue" autocomplete="off" placeholder="123, owner/repo#123, or an issue URL">
+      <label for="run-type">Type</label>
+      <select id="run-type">
+        <option value="scout">Scout</option><option value="plan">Plan</option>
+        <option value="implement">Implement</option><option value="build" selected>Build</option>
+      </select>
+      <p><button class="more" id="run-submit" type="submit">Submit</button></p>
+      <p id="run-status" role="status"></p>
+    </form>
+    <div id="project-runs"></div>`;
+}
+
+function runStatus(html, error = false) {
+  $('run-status').className = error ? 'fail' : '';
+  $('run-status').innerHTML = html;
+}
+
+// submitRun queues a run against this project. It checks what it can before
+// sending; the server repeats every check and adds the ones that need the
+// checkout. Success leaves the type selected and clears only what was sent.
+async function submitRun(e) {
+  e.preventDefault();
+  if (runSubmitting) return;
+  const prompt = $('run-prompt').value.trim(), issue = $('run-issue').value.trim();
+  const workflow = $('run-type').value;
+  if (!prompt === !issue) return runStatus('Enter a prompt or an issue reference, not both.', true);
+  if (workflow === 'scout' && issue) return runStatus('Scout takes a prompt only. Enter a prompt, or pick another type.', true);
+
+  const current = generation;
+  runSubmitting = true;
+  $('run-submit').disabled = true;
+  runStatus('Queuing…');
+  try {
+    const r = await fetch('/api/projects/runs', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({repo: view.repo, workflow, ...(prompt ? {prompt} : {issue})}),
+    });
+    const text = await r.text();
+    let body = {};
+    try { body = JSON.parse(text); } catch {}
+    if (current !== generation) return;
+    const link = id => `<a href="#/runs/${esc(id)}">${esc(id)}</a>`;
+    if (!r.ok) {
+      runStatus(esc(body.error || text || 'HTTP ' + r.status) + (body.run_id ? ' · held by ' + link(body.run_id) : ''), true);
+      return;
+    }
+    $(prompt ? 'run-prompt' : 'run-issue').value = '';
+    runStatus(`Queued ${esc(workflow)} ${link(body.run_id)}`);
+    tick();
+  } catch (err) {
+    if (current === generation) runStatus(esc(String(err)), true);
+  } finally {
+    if (current === generation) {
+      runSubmitting = false;
+      $('run-submit').disabled = false;
+    }
+  }
+}
+
 function renderProject() {
   const p = projectSummary;
   if (!p) return;
-  app.innerHTML = `<p><a href="#/projects">&larr; all projects</a></p>
+  $('project-head').innerHTML = `<p><a href="#/projects">&larr; all projects</a></p>
     <div class="card"><b>${esc(base(p.repo) || 'unknown repo')}</b><br>
       <span class="dim">${esc(p.repo || 'Repository path not recorded')}</span></div>
     <div class="card totals">
@@ -515,8 +594,8 @@ function renderProject() {
       <div><b>${count(p.tokens)}</b><span>tokens</span></div>
       <div class="cost"><b>${money(p.cost)}</b><span>recorded spend</span></div>
     </div>
-    <p class="dim">Lifetime metrics for this repository. ${pct(p.share)} of total recorded spend.</p>
-    <section class="card"><h2>runs</h2>
+    <p class="dim">Lifetime metrics for this repository. ${pct(p.share)} of total recorded spend.</p>`;
+  $('project-runs').innerHTML = `<section class="card"><h2>runs</h2>
       <table>${projectRows.map(runListRow).join('') || '<tr><td class="dim">No runs recorded yet.</td></tr>'}</table>
       ${projectMore ? `<button class="more" type="button" onclick="moreProjectRuns()" ${projectLoading ? 'disabled' : ''}>${projectLoading ? 'Loading…' : 'Load more runs'}</button>` : ''}
     </section>`;

@@ -2,6 +2,10 @@ package dashboard
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os/exec"
 	"strconv"
@@ -11,6 +15,14 @@ import (
 
 	"github.com/tyrelh/lathe/internal/trace"
 )
+
+// local is a request as the browser on this machine sends it: to the address
+// the dashboard listens on.
+func local(method, path string, body io.Reader) *http.Request {
+	r := httptest.NewRequest(method, path, body)
+	r.Host = Addr
+	return r
+}
 
 // claimed submits a run and takes it through dispatch and claim the way the
 // manager and a worker do, leaving it running.
@@ -57,11 +69,11 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	h := handler(ro, "v0.2.0-test")
+	h := handler(ro, "v0.2.0-test", nil)
 
 	get := func(path string) string {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		h.ServeHTTP(w, local("GET", path, nil))
 		if w.Code != 200 {
 			t.Fatalf("GET %s: %d %s", path, w.Code, w.Body)
 		}
@@ -113,7 +125,7 @@ func TestRoutes(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/runs/nope", nil))
+	h.ServeHTTP(w, local("GET", "/api/runs/nope", nil))
 	if w.Code != 404 {
 		t.Errorf("unknown run: want 404, got %d", w.Code)
 	}
@@ -166,11 +178,11 @@ func TestOverviewAndMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	h := handler(ro, "v0.2.0")
+	h := handler(ro, "v0.2.0", nil)
 
 	do := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		h.ServeHTTP(w, local("GET", path, nil))
 		if w.Code != 200 {
 			t.Fatalf("GET %s: %d %s", path, w.Code, w.Body)
 		}
@@ -237,7 +249,7 @@ func TestOverviewAndMeta(t *testing.T) {
 	}
 	for _, path := range []string{"/api/projects/detail?repo=%2Fmissing", "/api/projects/detail"} {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		h.ServeHTTP(w, local("GET", path, nil))
 		want := 404
 		if path == "/api/projects/detail" {
 			want = 400
@@ -258,10 +270,123 @@ func TestOverviewAndMeta(t *testing.T) {
 	}
 	defer fresh.Close()
 	w := httptest.NewRecorder()
-	handler(fresh, "dev").ServeHTTP(w, httptest.NewRequest("GET", "/api/overview", nil))
+	handler(fresh, "dev", nil).ServeHTTP(w, local("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
 		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_projects":[]`) ||
 		!strings.Contains(body, `"runs":0`) {
 		t.Errorf("empty overview = %s", body)
+	}
+}
+
+// The New run route: who may call it, what it accepts, and how submission
+// outcomes map to status codes. The stub stands in for the CLI's submission
+// path, so nothing here touches a checkout.
+func TestSubmitRun(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Submit(trace.Request{Workflow: "scout", Repo: "/repos/alpha", Request: "look", Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	ro, err := trace.OpenRO(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+
+	var calls [][4]string
+	var result error
+	h := handler(ro, "dev", func(workflow, repo, prompt, issue string) (string, error) {
+		calls = append(calls, [4]string{workflow, repo, prompt, issue})
+		if result != nil {
+			return "", result
+		}
+		return "20260923T120000Z_build_1", nil
+	})
+	post := func(h http.Handler, host, origin, contentType, body string) (int, map[string]string) {
+		r := local("POST", "/api/projects/runs", strings.NewReader(body))
+		r.Host = host
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		r.Header.Set("Content-Type", contentType)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var out map[string]string
+		json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	send := func(body string) (int, map[string]string) {
+		return post(h, Addr, "http://"+Addr, "application/json", body)
+	}
+	build := `{"repo":"/repos/alpha","workflow":"build","prompt":"  add retries  "}`
+
+	if code, _ := post(handler(ro, "dev", nil), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
+		t.Errorf("nil submit: %d, want the POST route unregistered (405)", code)
+	}
+
+	w := httptest.NewRecorder()
+	r := local("GET", "/api/meta", nil)
+	r.Host = "evil.example:4700"
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("GET with a foreign Host: %d, want 403", w.Code)
+	}
+
+	for name, c := range map[string][3]string{
+		"foreign host":    {"evil.example:4700", "http://evil.example:4700", "application/json"},
+		"missing origin":  {Addr, "", "application/json"},
+		"foreign origin":  {Addr, "http://evil.example", "application/json"},
+		"cross-host":      {Addr, "http://localhost:4700", "application/json"},
+		"form post":       {Addr, "http://" + Addr, "application/x-www-form-urlencoded"},
+		"no content type": {Addr, "http://" + Addr, ""},
+	} {
+		if code, _ := post(h, c[0], c[1], c[2], build); code != http.StatusForbidden {
+			t.Errorf("%s: %d, want 403", name, code)
+		}
+	}
+	if code, _ := post(h, "localhost:4700", "http://localhost:4700", "application/json; charset=utf-8", build); code != http.StatusCreated {
+		t.Errorf("localhost with a charset: %d, want 201", code)
+	}
+
+	big := `{"repo":"/repos/alpha","workflow":"build","prompt":"` + strings.Repeat("x", 64<<10) + `"}`
+	if code, _ := send(big); code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized body: %d, want 413", code)
+	}
+
+	for name, body := range map[string]string{
+		"not json":         `{`,
+		"unknown workflow": `{"repo":"/repos/alpha","workflow":"deploy","prompt":"x"}`,
+		"both inputs":      `{"repo":"/repos/alpha","workflow":"build","prompt":"x","issue":"12"}`,
+		"neither input":    `{"repo":"/repos/alpha","workflow":"build","prompt":"  "}`,
+		"scout with issue": `{"repo":"/repos/alpha","workflow":"scout","issue":"12"}`,
+		"unrecorded repo":  `{"repo":"/repos/beta","workflow":"build","prompt":"x"}`,
+	} {
+		if code, out := send(body); code != http.StatusBadRequest || out["error"] == "" {
+			t.Errorf("%s: %d %v, want 400 with an error", name, code, out)
+		}
+	}
+
+	calls = nil
+	if code, out := send(build); code != http.StatusCreated || out["run_id"] != "20260923T120000Z_build_1" {
+		t.Errorf("success: %d %v", code, out)
+	}
+	if len(calls) != 1 || calls[0] != [4]string{"build", "/repos/alpha", "add retries", ""} {
+		t.Errorf("submit called with %v", calls)
+	}
+	if code, _ := send(`{"repo":"/repos/alpha","workflow":"plan","issue":"owner/repo#12"}`); code != http.StatusCreated {
+		t.Errorf("issue run: %d", code)
+	}
+
+	result = fmt.Errorf("%w: 20260923T110000Z_build_1", trace.ErrDuplicateBuild)
+	if code, out := send(build); code != http.StatusConflict || out["run_id"] != "20260923T110000Z_build_1" {
+		t.Errorf("duplicate build: %d %v, want 409 naming the holder", code, out)
+	}
+	result = errors.New("checkout has uncommitted changes")
+	if code, out := send(build); code != http.StatusBadRequest || out["error"] != result.Error() {
+		t.Errorf("checkout problem: %d %v, want 400 with the reason", code, out)
 	}
 }
