@@ -178,6 +178,18 @@
   .phase-output li { margin-bottom: 6px; }
   .phase-output li > h4:first-child { margin-top: 0; }
   .phase-output ul, .phase-output ol { margin-top: 0; padding-left: 3ch; }
+  .run-project h2, .run-project #head { overflow-wrap: anywhere; }
+  .run-project h2 { text-transform: none; letter-spacing: normal; color: var(--fg); font-size: 14px; }
+  .phase-inspector { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .run-cost-total { font-size: 28px; line-height: 1.2; overflow-wrap: anywhere; }
+  .model-costs { list-style: none; padding: 0; margin: 12px 0 0; }
+  .model-costs li { display: flex; align-items: baseline; gap: 8px;
+                    padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .model-costs li:last-child { border-bottom: 0; }
+  .model-dot { flex: none; width: 9px; height: 9px; border-radius: 50%;
+               background: var(--model-color); align-self: center; }
+  .model-name { min-width: 0; overflow-wrap: anywhere; }
+  .model-amount { margin-left: auto; white-space: nowrap; }
   #phase > details { margin-top: 14px; }
   #phase > details > summary { color: var(--dim); }
   #phase > details > summary.fail { color: var(--fail); }
@@ -285,6 +297,38 @@ const pct = n => (100 * (n || 0)).toFixed(1) + '%';
 const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo).replace(/'/g, '%27');
 // bucket is the list stored under key, created empty on first use.
 const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
+
+// Group every response (including zero-cost responses) from the event cache.
+// JSON array keys cannot collide when either half of an identity contains '/'.
+function modelCosts() {
+  const groups = new Map();
+  for (const uses of usage.values()) for (const u of uses) {
+    const provider = u.provider || 'unknown', model = u.model || 'unknown';
+    const key = JSON.stringify([provider, model]);
+    if (!groups.has(key)) groups.set(key, {provider, model, key, cost: 0});
+    groups.get(key).cost += u.cost || 0;
+  }
+  return [...groups.values()].sort((a, b) => b.cost - a.cost ||
+    (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+// Hash the identity rather than its row index, so a new page or a change in
+// spend cannot recolour a model. These hues are independent of Gantt owners.
+const modelPalette = ['blue', 'cyan', 'sky', 'teal', 'orange', 'purple', 'green', 'magenta'];
+function modelColour(key) {
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
+  return modelPalette[(hash >>> 0) % modelPalette.length];
+}
+function renderCosts(r) {
+  const rows = modelCosts();
+  return `<div class="run-cost-total cost">${money(r.cost)}</div><div class="dim">total cost</div>`
+    + (rows.length ? `<ul class="model-costs">${rows.map(m => `<li style="--model-color:var(--${modelColour(m.key)})">
+        <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.provider)}/${esc(m.model)}</span>
+        <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul>` : '')
+    + (draining ? '<p class="dim">Loading usage…</p>' : !rows.length
+      ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '');
+}
 
 // route maps the hash to a page. `#/overview` is the landing page and an empty
 // hash means the same; `#<run-id>` without a slash is the deep link shape
@@ -611,19 +655,20 @@ async function detail(current) {
   if (!live(r.status) && !draining) done = true;
   followLabel.style.display = (view.page === 'run' && !done) ? 'inline-flex' : 'none';
 
-  // The header, chart and details are re-rendered every poll; the log is
-  // appended, so scrolling through a finished phase is not undone a second later.
+  // The header, chart, costs and details are re-rendered every poll; the log
+  // is appended, so scrolling through a phase is not undone a second later.
   if (!$('log')) {
     app.innerHTML = `
       <p><a href="#/runs">&larr; all runs</a></p>
-      <div class="card"><p id="head"></p></div>
-      <section class="card"><h2>run</h2><dl id="summary" class="stats"></dl></section>
-      <section class="card"><h2>phases</h2><div id="phases"></div></section>
-      <section class="card" id="phase"></section>
+      <section class="card run-project"><h2 id="project-title"></h2><p id="head"></p></section>
+      <section class="card"><h2>phases</h2><div id="phases"></div>
+        <div id="phase" class="phase-inspector"></div></section>
+      <section class="card"><h2>costs</h2><div id="costs"></div></section>
+      <section class="card"><h2>details</h2><dl id="summary" class="stats"></dl></section>
       <section class="card"><h2>events</h2><table id="log"></table></section>`;
   }
-  $('head').innerHTML =
-    `<b>${esc(r.repo)}</b><br><span class="dim">${esc(r.request)}</span>`;
+  $('project-title').innerHTML = esc(r.repo || 'unknown repo');
+  $('head').innerHTML = esc(r.request);
   const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
   shown = {run: r, phases: d.phases};
   draw();
@@ -635,7 +680,6 @@ async function detail(current) {
     stat('workflow', esc(r.workflow)),
     stat('status', esc(r.status), cls(r.status)),
     stat('tokens', count(r.tokens)),
-    stat('cost', money(r.cost), 'cost'),
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),
     stat('repo', esc(base(r.repo))),
@@ -693,6 +737,7 @@ function draw() {
   const {run: r, phases} = shown, now = Date.now();
   swap(chart, gantt(r, phases, now));
   swap($('phase'), details(phases.find(p => p.phase_id === selected), r, now));
+  $('costs').innerHTML = renderCosts(r);
   layout();
   if (observed !== chart) { resized.observe(chart); observed = chart; }
 }
