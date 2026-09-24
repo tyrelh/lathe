@@ -18,7 +18,7 @@ class Element {
   contains() { return false; }
   focus(options) { this.focused = options; }
 }
-for (const id of ['app', 'status', 'note', 'version', 'head', 'phases', 'phase', 'log',
+for (const id of ['app', 'status', 'note', 'version', 'head', 'summary', 'phases', 'phase', 'log',
                   'nav-overview', 'nav-runs', 'follow-box', 'follow-label']) nodes.set(id, new Element());
 let response, resolveFetch, failNext = null, frames = [];
 const observers = [];
@@ -274,6 +274,11 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   const bar = nodes.get('status').innerHTML;
   // Queue time and execution time are separate: 10s waiting, 1m05s working.
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
+  const summary = nodes.get('summary').innerHTML;
+  for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
+                      '<dt>cost</dt><dd class="cost">$0.30000</dd>', '<dt>queued</dt><dd>10s</dd>',
+                      '<dt>duration</dt><dd>1m05s</dd>', '<dt>repo</dt><dd>repo</dd>', '<dt>run id</dt><dd>run</dd>'])
+    assert(summary.includes(text), `run card: ${text}`);
   assert.equal(nodes.get('note').textContent, 'run complete');
   assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
 

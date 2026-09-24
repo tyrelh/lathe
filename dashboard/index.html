@@ -187,6 +187,11 @@
               font-variant-numeric: tabular-nums; }
   .totals .cost b { color: var(--cost); }
   .totals span { color: var(--dim); font-size: 12px; }
+  /* A labelled value per cell, as many columns as the width holds. */
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(18ch, 1fr));
+           gap: 10px 20px; margin: 0; }
+  .stats dt { color: var(--dim); font-size: 12px; }
+  .stats dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
   @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
   @media (max-width: 720px) {
@@ -506,6 +511,7 @@ async function detail(current) {
     app.innerHTML = `
       <p><a href="#/runs">&larr; all runs</a></p>
       <div class="card"><p id="head"></p></div>
+      <section class="card"><h2>run</h2><dl id="summary" class="stats"></dl></section>
       <section class="card"><h2>phases</h2><div id="phases"></div></section>
       <section class="card" id="phase"></section>
       <section class="card"><h2>events</h2><table id="log"></table></section>`;
@@ -516,6 +522,19 @@ async function detail(current) {
   shown = {run: r, phases: d.phases};
   draw();
 
+  // The run card repeats the bottom bar, labelled, so it reads at the top too.
+  const stat = (label, value, c = '') =>
+    `<div><dt>${label}</dt><dd${c ? ` class="${c}"` : ''}>${value || '<span class="dim">—</span>'}</dd></div>`;
+  $('summary').innerHTML = [
+    stat('workflow', esc(r.workflow)),
+    stat('status', esc(r.status), cls(r.status)),
+    stat('tokens', count(r.tokens)),
+    stat('cost', money(r.cost), 'cost'),
+    stat('queued', span(r.submitted_at, r.started_at)),
+    stat('duration', took(r)),
+    stat('repo', esc(base(r.repo))),
+    stat('run id', esc(r.run_id)),
+  ].join('');
   bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
     + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
     + ` · ${timings(r)}<span class="lo"> · ${esc(base(r.repo))} · ${esc(r.run_id)}</span>`;
