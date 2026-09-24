@@ -18,14 +18,35 @@ class Element {
   contains() { return false; }
   focus(options) { this.focused = options; }
 }
-for (const id of ['app', 'status', 'note', 'version', 'head', 'summary', 'phases', 'phase', 'log',
+for (const id of ['app', 'status', 'note', 'version',
                   'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label']) nodes.set(id, new Element());
+// Parse only the scaffold IDs when app is replaced. In particular, do not
+// precreate #log: that would skip the first-render branch in detail().
+const scaffoldIDs = ['project-title', 'head', 'phases', 'phase', 'costs', 'summary', 'log'];
+const appNode = nodes.get('app');
+let appHTML = '', scaffoldCount = 0;
+Object.defineProperty(appNode, 'innerHTML', {
+  get: () => appHTML,
+  set: html => {
+    appHTML = html;
+    for (const id of scaffoldIDs) nodes.delete(id);
+    const ids = [...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
+    for (const id of ids) {
+      assert(scaffoldIDs.includes(id), `unregistered app ID ${id}`);
+      nodes.set(id, new Element());
+    }
+    if (ids.includes('log')) {
+      scaffoldCount++;
+      assert.deepEqual(ids, scaffoldIDs, 'all run regions come from the initial scaffold');
+    }
+  },
+});
 let response, resolveFetch, failNext = null, frames = [];
 let routeResponses = null;
 const observers = [];
 const context = vm.createContext({
   document: {
-    getElementById: id => nodes.get(id), createElement: () => new Element(),
+    getElementById: id => nodes.get(id) ?? null, createElement: () => new Element(),
     body: {scrollHeight: 1000}, activeElement: null,
   },
   location: {hash: '#run'}, addEventListener() {}, setInterval() {}, Date, URLSearchParams,
@@ -198,17 +219,33 @@ const phases = [ph(1,'fix',T(0),T(30)), ph(2,'fix',T(30),T(65))].map(p => ({...p
 const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:'/repo',request:'fix',submitted_at:'2026-09-20T11:59:50Z',started_at:'2026-09-20T12:00:00Z',ended_at:'2026-09-20T12:01:05Z'};
 let id = 0;
 const event = (type, payload, phase_id='p1', name='fix') => ({event_id:++id,type,payload,phase_id,name});
-function serve(events, ps = phases) { response = json({run,phases:ps,events}); }
+function serve(events, ps = phases, r = run) { response = json({run:r,phases:ps,events}); }
 const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phase').innerHTML;
+const costs = () => nodes.get('costs').innerHTML;
 (async () => {
   context.location.hash = '#run';
   evaluate('view = route()');
 
   const events = [event('input',{prompt:'first'}), event('usage',{attempt:0,seq:1,tokens:10,cost:0.1,model:'model'}), event('permit',{kept:['a.go'],reverted:['<bad>']})];
   while (events.length < 500) events.push(event('log','padding'));
-  serve(events);
+  assert.equal(nodes.has('log'), false, 'the run scaffold must not be precreated');
+  serve(events, phases, {...run, repo:'/repo/MiXeD <&"\'>', request:'fix <prompt>&'});
   await evaluate('tick()');
+  assert.equal(scaffoldCount, 1, 'the first poll creates the whole run scaffold');
+  const scaffold = nodes.get('app').innerHTML;
+  const sections = [...scaffold.matchAll(/<section class="card[^>]*>([\s\S]*?)<\/section>/g)].map(m => m[1]);
+  assert.equal(sections.length, 5, 'only the five requested top-level sections');
+  assert.deepEqual(sections.map(s => s.match(/<h2[^>]*>(.*?)<\/h2>/)[1]),
+    ['', 'phases', 'costs', 'details', 'events']);
+  assert(sections[1].includes('<div id="phases"></div>') && sections[1].includes('id="phase"'),
+    'the selected-phase inspector stays nested within PHASES');
+  assert(sections[2].includes('id="costs"') && sections[3].includes('id="summary"'));
+  assert.equal(nodes.get('project-title').innerHTML, '/repo/MiXeD &lt;&amp;&quot;&#39;>');
+  assert.equal(nodes.get('head').innerHTML, 'fix &lt;prompt>&amp;');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
+  assert(costs().includes('$0.30000') && costs().includes('unknown/model') && costs().includes('$0.10000'), costs());
+  assert(costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), 'partial rows still load');
+  assert(costs().indexOf('$0.30000') < costs().indexOf('unknown/model'), 'run total precedes the breakdown');
   assert(chart().includes('fix · model · success · $0.10000'), chart());
   assert(chart().includes('data-line="0">✅</span><span class="piece tight" data-line="0">model</span><span class="piece" data-line="1">$0.10000</span>'),
     'status and model share the first line, cost the second');
@@ -280,9 +317,12 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
   const summary = nodes.get('summary').innerHTML;
   for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
-                      '<dt>cost</dt><dd class="cost">$0.30000</dd>', '<dt>queued</dt><dd>10s</dd>',
-                      '<dt>duration</dt><dd>1m05s</dd>', '<dt>repo</dt><dd>repo</dd>', '<dt>run id</dt><dd>run</dd>'])
-    assert(summary.includes(text), `run card: ${text}`);
+                      '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>',
+                      '<dt>repo</dt><dd>repo</dd>', '<dt>run id</dt><dd>run</dd>'])
+    assert(summary.includes(text), `details card: ${text}`);
+  assert(!summary.includes('<dt>cost</dt>'), 'cost is only in COSTS, not DETAILS');
+  assert(!costs().includes('Loading usage…') && costs().includes('pi/unknown'), 'finished pages have final rows');
+  assert.equal(scaffoldCount, 1, 'a redraw does not rebuild the append-only event stream');
   assert.equal(nodes.get('note').textContent, 'run complete');
   assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
 
@@ -386,6 +426,93 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   await pending;
   assert.equal(evaluate('after'),0);
   for (const name of ['usage', 'tails', 'outputs', 'spend']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
+  assert.equal(nodes.has('costs'), false, 'navigation removes the old cost panel');
+
+  // A different run starts with no usage. Its total is authoritative even
+  // before the backlog reaches any model responses.
+  const priced = {...run, run_id:'priced', cost:0.9};
+  context.location.hash = '#/runs/priced';
+  evaluate('view = route()');
+  const blankPage = Array.from({length:500}, () => event('log', 'padding'));
+  serve(blankPage, phases, priced);
+  await evaluate('tick()');
+  assert.equal(scaffoldCount, 2, 'navigation makes a new run scaffold');
+  assert(costs().includes('$0.90000') && costs().includes('Loading usage…'), costs());
+  assert(!costs().includes('No usage recorded') && !costs().includes('unknown/model'),
+    'neither an empty state nor the previous run leaks into a partial page');
+
+  // Pair keys cannot collapse a/b + c into a + b/c. A phase can change
+  // models across attempts, and another phase/provider can reuse a model.
+  const priceEvents = [
+    event('usage',{attempt:0,seq:1,provider:'a/b',model:'c',cost:0.1},'p1'),
+    event('usage',{attempt:0,seq:2,provider:'a',model:'b/c',cost:0.2},'p1'),
+    event('usage',{attempt:1,seq:1,provider:'a/b',model:'c',cost:0.15},'p1'),
+    event('usage',{attempt:1,seq:1,provider:'b',model:'shared',cost:0.25},'p2'),
+    event('usage',{attempt:1,seq:2,provider:'z',model:'free',cost:0},'p2'),
+    event('usage',{attempt:1,seq:3,provider:'<pi>',model:'<m>',cost:0},'p2'),
+  ];
+  while (priceEvents.length < 500) priceEvents.push(event('log','padding'));
+  serve(priceEvents, phases, priced);
+  await evaluate('tick()');
+  const grouped = () => JSON.parse(JSON.stringify(evaluate('modelCosts()')));
+  const key = (provider, model) => JSON.stringify([provider, model]);
+  const costOf = (provider, model) => grouped().find(m => m.key === key(provider, model))?.cost;
+  assert.equal(costOf('a/b','c'), 0.25);
+  assert.equal(costOf('a','b/c'), 0.2);
+  assert.equal(costOf('b','shared'), 0.25);
+  assert.equal(costOf('z','free'), 0, 'zero-cost usage is retained');
+  assert.deepEqual(grouped().slice(0, 2).map(m => m.key), [key('a/b','c'), key('b','shared')],
+    'equal-cost rows use the identity as a tie-breaker');
+  assert(costs().includes('&lt;pi>/&lt;m>') && !costs().includes('<pi>'), 'model labels are escaped');
+  assert(costs().includes('Loading usage…'), 'partial rows stay marked as loading');
+  const colouredRows = () => {
+    const rows = costs().match(/<li style="--model-color:var\(--[a-z]+\)">[\s\S]*?<\/li>/g) || [];
+    return new Map(grouped().map((m, i) => [m.key, rows[i]?.match(/--model-color:var\(--([a-z]+)\)/)?.[1]]));
+  };
+  const beforeColours = colouredRows();
+  assert([...beforeColours.values()].every(Boolean), 'every cost row has a palette-coloured dot');
+  assert(costs().includes('class="model-dot" aria-hidden="true"'), 'dots are decorative');
+  assert.equal(costs().indexOf('$0.90000') < costs().indexOf('class="model-costs"'), true);
+
+  serve([
+    event('usage',{attempt:2,seq:1,provider:'a',model:'b/c',cost:0.15},'p1'),
+    event('usage',{attempt:2,seq:2,provider:'other',model:'shared',cost:0},'p2'),
+    event('usage',{attempt:2,seq:3,model:'shared',cost:0},'p2'),
+    event('usage',{attempt:2,seq:4,provider:'other',cost:0.03},'p2'),
+    event('usage',{attempt:2,seq:5,cost:0.02},'p2'),
+  ], phases, priced);
+  await evaluate('tick()');
+  assert.equal(evaluate('done'), true);
+  assert.equal(costOf('a','b/c'), 0.35);
+  assert.equal(grouped()[0].key, key('a','b/c'), 'increased spend moves a model without changing its colour');
+  assert.equal(costOf('a/b','c'), 0.25);
+  assert.equal(costOf('other','shared'), 0);
+  assert.equal(costOf('unknown','shared'), 0);
+  assert.equal(costOf('other','unknown'), 0.03);
+  assert.equal(costOf('unknown','unknown'), 0.02);
+  assert.equal(grouped().length, 9, 'different provider/model pairs are separate rows');
+  assert.deepEqual(grouped().map(m => m.key), [...grouped()].sort((a,b) => b.cost - a.cost ||
+    (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).map(m => m.key));
+  assert(!costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), costs());
+  assert(costs().indexOf('a/b/c') < costs().indexOf('unknown/unknown'));
+  for (const [identity, colour] of beforeColours) assert.equal(colouredRows().get(identity), colour, identity);
+  const finished = costs(), finishedGroups = grouped();
+  evaluate('draw()'); evaluate('draw()');
+  assert.equal(costs(), finished, 'redraws do not double-count responses');
+  assert.deepEqual(grouped(), finishedGroups);
+
+  // A third run clears those identities and, once drained, explicitly says
+  // no usage was recorded (rather than fabricating a balancing cost row).
+  context.location.hash = '#/runs/empty';
+  response = json({run:{...run, run_id:'empty', cost:0.5}, phases:[], events:[]});
+  evaluate('navigate()');
+  await new Promise(setImmediate); // navigate launches an async tick
+  assert.equal(scaffoldCount, 3);
+  assert(costs().includes('$0.50000') && costs().includes('No usage recorded.'), costs());
+  assert(!costs().includes('unknown/') && !costs().includes('Loading usage…'), costs());
+  assert.equal(evaluate('usage.size'), 0, 'navigating to another run resets the event cache');
+  const liveEmpty = call('renderCosts', {...run, status:'running', cost:0});
+  assert(liveEmpty.includes('$0.00000') && liveEmpty.includes('No usage recorded yet.'), liveEmpty);
 
   // Runs: the summary says displayed versus total, and says whose numbers those are.
   context.location.hash = '#/runs';
