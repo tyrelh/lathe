@@ -130,8 +130,8 @@
           overflow: hidden; text-overflow: ellipsis; }
   .axis { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; }
   .track { position: relative; height: 40px; background: var(--panel); border-radius: 3px; }
-  /* The fill says what kind of phase a block is, one hue per owning agent;
-     the border says how it went, and the label says both in words. */
+  /* The fill says which model ran a block (see MODEL_TIERS), the border
+     how it went, and the label says both in words. */
   .block {
     --hue: var(--dim);
     position: absolute; top: 1px; height: 38px; min-width: 0; padding: 0; margin: 0;
@@ -140,18 +140,6 @@
     color: var(--fg); font: inherit; font-size: 12px; line-height: 16px;
     text-align: left; cursor: pointer;
   }
-  .block[data-owner="scout"] { --hue: var(--cyan); }
-  .block[data-owner="planner"] { --hue: var(--blue); }
-  .block[data-owner="plan-reviewer"] { --hue: var(--purple); }
-  .block[data-owner="builder"] { --hue: var(--teal); }
-  .block[data-owner="tester"] { --hue: var(--orange); }
-  .block[data-owner="code-review-general"] { --hue: var(--purple); }
-  .block[data-owner="code-review-security"] { --hue: var(--fail); }
-  .block[data-owner="code-review-slop"] { --hue: var(--sky); }
-  .block[data-owner="adjudicator"] { --hue: var(--blue); }
-  .block[data-owner="brancher"] { --hue: var(--sky); }
-  .block[data-owner="committer"] { --hue: var(--green); }
-  .block[data-owner="pr-author"] { --hue: var(--magenta); }
   .block.fail { border: 2px solid var(--fail); }
   .block.running { border: 2px solid var(--run); }
   .block.interrupted { border: 1px dashed var(--fg); }
@@ -321,18 +309,34 @@ function modelCosts() {
     (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-// Hash the identity rather than its row index, so a new page or a change in
-// spend cannot recolour a model. These hues are independent of Gantt owners.
-const modelPalette = ['blue', 'cyan', 'sky', 'teal', 'orange', 'purple', 'green', 'magenta'];
-function modelColour(key) {
-  let hash = 2166136261;
-  for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
-  return modelPalette[(hash >>> 0) % modelPalette.length];
+// Each provider has a hue, and its models fall into three tiers, strongest
+// first, drawn at 100%, 75% and 50% of the hue over the card, so weaker models
+// read lighter on dark and darker on light. Dots are folded to dashes so
+// "claude-fable-5.1" and "claude-fable-5-1" match. ponytail: hand-kept list,
+// no authoritative ranking exists. An unlisted model is matched to its provider
+// by name prefix and drawn at full strength, since new models are usually
+// flagships; an unknown provider takes #7A9EFB, and a phase with no model at
+// all (a code phase) stays dim.
+const MODEL_SHADES = [100, 75, 50];
+const MODEL_TIERS = [
+  ['#D57355', 'claude-', [['claude-fable-5-1'], ['claude-opus-5-5', 'claude-opus-5'], ['claude-sonnet-5', 'claude-haiku-4-5']]],
+  ['#439F7C', 'gpt-', [['gpt-6-astra'], ['gpt-6-sol', 'gpt-5-6-sol', 'gpt-5-6-terra'], ['gpt-6-luna', 'gpt-5-6-luna']]],
+  ['#1C81FA', 'kimi-', [['kimi-k3'], ['kimi-k2-7-code', 'kimi-k2-6'], []]],
+];
+function modelColour(model) {
+  if (!model) return 'var(--dim)';
+  const m = String(model).replace(/\./g, '-');
+  for (const [hue, prefix, tiers] of MODEL_TIERS) {
+    if (!m.startsWith(prefix)) continue;
+    const shade = MODEL_SHADES[tiers.findIndex(t => t.includes(m))] ?? 100;
+    return `color-mix(in srgb, ${hue} ${shade}%, var(--card))`;
+  }
+  return '#7A9EFB';
 }
 function renderCosts(r) {
   const rows = modelCosts();
   return `<div class="run-cost-total cost">${money(r.cost)}</div><div class="dim">total cost</div>`
-    + (rows.length ? `<ul class="model-costs">${rows.map(m => `<li style="--model-color:var(--${modelColour(m.key)})">
+    + (rows.length ? `<ul class="model-costs">${rows.map(m => `<li style="--model-color:${modelColour(m.model)}">
         <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.provider)}/${esc(m.model)}</span>
         <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul>` : '')
     + (draining ? '<p class="dim">Loading usage…</p>' : !rows.length
@@ -907,7 +911,7 @@ function block(p, t, g) {
   const s = spend.get(p.phase_id);
   const lines = [[MARK[t.status] || '❔', s?.model].filter(Boolean), [s && money(s.cost)].filter(Boolean)];
   const name = [`#${p.seq} ${p.name}`, s?.model, t.status, s && money(s.cost)].filter(Boolean).join(' · ');
-  const at = g ? ` style="left:min(${g.left.toFixed(3)}%, calc(100% - 2px));width:max(2px, ${g.width.toFixed(3)}%)"` : '';
+  const at = ` style="--hue:${modelColour(s?.model)}${g ? `;left:min(${g.left.toFixed(3)}%, calc(100% - 2px));width:max(2px, ${g.width.toFixed(3)}%)` : ''}"`;
   return `<button type="button" class="block ${tone(t.status)}"${at} data-owner="${esc(p.owner)}" data-lines="${lines[1].length ? 2 : 1}" data-phase="${esc(p.phase_id)}"`
     + ` data-focus="${esc('block-' + p.phase_id)}" aria-pressed="${selected === p.phase_id}"`
     + ` aria-label="${esc(name)}" title="${esc(name)}" onclick="pick(this.dataset.phase)">`
