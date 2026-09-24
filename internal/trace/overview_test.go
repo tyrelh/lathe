@@ -18,7 +18,7 @@ func TestOverviewEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Runs != 0 || o.Cost != 0 || len(o.TopRuns) != 0 || len(o.TopModels) != 0 || len(o.TopProjects) != 0 {
+	if o.Runs != 0 || o.Cost != 0 || len(o.TopRuns) != 0 || len(o.TopModels) != 0 || len(o.TopProviders) != 0 || len(o.TopProjects) != 0 {
 		t.Fatalf("empty database: %+v", o)
 	}
 	if o.At == "" {
@@ -135,6 +135,23 @@ func TestOverviewCoversEveryRun(t *testing.T) {
 	// whole of recorded spend.
 	if share := kimi.Cost / o.Cost; math.Abs(kimi.Share-share) > 1e-9 || math.Abs(kimi.Share+opus.Share-1) > 1e-9 {
 		t.Fatalf("shares %v %v of $%v", kimi.Share, opus.Share, o.Cost)
+	}
+
+	if len(o.TopProviders) != 2 {
+		t.Fatalf("providers = %+v", o.TopProviders)
+	}
+	moonshot, anthropic := o.TopProviders[0], o.TopProviders[1]
+	if moonshot.Provider != "moonshotai" || moonshot.Phases != runs*kimiPhases {
+		t.Fatalf("moonshotai = %+v; want %d phases", moonshot, runs*kimiPhases)
+	}
+	if anthropic.Provider != "anthropic" || anthropic.Phases != opusPhases {
+		t.Fatalf("anthropic = %+v; want %d phases", anthropic, opusPhases)
+	}
+	if math.Abs(moonshot.Cost-0.189) > costEpsilon || math.Abs(anthropic.Cost-0.042) > costEpsilon {
+		t.Fatalf("provider costs %v %v", moonshot.Cost, anthropic.Cost)
+	}
+	if share := moonshot.Cost / o.Cost; math.Abs(moonshot.Share-share) > 1e-9 || math.Abs(moonshot.Share+anthropic.Share-1) > 1e-9 {
+		t.Fatalf("provider shares %v %v of $%v", moonshot.Share, anthropic.Share, o.Cost)
 	}
 
 	if len(o.TopProjects) != 3 {

@@ -249,9 +249,13 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(nodes.get('project-title').innerHTML, '/repo/MiXeD &lt;&amp;&quot;&#39;>');
   assert.equal(nodes.get('head').innerHTML, 'fix &lt;prompt>&amp;');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
-  assert(costs().includes('$0.30000') && costs().includes('unknown/model') && costs().includes('$0.10000'), costs());
+  assert(costs().includes('$0.30000') && costs().includes('unknown') && costs().includes('model') && costs().includes('$0.10000'), costs());
   assert(costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), 'partial rows still load');
-  assert(costs().indexOf('$0.30000') < costs().indexOf('unknown/model'), 'run total precedes the breakdown');
+  assert(costs().indexOf('$0.30000') < costs().indexOf('providers') && costs().indexOf('providers') < costs().indexOf('models'),
+    'run total precedes providers, which precede models');
+  assert(!costs().includes('unknown/model'), 'model names are bare');
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('providerCosts()'))), [{provider:'unknown', cost:0.1}],
+    'missing provider becomes unknown in providerCosts');
   assert(chart().includes('fix · model · success · $0.10000'), chart());
   assert(chart().includes('data-line="0">✅</span><span class="piece tight" data-line="0">model</span><span class="piece" data-line="1">$0.10000</span>'),
     'status and model share the first line, cost the second');
@@ -327,7 +331,9 @@ const costs = () => nodes.get('costs').innerHTML;
                       '<dt>repo</dt><dd>repo</dd>', '<dt>run id</dt><dd>run</dd>'])
     assert(summary.includes(text), `details card: ${text}`);
   assert(!summary.includes('<dt>cost</dt>'), 'cost is only in COSTS, not DETAILS');
-  assert(!costs().includes('Loading usage…') && costs().includes('pi/unknown'), 'finished pages have final rows');
+  assert(!costs().includes('Loading usage…') && costs().includes('pi') && costs().includes('model'),
+    'finished pages have final rows');
+  assert(!costs().includes('pi/unknown') && !costs().includes('unknown/model'), 'model names are bare');
   assert.equal(scaffoldCount, 1, 'a redraw does not rebuild the append-only event stream');
   assert.equal(nodes.get('note').textContent, 'run complete');
   assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
@@ -447,8 +453,8 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(!costs().includes('No usage recorded') && !costs().includes('unknown/model'),
     'neither an empty state nor the previous run leaks into a partial page');
 
-  // Pair keys cannot collapse a/b + c into a + b/c. A phase can change
-  // models across attempts, and another phase/provider can reuse a model.
+  // Providers aggregate by name and models aggregate by bare name across
+  // attempts and phases; zero-cost usage and missing provider/model are kept.
   const priceEvents = [
     event('usage',{attempt:0,seq:1,provider:'a/b',model:'c',cost:0.1},'p1'),
     event('usage',{attempt:0,seq:2,provider:'a',model:'b/c',cost:0.2},'p1'),
@@ -460,25 +466,28 @@ const costs = () => nodes.get('costs').innerHTML;
   while (priceEvents.length < 500) priceEvents.push(event('log','padding'));
   serve(priceEvents, phases, priced);
   await evaluate('tick()');
-  const grouped = () => JSON.parse(JSON.stringify(evaluate('modelCosts()')));
-  const key = (provider, model) => JSON.stringify([provider, model]);
-  const costOf = (provider, model) => grouped().find(m => m.key === key(provider, model))?.cost;
-  assert.equal(costOf('a/b','c'), 0.25);
-  assert.equal(costOf('a','b/c'), 0.2);
-  assert.equal(costOf('b','shared'), 0.25);
-  assert.equal(costOf('z','free'), 0, 'zero-cost usage is retained');
-  assert.deepEqual(grouped().slice(0, 2).map(m => m.key), [key('a/b','c'), key('b','shared')],
-    'equal-cost rows use the identity as a tie-breaker');
-  assert(costs().includes('&lt;pi>/&lt;m>') && !costs().includes('<pi>'), 'model labels are escaped');
-  assert(costs().includes('Loading usage…'), 'partial rows stay marked as loading');
-  const colouredRows = () => {
-    const rows = costs().match(/<li style="--model-color:[^"]+">[\s\S]*?<\/li>/g) || [];
-    return new Map(grouped().map((m, i) => [m.key, rows[i]?.match(/--model-color:([^"]+)"/)?.[1]]));
+  const providerGroups = () => JSON.parse(JSON.stringify(evaluate('providerCosts()')));
+  const providerCostOf = provider => providerGroups().find(p => p.provider === provider)?.cost;
+  assert.equal(providerCostOf('a/b'), 0.25);
+  assert.equal(providerCostOf('a'), 0.2);
+  assert.equal(providerCostOf('b'), 0.25);
+  assert.equal(providerCostOf('z'), 0, 'zero-cost provider usage is retained');
+  assert.equal(providerCostOf('<pi>'), 0);
+  assert.deepEqual(providerGroups().slice(0, 2).map(p => p.provider), ['a/b', 'b'],
+    'equal-cost providers use the provider name as a tie-breaker');
+
+  const costsHtml = costs();
+  assert(costsHtml.includes('&lt;pi>') && costsHtml.includes('&lt;m>') && !costsHtml.includes('<pi>') && !costsHtml.includes('<m>'),
+    'provider and model labels are escaped');
+  assert(costsHtml.includes('Loading usage…'), 'partial rows stay marked as loading');
+  const colouredRows = html => {
+    const rows = html.match(/<li style="--model-color:[^"]+">[\s\S]*?<\/li>/g) || [];
+    return new Map(rows.map((row, i) => [row.match(/<span class="model-name">([^<]*)<\/span>/)?.[1], row.match(/--model-color:([^"]+)"/)?.[1]]));
   };
-  const beforeColours = colouredRows();
+  const beforeColours = colouredRows(costsHtml);
   assert([...beforeColours.values()].every(Boolean), 'every cost row has a coloured dot');
-  assert(costs().includes('class="model-dot" aria-hidden="true"'), 'dots are decorative');
-  assert.equal(costs().indexOf('$0.90000') < costs().indexOf('class="model-costs"'), true);
+  assert(costsHtml.includes('class="model-dot" aria-hidden="true"'), 'dots are decorative');
+  assert.equal(costsHtml.indexOf('$0.90000') < costsHtml.indexOf('class="model-costs"'), true);
 
   serve([
     event('usage',{attempt:2,seq:1,provider:'a',model:'b/c',cost:0.15},'p1'),
@@ -489,23 +498,32 @@ const costs = () => nodes.get('costs').innerHTML;
   ], phases, priced);
   await evaluate('tick()');
   assert.equal(evaluate('done'), true);
-  assert.equal(costOf('a','b/c'), 0.35);
-  assert.equal(grouped()[0].key, key('a','b/c'), 'increased spend moves a model without changing its colour');
-  assert.equal(costOf('a/b','c'), 0.25);
-  assert.equal(costOf('other','shared'), 0);
-  assert.equal(costOf('unknown','shared'), 0);
-  assert.equal(costOf('other','unknown'), 0.03);
-  assert.equal(costOf('unknown','unknown'), 0.02);
-  assert.equal(grouped().length, 9, 'different provider/model pairs are separate rows');
-  assert.deepEqual(grouped().map(m => m.key), [...grouped()].sort((a,b) => b.cost - a.cost ||
-    (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).map(m => m.key));
-  assert(!costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), costs());
-  assert(costs().indexOf('a/b/c') < costs().indexOf('unknown/unknown'));
-  for (const [identity, colour] of beforeColours) assert.equal(colouredRows().get(identity), colour, identity);
-  const finished = costs(), finishedGroups = grouped();
+
+  assert.equal(providerCostOf('a'), 0.35);
+  assert.equal(providerGroups()[0].provider, 'a', 'increased provider spend moves it to the top');
+  assert.equal(providerCostOf('other'), 0.03);
+  assert.equal(providerCostOf('unknown'), 0.02, 'missing provider usage is grouped under unknown');
+  assert.equal(providerGroups().length, 7, 'different providers are separate rows');
+
+  const spent = () => JSON.parse(JSON.stringify(evaluate('modelSpend()')));
+  assert.equal(spent().find(m => m.model === 'b/c')?.cost, 0.35);
+  assert.equal(spent().find(m => m.model === 'shared')?.cost, 0.25, 'shared spending is aggregated across providers');
+  assert.equal(spent().find(m => m.model === 'unknown')?.cost, 0.05, 'unknown models are aggregated across providers');
+  assert.deepEqual(spent().map(m => m.model), [...spent()].sort((a,b) => b.cost - a.cost ||
+    (a.model < b.model ? -1 : a.model > b.model ? 1 : 0)).map(m => m.model));
+
+  const finalCosts = costs();
+  assert(!finalCosts.includes('Loading usage…') && !finalCosts.includes('No usage recorded.'), finalCosts);
+  assert(finalCosts.indexOf('providers') < finalCosts.indexOf('models'), 'providers section precedes models section');
+  assert(finalCosts.indexOf('>a</span>') < finalCosts.indexOf('>a/b</span>'), 'providers are sorted by spend');
+  assert(finalCosts.indexOf('>b/c</span>') < finalCosts.indexOf('>unknown</span>', finalCosts.indexOf('models')),
+    'models are sorted by spend');
+  assert(!finalCosts.includes('a/b/c') && !finalCosts.includes('unknown/unknown'), 'model names are bare');
+  for (const [identity, colour] of beforeColours) assert.equal(colouredRows(costs()).get(identity), colour, identity);
+  const finished = finalCosts, finishedProviders = providerGroups();
   evaluate('draw()'); evaluate('draw()');
   assert.equal(costs(), finished, 'redraws do not double-count responses');
-  assert.deepEqual(grouped(), finishedGroups);
+  assert.deepEqual(providerGroups(), finishedProviders);
 
   // A third run clears those identities and, once drained, explicitly says
   // no usage was recorded (rather than fabricating a balancing cost row).
@@ -577,7 +595,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(nodes.get('status').innerHTML.includes('showing 3 of 3 runs'));
   routeResponses = null;
 
-  // Overview: lifetime totals, all three rankings, and the attribution caveats.
+  // Overview: lifetime totals, all four rankings, and the attribution caveats.
   context.location.hash = '#/overview';
   evaluate('view = route(); generation++');
   response = json({
@@ -587,6 +605,8 @@ const costs = () => nodes.get('costs').innerHTML;
     top_runs: [{...run, run_id:'top', cost: 9.5}, {...run, run_id:'long', request:'x'.repeat(149) + '😀tail'}],
     top_models: [{provider:'moonshotai', model:'kimi', cost:30, share:0.7113, phases:2700},
                  {provider:'', model:'', cost:2, share:0.0474, phases:12}],
+    top_providers: [{provider:'moonshotai', cost:32, share:0.7586, phases:2712},
+                    {provider:'', cost:2, share:0.0474, phases:12}],
     at: '2026-09-20T12:00:00Z',
   });
   await evaluate('tick()');
@@ -601,18 +621,25 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(nodes.get('status').innerHTML.includes('all repositories · all time'));
   const projectsH2 = over.indexOf('top projects by spend');
   const modelsH2 = over.indexOf('top models by spend');
+  const providersH2 = over.indexOf('top providers by spend');
   const runsH2 = over.indexOf('top runs by spend');
-  assert(projectsH2 >= 0 && modelsH2 >= 0 && runsH2 >= 0, 'all three ranking headings present');
-  assert(projectsH2 < runsH2 && runsH2 < modelsH2, 'projects and runs stack in the first column, models in the second');
+  assert(projectsH2 >= 0 && modelsH2 >= 0 && providersH2 >= 0 && runsH2 >= 0, 'all four ranking headings present');
+  assert(projectsH2 < runsH2 && runsH2 < modelsH2 && modelsH2 < providersH2,
+    'projects and runs stack in the first column, models and providers in the second');
+  const provCard = over.slice(providersH2);
+  for (const text of ['$32.00000', '75.9%', '2,712 phases']) assert(provCard.includes(text), `provider card: ${text}`);
+  assert(provCard.includes('>unknown<'), 'empty provider falls back to unknown');
+  assert(provCard.indexOf('moonshotai') < provCard.indexOf('>unknown<'), 'providers are sorted by spend descending');
   assert(over.includes('#/projects/detail?repo=%2Frepos%2Falpha'), 'overview project links to its detail');
 
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');
-  response = json({runs:0, tokens:0, cost:0, top_projects:[], top_runs:[], top_models:[], at:''});
+  response = json({runs:0, tokens:0, cost:0, top_projects:[], top_runs:[], top_models:[], top_providers:[], at:''});
   await evaluate('tick()');
   const empty = nodes.get('app').innerHTML;
   assert(empty.includes('$0.00000') && empty.includes('No runs recorded yet.')
          && empty.includes('No model spend recorded yet.')
+         && empty.includes('No provider spend recorded yet.')
          && empty.includes('No project spend recorded yet.'), empty);
 
   // A failed refresh keeps the last good values and says they are stale.

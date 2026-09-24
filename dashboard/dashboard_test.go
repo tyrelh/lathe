@@ -206,8 +206,11 @@ func TestOverviewAndMeta(t *testing.T) {
 	if err := json.Unmarshal(do("/api/overview").Body.Bytes(), &o); err != nil {
 		t.Fatal(err)
 	}
-	if o.Runs != 3 || len(o.TopRuns) != 3 || len(o.TopModels) != 1 || len(o.TopProjects) != 1 {
+	if o.Runs != 3 || len(o.TopRuns) != 3 || len(o.TopModels) != 1 || len(o.TopProviders) != 1 || len(o.TopProjects) != 1 {
 		t.Fatalf("overview = %+v", o)
+	}
+	if o.TopProviders[0].Provider != "moonshotai" || o.TopProviders[0].Phases != 3 {
+		t.Fatalf("providers = %+v", o.TopProviders)
 	}
 	if o.TopModels[0].Model != "kimi" || o.TopModels[0].Phases != 3 {
 		t.Fatalf("models = %+v", o.TopModels)
@@ -272,7 +275,8 @@ func TestOverviewAndMeta(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler(fresh, "dev", nil).ServeHTTP(w, local("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
-		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_projects":[]`) ||
+		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_providers":[]`) ||
+		!strings.Contains(body, `"top_projects":[]`) ||
 		!strings.Contains(body, `"runs":0`) {
 		t.Errorf("empty overview = %s", body)
 	}
