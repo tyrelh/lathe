@@ -138,7 +138,12 @@ assert(html.includes('<span class="piece" data-line="0">✅</span>'), 'the statu
 assert(!html.includes('data-line="0">plan<'), 'the row names the phase, so the block does not');
 assert(!html.includes('data-line="1">success'), 'the status word is only in the accessible name');
 assert(html.includes('data-lines="1"'), 'a label with nothing under the status sits on one centred line');
-assert(html.includes('class="block ok" style=') && html.includes('data-owner="builder"'), 'fill follows the owner, border the status');
+assert(html.includes('class="block ok" style="--hue:var(--dim);'), 'a phase with no model fills dim, border the status');
+assert.equal(call('modelColour', 'claude-fable-5.1'), 'color-mix(in srgb, #D57355 100%, var(--card))', 'dotted names match');
+assert.equal(call('modelColour', 'kimi-k2.6'), 'color-mix(in srgb, #1C81FA 75%, var(--card))', 'models draw at their tier');
+assert.equal(call('modelColour', 'claude-haiku-4-5'), 'color-mix(in srgb, #D57355 50%, var(--card))');
+assert.equal(call('modelColour', 'kimi-k9'), call('modelColour', 'kimi-k3'), 'unlisted models take the full provider hue');
+assert.equal(call('modelColour', 'mystery'), '#7A9EFB', 'unknown providers take the default hue');
 assert(call('gantt', settled, [ph(1,'x',T(0),T(5),{owner:'"><b>'})], 0).includes('data-owner="&quot;>&lt;b>"'), 'owner is escaped');
 
 // Before the run starts, with no phases, with no length, and with bad times.
@@ -467,11 +472,11 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(costs().includes('&lt;pi>/&lt;m>') && !costs().includes('<pi>'), 'model labels are escaped');
   assert(costs().includes('Loading usage…'), 'partial rows stay marked as loading');
   const colouredRows = () => {
-    const rows = costs().match(/<li style="--model-color:var\(--[a-z]+\)">[\s\S]*?<\/li>/g) || [];
-    return new Map(grouped().map((m, i) => [m.key, rows[i]?.match(/--model-color:var\(--([a-z]+)\)/)?.[1]]));
+    const rows = costs().match(/<li style="--model-color:[^"]+">[\s\S]*?<\/li>/g) || [];
+    return new Map(grouped().map((m, i) => [m.key, rows[i]?.match(/--model-color:([^"]+)"/)?.[1]]));
   };
   const beforeColours = colouredRows();
-  assert([...beforeColours.values()].every(Boolean), 'every cost row has a palette-coloured dot');
+  assert([...beforeColours.values()].every(Boolean), 'every cost row has a coloured dot');
   assert(costs().includes('class="model-dot" aria-hidden="true"'), 'dots are decorative');
   assert.equal(costs().indexOf('$0.90000') < costs().indexOf('class="model-costs"'), true);
 
