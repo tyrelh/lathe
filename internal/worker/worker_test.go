@@ -59,6 +59,9 @@ func repo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
+	// These checkout tests do not exercise signing; isolate fixture commits
+	// from host GPG settings and resources, including later commits.
+	git(t, dir, "config", "--local", "commit.gpgsign", "false")
 	write(t, filepath.Join(dir, "hello.txt"), "hello\n")
 	git(t, dir, "add", ".")
 	git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "initial")

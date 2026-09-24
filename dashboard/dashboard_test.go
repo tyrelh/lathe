@@ -83,12 +83,12 @@ func TestRoutes(t *testing.T) {
 	if body := get("/"); !strings.Contains(body, "<title>lathe</title>") {
 		t.Error("/ did not serve the embedded page")
 	} else {
-		for _, want := range []string{"<h2>phases</h2>", "<h2>events</h2>"} {
+		for _, want := range []string{"<h2>phases</h2>", "<h2>costs</h2>", "<h2>details</h2>", "<h2>events</h2>"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("/ missing %q", want)
 			}
 		}
-		for _, unwanted := range []string{"<h2>permissions</h2>", `id="permits"`} {
+		for _, unwanted := range []string{"<h2>run</h2>", "<h2>permissions</h2>", `id="permits"`} {
 			if strings.Contains(body, unwanted) {
 				t.Errorf("/ still contains %q", unwanted)
 			}
