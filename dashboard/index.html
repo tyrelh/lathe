@@ -263,6 +263,8 @@ const live = s => s === 'running' || s === 'queued' || s === 'starting';
 const cls = s => s === 'ok' || s === 'success' ? 'ok' : live(s) ? 'running' : 'fail';
 const time = s => (s || '').slice(11, 19);
 const base = p => (p || '').split('/').filter(Boolean).pop() || p;
+// clip cuts by code point, so an emoji is never split in half.
+const clip = (s, n) => { const cs = [...(s || '')]; return cs.length > n ? cs.slice(0, n).join('') + '…' : cs.join(''); };
 const money = n => '$' + (n || 0).toFixed(5);
 const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
@@ -366,7 +368,7 @@ async function overview(current) {
       <td class="dim lo">${esc(base(r.repo))}</td>
       <td class="${cls(r.status)}">${esc(r.status)}</td>
       <td class="num cost">${money(r.cost)}</td>
-      <td class="wrap lo">${esc(r.request)}</td>
+      <td class="wrap lo" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
     </tr>`;
   const modelRow = (m, i) => `
     <tr>
@@ -449,7 +451,7 @@ async function list(current) {
         <td class="num dim lo">${esc(timings(r))}</td>
         <td class="num dim">${count(r.tokens)} tok</td>
         <td class="num cost">${money(r.cost)}</td>
-        <td class="wrap">${esc(r.request)}</td>
+        <td class="wrap" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
       </tr>`).join('')}</table></section>`).join('')
     || '<p class="dim">No runs yet. Start one with <code>lathe scout</code>.</p>';
 

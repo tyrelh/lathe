@@ -403,7 +403,7 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
     runs: 1284, tokens: 9_000_000, cost: 42.18374,
     top_projects: [{repo:'/repos/alpha', runs:900, cost:38, share:0.9},
                    {repo:'', runs:100, cost:4, share:0.1}],
-    top_runs: [{...run, run_id:'top', cost: 9.5}],
+    top_runs: [{...run, run_id:'top', cost: 9.5}, {...run, run_id:'long', request:'x'.repeat(149) + '😀tail'}],
     top_models: [{provider:'moonshotai', model:'kimi', cost:30, share:0.7113, phases:2700},
                  {provider:'', model:'', cost:2, share:0.0474, phases:12}],
     at: '2026-09-20T12:00:00Z',
@@ -415,6 +415,8 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
                       '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
     assert(over.includes(text), `overview: ${text}`);
   }
+  assert(over.includes('>' + 'x'.repeat(149) + '😀…</td>'), 'a long request is cut to 150 characters');
+  assert(over.includes('>fix</td>'), 'a short request is not cut');
   assert(nodes.get('status').innerHTML.includes('all repositories · all time'));
   const projectsH2 = over.indexOf('top projects by spend');
   const modelsH2 = over.indexOf('top models by spend');
