@@ -1,5 +1,5 @@
-// Package dashboard serves a read-only view of the trace database through an
-// embedded page and JSON endpoints.
+// Package dashboard serves a view of the trace database through an embedded
+// page and JSON endpoints, plus one route that queues a run for a project.
 package dashboard
 
 import (
@@ -7,8 +7,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/tyrelh/lathe/internal/trace"
 )
@@ -20,12 +22,27 @@ var indexHTML []byte
 // and serves prompts and source. Remote viewing is an SSH tunnel.
 const Addr = "127.0.0.1:4700"
 
+// hosts are the names the dashboard answers to. Anything else in the Host
+// header is a page on another origin reaching the loopback listener through
+// DNS rebinding, and gets nothing — reads included, since they serve source.
+var hosts = map[string]bool{Addr: true, "localhost:4700": true}
+
+// Submit queues one run and returns its ID once the database has accepted it.
+// The manager hands in the CLI's own submission path, which is what keeps
+// configuration, checkout and issue handling out of this package.
+type Submit func(workflow, repo, prompt, issue string) (string, error)
+
+// maxSubmitBody bounds a POST body; a prompt is text someone typed.
+const maxSubmitBody = 64 << 10
+
 // Handler is the dashboard as something to mount: the manager serves it
 // alongside the scheduler, so there is no second process and no second
 // listener. The database is opened read-only — a UI bug cannot write — and
 // created first if it is not there yet, so a fresh install serves an empty
-// dashboard rather than an error telling you to go start a run.
-func Handler(dataRoot, version string) http.Handler {
+// dashboard rather than an error telling you to go start a run. Submissions go
+// through submit, never through this handle; a nil submit registers no POST
+// route at all.
+func Handler(dataRoot, version string, submit Submit) http.Handler {
 	if err := trace.Init(dataRoot); err != nil {
 		return failed(err)
 	}
@@ -33,7 +50,7 @@ func Handler(dataRoot, version string) http.Handler {
 	if err != nil {
 		return failed(err)
 	}
-	return handler(db, version)
+	return handler(db, version, submit)
 }
 
 func failed(err error) http.Handler {
@@ -44,8 +61,11 @@ func failed(err error) http.Handler {
 
 // handler is the whole server minus the listener, which is what lets a test
 // exercise the routes without binding a port.
-func handler(db *trace.DB, version string) http.Handler {
+func handler(db *trace.DB, version string, submit Submit) http.Handler {
 	mux := http.NewServeMux()
+	if submit != nil {
+		mux.HandleFunc("POST /api/projects/runs", submitRun(db, submit))
+	}
 	mux.HandleFunc("GET /api/meta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"version": version}, nil)
 	})
@@ -123,7 +143,90 @@ func handler(db *trace.DB, version string) http.Handler {
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), 500)
 		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events}, err)
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hosts[r.Host] {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// submitRun queues a run against a recorded project. It is browser-only: the
+// Origin must be the page this server served, which a missing Origin is not,
+// and the JSON content type keeps a cross-site form post from being a simple
+// request. The CLI stays the way to script submissions.
+func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if r.Header.Get("Origin") != "http://"+r.Host || mediaType != "application/json" {
+			submitError(w, http.StatusForbidden, "forbidden", "")
+			return
+		}
+		var body struct {
+			Repo     string `json:"repo"`
+			Workflow string `json:"workflow"`
+			Prompt   string `json:"prompt"`
+			Issue    string `json:"issue"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBody)).Decode(&body); err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				submitError(w, http.StatusRequestEntityTooLarge, "request is larger than 64 KiB", "")
+				return
+			}
+			submitError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "")
+			return
+		}
+		prompt, issue := strings.TrimSpace(body.Prompt), strings.TrimSpace(body.Issue)
+		switch body.Workflow {
+		case "scout", "plan", "implement", "build":
+		default:
+			submitError(w, http.StatusBadRequest, "unknown workflow "+strconv.Quote(body.Workflow), "")
+			return
+		}
+		switch {
+		case (prompt == "") == (issue == ""):
+			submitError(w, http.StatusBadRequest, "enter a prompt or an issue reference, not both", "")
+			return
+		case body.Workflow == "scout" && issue != "":
+			submitError(w, http.StatusBadRequest, "scout takes a prompt, not an issue", "")
+			return
+		}
+		if _, err := db.Project(body.Repo); errors.Is(err, sql.ErrNoRows) {
+			submitError(w, http.StatusBadRequest, "no recorded project at "+body.Repo, "")
+			return
+		} else if err != nil {
+			submitError(w, http.StatusInternalServerError, err.Error(), "")
+			return
+		}
+		id, err := submit(body.Workflow, body.Repo, prompt, issue)
+		if errors.Is(err, trace.ErrDuplicateBuild) {
+			// Submit names the holder after the sentinel's text.
+			holder, _ := strings.CutPrefix(err.Error(), trace.ErrDuplicateBuild.Error()+": ")
+			submitError(w, http.StatusConflict, trace.ErrDuplicateBuild.Error(), holder)
+			return
+		}
+		// ponytail: every other failure is reported as the request's problem;
+		// split out 500s if database errors turn up here in practice.
+		if err != nil {
+			submitError(w, http.StatusBadRequest, err.Error(), "")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"run_id": id})
+	}
+}
+
+func submitError(w http.ResponseWriter, code int, msg, runID string) {
+	body := map[string]string{"error": msg}
+	if runID != "" {
+		body["run_id"] = runID
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(body)
 }
 
 func projectParam(w http.ResponseWriter, r *http.Request) (string, bool) {

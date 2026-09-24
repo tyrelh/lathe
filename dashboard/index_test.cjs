@@ -19,7 +19,8 @@ class Element {
   focus(options) { this.focused = options; }
 }
 for (const id of ['app', 'status', 'note', 'version',
-                  'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label']) nodes.set(id, new Element());
+                  'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label',
+                  'project-head', 'project-runs']) nodes.set(id, new Element());
 // Parse only the scaffold IDs when app is replaced. In particular, do not
 // precreate #log: that would skip the first-render branch in detail().
 const scaffoldIDs = ['project-title', 'head', 'phases', 'phase', 'costs', 'summary', 'log'];
@@ -560,12 +561,13 @@ const costs = () => nodes.get('costs').innerHTML;
       json({runs:[third],more:false})],
   ]);
   await evaluate('tick()');
-  let project = nodes.get('app').innerHTML;
-  assert(project.includes('300</b><span>tokens') && project.includes('$3.00000'), project);
+  const head = nodes.get('project-head').innerHTML;
+  assert(head.includes('300</b><span>tokens') && head.includes('$3.00000'), head);
+  let project = nodes.get('project-runs').innerHTML;
   assert(project.includes("location.hash='/runs/r3'") && project.includes('Load more runs'), project);
   assert(nodes.get('status').innerHTML.includes('showing 2 of 3 runs'));
   await evaluate('moreProjectRuns()');
-  project = nodes.get('app').innerHTML;
+  project = nodes.get('project-runs').innerHTML;
   assert(project.includes("location.hash='/runs/r1'") && !project.includes('Load more runs'), project);
   assert(nodes.get('status').innerHTML.includes('showing 3 of 3 runs'));
   routeResponses = null;

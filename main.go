@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -155,66 +156,15 @@ func submit(name string, args []string) int {
 		}
 		dir = cwd
 	}
-	root, err := config.TargetRoot(dir)
+	req, err := prepare(name, dir, request, issueRef, *ov, os.Stderr)
 	if err != nil {
 		return fail(err)
 	}
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		return fail(err)
+	dataRoot, db, code := openData()
+	if db == nil {
+		return code
 	}
-	// The target's lathe.toml is read here, at submission, so its values are
-	// frozen into the snapshot with everything else. A broken file is a
-	// warning, not a failure: the run goes ahead on the roster.
-	if loaded, err := cfg.LoadProject(root); err != nil {
-		fmt.Fprintln(os.Stderr, "lathe: ignoring", err)
-	} else if loaded {
-		fmt.Fprintln(os.Stderr, "lathe: loaded", filepath.Join(root, "lathe.toml"))
-	}
-	// Resolving now turns an unknown agent, a bad timeout or a missing prompt
-	// into an error before a run row exists — and the resolved roster is what
-	// the worker executes from, so editing a prompt cannot change queued work.
-	roster, err := cfg.Capture(workflow.Agents[name], *ov)
-	if err != nil {
-		return fail(err)
-	}
-	ws, err := workspace.Local(root)
-	if err != nil {
-		return fail(err)
-	}
-	branch, err := workspace.Branch(ws.Path)
-	if err != nil {
-		return fail(err)
-	}
-	// Checked here for early feedback and again when the worker starts; a
-	// checkout that goes dirty in between fails the run without discarding
-	// anything.
-	if workflow.Writes[name] {
-		if err := permit.Clean(ws.Path); err != nil {
-			return fail(err)
-		}
-	}
-
-	spec, err := worker.Spec{
-		Version: worker.SpecVersion, Workflow: name, Request: request, Issue: issueRef,
-		Workspace: ws, Roster: roster, Overrides: *ov,
-	}.Marshal()
-	if err != nil {
-		return fail(err)
-	}
-
-	dataRoot, err := trace.DataRoot()
-	if err != nil {
-		return fail(err)
-	}
-	db, err := trace.Open(dataRoot)
-	if err != nil {
-		return fail(err)
-	}
-	id, err := db.Submit(trace.Request{
-		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec,
-		Exclusive: workflow.Writes[name],
-	})
+	id, err := db.Submit(req)
 	if err != nil {
 		db.Close()
 		return fail(err)
@@ -225,7 +175,7 @@ func submit(name string, args []string) int {
 	if workflow.Writes[name] {
 		fmt.Printf("lathe %s %s: %s belongs to lathe until this run stops.\n"+
 			"  Do not edit files or switch branches there; cleanup can revert changes made during the run.\n",
-			name, id, ws.Path)
+			name, id, req.Repo)
 		if name == "build" {
 			fmt.Printf("  It ends on the branch it creates, and a failure after its commit leaves that commit there.\n")
 		}
@@ -237,6 +187,96 @@ func submit(name string, args []string) int {
 	}
 	defer db.Close()
 	return block(db, dataRoot, id, false)
+}
+
+// prepare turns a submission into the row that records it: the checkout
+// resolved from dir, the project's configuration and the agent roster frozen
+// into a spec. It writes nothing; the caller submits the request. Warnings go
+// to warn, since a broken lathe.toml is not a reason to refuse the run.
+func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.Writer) (trace.Request, error) {
+	root, err := config.TargetRoot(dir)
+	if err != nil {
+		return trace.Request{}, err
+	}
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		return trace.Request{}, err
+	}
+	// The target's lathe.toml is read here, at submission, so its values are
+	// frozen into the snapshot with everything else. A broken file is a
+	// warning, not a failure: the run goes ahead on the roster.
+	if loaded, err := cfg.LoadProject(root); err != nil {
+		fmt.Fprintln(warn, "lathe: ignoring", err)
+	} else if loaded {
+		fmt.Fprintln(warn, "lathe: loaded", filepath.Join(root, "lathe.toml"))
+	}
+	// Resolving now turns an unknown agent, a bad timeout or a missing prompt
+	// into an error before a run row exists — and the resolved roster is what
+	// the worker executes from, so editing a prompt cannot change queued work.
+	roster, err := cfg.Capture(workflow.Agents[name], ov)
+	if err != nil {
+		return trace.Request{}, err
+	}
+	ws, err := workspace.Local(root)
+	if err != nil {
+		return trace.Request{}, err
+	}
+	branch, err := workspace.Branch(ws.Path)
+	if err != nil {
+		return trace.Request{}, err
+	}
+	// Checked here for early feedback and again when the worker starts; a
+	// checkout that goes dirty in between fails the run without discarding
+	// anything.
+	if workflow.Writes[name] {
+		if err := permit.Clean(ws.Path); err != nil {
+			return trace.Request{}, err
+		}
+	}
+	spec, err := worker.Spec{
+		Version: worker.SpecVersion, Workflow: name, Request: request, Issue: issueRef,
+		Workspace: ws, Roster: roster, Overrides: ov,
+	}.Marshal()
+	if err != nil {
+		return trace.Request{}, err
+	}
+	return trace.Request{
+		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec,
+		Exclusive: workflow.Writes[name],
+	}, nil
+}
+
+// prepareAndSubmit is the dashboard's submission: exactly one of prompt and
+// issue, no overrides, and repo must still be the checkout it names. A path
+// that now resolves somewhere else is refused rather than queued against a
+// repository the page does not show. The dashboard validates the shape of the
+// request; this checks everything that needs the filesystem.
+func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
+	request, issueRef := prompt, ""
+	if issue != "" {
+		ref, err := workspace.IssueReference(issue)
+		if err != nil {
+			return "", err
+		}
+		request, issueRef = "GitHub issue "+ref, ref
+	}
+	req, err := prepare(name, repo, request, issueRef, config.Overrides{}, io.Discard)
+	if err != nil {
+		return "", err
+	}
+	if req.Repo != repo {
+		return "", fmt.Errorf("%s now resolves to %s", repo, req.Repo)
+	}
+	dataRoot, err := trace.DataRoot()
+	if err != nil {
+		return "", err
+	}
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	return db.Submit(req)
 }
 
 // block waits for a terminal state and prints the run's report. Interrupting
@@ -346,7 +386,7 @@ func managerCmd() int {
 	// that calls os.Exit cannot be reused by a second command.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := manager.Run(ctx, dataRoot, version, os.Stdout); err != nil {
+	if err := manager.Run(ctx, dataRoot, version, os.Stdout, prepareAndSubmit); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe manager:", err)
 		return 1
 	}
