@@ -108,9 +108,10 @@ const planRow = html.split('class="node"')[1];
 assert(planRow.indexOf('data-phase="c1"') < planRow.indexOf('data-phase="c3"'), 'blocks follow seq');
 assert(!planRow.split('class="track"')[1].split('</div>')[0].includes('c2'), 'review is its own row');
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
-assert(html.includes('<span class="piece" data-line="0">plan</span><span class="piece mark" data-line="0">✅</span>'), 'status marks the name');
+assert(html.includes('<span class="piece" data-line="0">✅</span>'), 'the status mark leads the label');
+assert(!html.includes('data-line="0">plan<'), 'the row names the phase, so the block does not');
 assert(!html.includes('data-line="1">success'), 'the status word is only in the accessible name');
-assert(html.includes('data-lines="1"'), 'a label with nothing under the name sits on one centred line');
+assert(html.includes('data-lines="1"'), 'a label with nothing under the status sits on one centred line');
 assert(html.includes('class="block ok" style=') && html.includes('data-owner="builder"'), 'fill follows the owner, border the status');
 assert(call('gantt', settled, [ph(1,'x',T(0),T(5),{owner:'"><b>'})], 0).includes('data-owner="&quot;>&lt;b>"'), 'owner is escaped');
 
@@ -152,7 +153,7 @@ assert(call('gantt', settled, [ph(1,'test',T(0),T(9),{status:'fail'})], 0).inclu
 const arrange = (blocks, width) => JSON.parse(JSON.stringify(call('arrange', blocks, width)));
 const lines = (blocks, width) => arrange(blocks, width).map(b => b.lines);
 const at = (x, sep = false) => ({x, sep});
-// Everything fits: the name, then model · status side by side under it.
+// Everything fits: one piece, then two side by side under it.
 assert.deepEqual(lines([{left:0, width:200, lines:[[40], [50, 50]]}], 400),
   [[[at(4)], [at(4), at(54, true)]]]);
 // Pieces choose one by one, in reading order: what fits stays inside, the
@@ -205,6 +206,8 @@ const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phas
   await evaluate('tick()');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
   assert(chart().includes('fix · model · success · $0.10000'), chart());
+  assert(chart().includes('data-line="0">✅</span><span class="piece tight" data-line="0">model</span><span class="piece" data-line="1">$0.10000</span>'),
+    'status and model share the first line, cost the second');
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
   assert.equal(chart().split('class="node"').length - 1, 1, 'both entries share a row');
   assert(panel().includes('Select a phase.'));
