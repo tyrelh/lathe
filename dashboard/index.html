@@ -151,7 +151,7 @@
      layout() places each piece inside the block or beside it; a dot fills the
      gap between pieces sharing a line. */
   .block .piece { position: absolute; left: 4px; white-space: nowrap;
-                  overflow: hidden; text-overflow: ellipsis; }
+                  overflow: hidden; text-overflow: ellipsis; opacity: .75; }
   .block .piece[data-line="0"] { top: calc(50% - 16px); }
   .block .piece[data-line="1"] { top: 50%; }
   .block[data-lines="1"] .piece { top: calc(50% - 8px); }
