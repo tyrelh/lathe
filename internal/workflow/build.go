@@ -205,7 +205,7 @@ func Build(r *run.Run) int {
 
 	g := run.NewGraph(r)
 	addRequestNode(g, r)
-	addPlanNodes(g, r, &c.plan)
+	addPlanNodes(g, r, &c.plan, "")
 
 	// Immediately after the plan nodes, so it runs whether review accepted the
 	// plan or its send-back budget ran out and the objections became risks. The
@@ -225,9 +225,6 @@ func Build(r *run.Run) int {
 	// After adjudicate, which forwards accepted work and the eligible
 	// unaccepted outcomes; c.v.Outcome says which this is.
 	g.Add(run.Node{Name: "commit", Owner: "committer"}, func(e *run.Entry) (string, error) {
-		// Captured on entry: the paths are the accumulated accepted scope after
-		// enforcement, which is what lathe stages — an agent's own `git add -A`
-		// would sweep up anything the guard tolerated.
 		paths, err := permit.Changed(r.Repo)
 		if err != nil {
 			return "", err
@@ -235,31 +232,8 @@ func Build(r *run.Run) int {
 		if len(paths) == 0 {
 			return "", fmt.Errorf("the tree holds no changes to commit")
 		}
-		before, err := workspace.Head(r.Repo)
-		if err != nil {
+		if sha, message, err = commit(e, r, &c, paths); err != nil {
 			return "", err
-		}
-		stat, err := workspace.DiffStat(r.Repo)
-		if err != nil {
-			return "", err
-		}
-
-		var out CommitOutput
-		if err := e.Call(&out, commitRequest(&c, stat, paths),
-			run.ArtifactsExist, run.FilesNonEmpty); err != nil {
-			return "", err
-		}
-		message = *out.Message
-		if err := workspace.Commit(r.Repo, message, paths); err != nil {
-			return "", err
-		}
-		// lathe ran the commit, so all that is left to establish is that git did
-		// what it was asked: HEAD moved, and nothing was left behind.
-		if sha, err = workspace.Head(r.Repo); err != nil {
-			return "", err
-		}
-		if sha == before {
-			return "", fmt.Errorf("git commit left HEAD at %s", before)
 		}
 		// Recorded here rather than at the end, so a failed pull request still
 		// leaves a run that names where its commit is.
@@ -312,9 +286,36 @@ func Build(r *run.Run) int {
 	return r.Finish(false, reason)
 }
 
-func short(sha string) string {
-	if len(sha) > 8 {
-		return sha[:8]
+// commit has the committer write the message for paths and lathe make the
+// commit. paths is captured by the caller on entry: it is the accumulated
+// accepted scope after enforcement, which is what lathe stages — an agent's own
+// `git add -A` would sweep up anything the guard tolerated.
+func commit(e *run.Entry, r *run.Run, c *code, paths []string) (sha, message string, err error) {
+	before, err := workspace.Head(r.Repo)
+	if err != nil {
+		return "", "", err
 	}
-	return sha
+	stat, err := workspace.DiffStat(r.Repo)
+	if err != nil {
+		return "", "", err
+	}
+	var out CommitOutput
+	if err := e.Call(&out, commitRequest(c, stat, paths), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+		return "", "", err
+	}
+	message = *out.Message
+	if err := workspace.Commit(r.Repo, message, paths); err != nil {
+		return "", "", err
+	}
+	// lathe ran the commit, so all that is left to establish is that git did
+	// what it was asked: HEAD moved, and nothing was left behind.
+	if sha, err = workspace.Head(r.Repo); err != nil {
+		return "", "", err
+	}
+	if sha == before {
+		return "", "", fmt.Errorf("git commit left HEAD at %s", before)
+	}
+	return sha, message, nil
 }
+
+func short(sha string) string { return workspace.Short(sha) }

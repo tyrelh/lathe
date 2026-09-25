@@ -23,7 +23,8 @@ for (const id of ['app', 'status', 'note', 'version',
                   'project-head', 'project-runs']) nodes.set(id, new Element());
 // Parse only the scaffold IDs when app is replaced. In particular, do not
 // precreate #log: that would skip the first-render branch in detail().
-const scaffoldIDs = ['project-title', 'head', 'phases', 'phase', 'costs', 'summary', 'log'];
+const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
+                     'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status', 'log'];
 const appNode = nodes.get('app');
 let appHTML = '', scaffoldCount = 0;
 Object.defineProperty(appNode, 'innerHTML', {
@@ -182,6 +183,45 @@ const card = call('details', open, cut, ms(900));
 assert(card.includes('interrupted') && card.includes('40s · bounded by the run’s end') && card.includes('Not recorded'), card);
 assert(call('gantt', settled, [ph(1,'test',T(0),T(9),{status:'fail'})], 0).includes('test · fail'), 'finished failures keep their status');
 
+// A revised run: two iterations of 100s an hour apart. The idle 3500s is one
+// break a twentieth of the 200s of work wide (10s), so the track spans 210s:
+// the second plan starts 100s + 10s + 10s in. An iterations row names each
+// request over its span, and the break's label says how long it stands for.
+const H = 3600;
+const revised = {status:'ok', started_at:T(0), ended_at:T(H + 100), iteration:1, iterations:[
+  {iteration:0, request:'greet', status:'ok', started_at:T(0), ended_at:T(100)},
+  {iteration:1, request:'<louder>', status:'ok', started_at:T(H), ended_at:T(H + 100)}]};
+html = call('gantt', revised, [ph(1,'plan',T(10),T(35),{iteration:0}), ph(2,'plan',T(H+10),T(H+35),{iteration:1})], ms(H+200));
+assert(html.includes('left:min(4.762%, calc(100% - 2px));width:max(2px, 11.905%)'), html);
+assert(html.includes('left:min(57.143%, calc(100% - 2px));width:max(2px, 11.905%)'), html);
+assert(html.includes('⋯ 58m20s') && html.includes('title="idle 58m20s · 2026-09-20T12:01:40.000Z'), 'the break keeps its real span');
+assert(html.includes('#1 &lt;louder>') && html.includes('>iterations</div>'), 'iterations are named over their spans');
+noNaN(html);
+assert.equal(call('active', revised), '3m20s', 'active time is the iterations, not the idle between them');
+// One iteration draws exactly as before: no break, no iterations row.
+const single = {...settled, iterations:[{iteration:0, request:'x', status:'ok', started_at:T(0), ended_at:T(100)}]};
+assert.equal(call('gantt', single, [ph(1,'plan',T(10),T(35))], ms(200)), call('gantt', settled, [ph(1,'plan',T(10),T(35))], ms(200)));
+
+// Reopening a run does not make an old unfinished phase run again: it is
+// bounded by its own iteration's end, and says it is from an earlier request.
+const reopened = {status:'running', started_at:T(0), ended_at:'', iteration:1, iterations:[
+  {iteration:0, request:'greet', status:'ok', started_at:T(0), ended_at:T(40)},
+  {iteration:1, request:'louder', status:'running', started_at:T(H), ended_at:''}]};
+const stale = ph(1,'implement',T(5),'',{status:'fail', iteration:0});
+assert(call('gantt', reopened, [stale], ms(H+50)).includes('class="block interrupted"'), 'an old phase is interrupted, not running');
+const staleCard = call('details', stale, reopened, ms(H+50));
+assert(staleCard.includes('35s · bounded by its iteration’s end') && staleCard.includes('iteration ended ' + T(40)), staleCard);
+assert(staleCard.includes('From iteration 0, a previous request: greet') && staleCard.includes('which is running'), staleCard);
+assert(!call('details', ph(2,'plan',T(H+1),T(H+9),{iteration:1}), reopened, ms(H+50)).includes('From iteration'),
+  'the latest iteration is not labelled as previous');
+
+// The history: each request, how it ended, where its commit is and the models.
+const history = call('renderIterations', {iterations:[
+  {iteration:0, request:'<greet>', status:'ok', commit:'abcdef1234', remote:'', models:{planner:'moonshotai/kimi-k3'}},
+  {iteration:1, request:'louder', status:'fail', reason:'not published', commit:'1234567890', remote:'abcdef1234', models:{}}]});
+for (const text of ['&lt;greet>', 'abcdef12', 'origin at abcdef12', 'kimi-k3', 'planner: moonshotai/kimi-k3', 'not published'])
+  assert(history.includes(text), `history: ${text}`);
+
 // arrange: each piece inside or beside its block, cut or hidden when there is
 // no room, and sublanes for overlaps. x is from the block's left edge.
 const arrange = (blocks, width) => JSON.parse(JSON.stringify(call('arrange', blocks, width)));
@@ -225,7 +265,7 @@ for (const text of ['<h4>&lt;key></h4>', '<h4>name</h4><p>&lt;b></p>', '<p>null<
 assert(!generic.includes('<b>'));
 
 const phases = [ph(1,'fix',T(0),T(30)), ph(2,'fix',T(30),T(65))].map(p => ({...p, phase_id:'p'+p.seq}));
-const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:'/repo',request:'fix',submitted_at:'2026-09-20T11:59:50Z',started_at:'2026-09-20T12:00:00Z',ended_at:'2026-09-20T12:01:05Z'};
+const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:'/repo',request:'fix',submitted_at:'2026-09-20T11:59:50Z',activity_at:'2026-09-20T11:59:50Z',started_at:'2026-09-20T12:00:00Z',ended_at:'2026-09-20T12:01:05Z'};
 let id = 0;
 const event = (type, payload, phase_id='p1', name='fix') => ({event_id:++id,type,payload,phase_id,name});
 function serve(events, ps = phases, r = run) { response = json({run:r,phases:ps,events}); }
@@ -243,9 +283,9 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(scaffoldCount, 1, 'the first poll creates the whole run scaffold');
   const scaffold = nodes.get('app').innerHTML;
   const sections = [...scaffold.matchAll(/<section class="card[^>]*>([\s\S]*?)<\/section>/g)].map(m => m[1]);
-  assert.equal(sections.length, 5, 'only the five requested top-level sections');
+  assert.equal(sections.length, 6, 'only the six requested top-level sections');
   assert.deepEqual(sections.map(s => s.match(/<h2[^>]*>(.*?)<\/h2>/)[1]),
-    ['', 'phases', 'costs', 'details', 'events']);
+    ['', 'phases', 'costs', 'details', 'iterations', 'events']);
   assert(sections[1].includes('<div id="phases"></div>') && sections[1].includes('id="phase"'),
     'the selected-phase inspector stays nested within PHASES');
   assert(sections[2].includes('id="costs"') && sections[3].includes('id="summary"'));

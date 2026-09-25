@@ -81,3 +81,43 @@ func gitRun(repo string, stdin io.Reader, args ...string) error {
 	}
 	return nil
 }
+
+// RemoteHead is the commit origin's branch points at now, asked of origin
+// itself rather than read from a remote-tracking ref that may be stale. A
+// branch origin does not have is "", which is not an error.
+func RemoteHead(repo, branch string) (string, error) {
+	cmd := exec.Command("git", "ls-remote", "origin", "refs/heads/"+branch)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote origin %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	sha, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	return sha, nil
+}
+
+// PushExpecting publishes HEAD to origin's branch only while that branch is
+// still at expect, so an update someone made meanwhile is refused rather than
+// overwritten. HEAD descends from expect, so a push the lease admits is a
+// fast-forward and the branch keeps its history.
+func PushExpecting(repo, branch, expect string) error {
+	ref := "refs/heads/" + branch
+	return gitRun(repo, nil, "push", "--force-with-lease="+ref+":"+expect, "origin", "HEAD:"+ref)
+}
+
+// BranchDiff is the change a pull request carries, against origin's copy of
+// its base branch: the stat, then the patch cut to limit bytes. A base that
+// was never fetched is an error for the caller to report, not to guess past.
+func BranchDiff(repo, base string, limit int) (stat, patch string, err error) {
+	rng := "origin/" + base + "...HEAD"
+	if stat, err = git(repo, "diff", "--stat", rng); err != nil {
+		return "", "", fmt.Errorf("git diff %s: %w", rng, err)
+	}
+	if patch, err = git(repo, "diff", rng); err != nil {
+		return "", "", fmt.Errorf("git diff %s: %w", rng, err)
+	}
+	if len(patch) > limit {
+		patch = patch[:limit] + fmt.Sprintf("\n… cut at %d bytes; read the files for the rest\n", limit)
+	}
+	return stat, patch, nil
+}

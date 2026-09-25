@@ -155,6 +155,14 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			// ever sends back to the planner, never past this node.
 			c.handoff = implementRequest(r.Request, &c.plan, nil)
 			request = c.handoff
+			// Only a revision's plan can permit nothing. A builder that may write
+			// nothing has nothing to do, so the branch is validated as it stands.
+			if len(*c.plan.Files) == 0 {
+				summary, none := "No code changes: "+*c.plan.Summary, []string{}
+				c.out = ImplementOutput{Summary: &summary, Changed: &none, Needed: &none, Wrote: &none}
+				c.v.Rounds = append(c.v.Rounds, newRound(e.Round))
+				return "", writeResult(r.Dir, "implement.json", &c.out)
+			}
 		}
 		e.Scope(*c.plan.Files)
 		err := e.Call(&c.out, request, run.ArtifactsExist, run.FilesNonEmpty, ChangesMatchClaim)
@@ -289,7 +297,7 @@ func Implement(r *run.Run) int {
 
 	g := run.NewGraph(r)
 	addRequestNode(g, r)
-	addPlanNodes(g, r, &c.plan)
+	addPlanNodes(g, r, &c.plan, "")
 	addCodeNodes(g, r, &c)
 
 	if err := g.Run(); err != nil {

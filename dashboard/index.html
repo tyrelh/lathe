@@ -114,6 +114,10 @@
     width: 100%; font: inherit; color: var(--fg); background: var(--panel);
     border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
   #new-run textarea { resize: vertical; }
+  #revise label { display: block; color: var(--dim); margin: 12px 0 4px; }
+  #revise textarea { width: 100%; font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; resize: vertical; }
+  [hidden] { display: none !important; }
   #new-run select { width: auto; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
   summary { cursor: pointer; overflow-wrap: anywhere; }
@@ -159,6 +163,14 @@
      gap layout() left for one, which only leaves more room after it. */
   .block .piece.tight[data-sep="1"] { margin-left: -8px; }
   .block .piece.tight[data-sep="1"]::before { content: none; }
+  /* A revised run's timeline: a row naming each iteration over its span, and
+     idle stretches between iterations drawn as labelled breaks in every row. */
+  .iter { position: absolute; top: 1px; height: 38px; padding: 0 4px; overflow: hidden;
+          white-space: nowrap; text-overflow: ellipsis; font-size: 12px; line-height: 38px;
+          border-left: 2px solid var(--cost); color: var(--dim); }
+  .brk { position: absolute; top: 0; bottom: 0; border: 1px dashed var(--line); border-width: 0 1px;
+         background: var(--bg); color: var(--dim); font-size: 11px; line-height: 38px;
+         text-align: center; overflow: hidden; white-space: nowrap; }
   .untimed { display: flex; flex-wrap: wrap; gap: 6px; }
   .untimed .block { position: static; height: auto; padding: 1px 4px; }
   .untimed .block .piece { position: static; }
@@ -277,7 +289,7 @@ let draining = false, shown = null, selected = '';
 let projectRows = [], projectMore = false, projectLoaded = false, projectLoading = false, projectSummary = null;
 // runSubmitting: a New run POST is in flight. Everything else the form shows
 // lives in its own DOM, which polling never rewrites.
-let runSubmitting = false;
+let runSubmitting = false, reviseSubmitting = false;
 let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route();
 
@@ -393,7 +405,7 @@ function navigate() {
   draining = false; shown = null; selected = '';
   projectRows = []; projectMore = false; projectLoaded = false; projectLoading = false; projectSummary = null;
   resized.disconnect(); observed = null;
-  runSubmitting = false;
+  runSubmitting = reviseSubmitting = false;
   // A project page is built once, as three parts: polling redraws the summary
   // and the runs around the form, so a draft and its focus survive.
   app.innerHTML = view.page === 'project' ? projectShell(view.repo) : '';
@@ -569,7 +581,7 @@ const projectQuery = repo => 'repo=' + encodeURIComponent(repo);
 const runListRow = r => `<tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
   <td class="dim">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
   <td class="${cls(r.status)}">${esc(r.status)}</td>
-  <td>${esc(r.workflow)}</td>
+  <td>${esc(r.workflow)}${r.iteration ? `<span class="dim"> · rev ${esc(r.iteration)}</span>` : ''}</td>
   <td class="num dim lo">${esc(took(r))}</td>
   <td class="num dim">${count(r.tokens)} tok</td>
   <td class="num cost">${money(r.cost)}</td>
@@ -578,8 +590,9 @@ const runListRow = r => `<tr class="run" onclick="location.hash='/runs/${esc(r.r
 
 function mergeProjectRows(rows) {
   const byID = new Map([...projectRows, ...rows].map(r => [r.run_id, r]));
+  // Latest activity first, as the server pages them: a revised run moves up.
   projectRows = [...byID.values()].sort((a, b) =>
-    (b.submitted_at || '').localeCompare(a.submitted_at || '') || b.run_id.localeCompare(a.run_id));
+    (b.activity_at || '').localeCompare(a.activity_at || '') || b.run_id.localeCompare(a.run_id));
 }
 
 async function project(current) {
@@ -619,6 +632,17 @@ function projectShell(repo) {
     <div id="project-runs"></div>`;
 }
 
+// send posts JSON to one of the dashboard's write routes and returns the
+// reply's body and, for a refusal, the reason to show.
+async function send(url, payload) {
+  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+  const text = await r.text();
+  let body = {};
+  try { body = JSON.parse(text); } catch {}
+  return {ok: r.ok, body, error: body.error || text || 'HTTP ' + r.status};
+}
+const runLink = id => `<a href="#/runs/${esc(id)}">${esc(id)}</a>`;
+
 function runStatus(html, error = false) {
   $('run-status').className = error ? 'fail' : '';
   $('run-status').innerHTML = html;
@@ -640,21 +664,14 @@ async function submitRun(e) {
   $('run-submit').disabled = true;
   runStatus('Queuing…');
   try {
-    const r = await fetch('/api/projects/runs', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({repo: view.repo, workflow, ...(prompt ? {prompt} : {issue})}),
-    });
-    const text = await r.text();
-    let body = {};
-    try { body = JSON.parse(text); } catch {}
+    const {ok, body, error} = await send('/api/projects/runs', {repo: view.repo, workflow, ...(prompt ? {prompt} : {issue})});
     if (current !== generation) return;
-    const link = id => `<a href="#/runs/${esc(id)}">${esc(id)}</a>`;
-    if (!r.ok) {
-      runStatus(esc(body.error || text || 'HTTP ' + r.status) + (body.run_id ? ' · held by ' + link(body.run_id) : ''), true);
+    if (!ok) {
+      runStatus(esc(error) + (body.run_id ? ' · held by ' + runLink(body.run_id) : ''), true);
       return;
     }
     $(prompt ? 'run-prompt' : 'run-issue').value = '';
-    runStatus(`Queued ${esc(workflow)} ${link(body.run_id)}`);
+    runStatus(`Queued ${esc(workflow)} ${runLink(body.run_id)}`);
     tick();
   } catch (err) {
     if (current === generation) runStatus(esc(String(err)), true);
@@ -691,7 +708,7 @@ async function moreProjectRuns() {
   projectLoading = true;
   renderProject();
   const current = generation, last = projectRows[projectRows.length - 1];
-  const query = projectQuery(view.repo) + '&n=50&before_at=' + encodeURIComponent(last.submitted_at || '')
+  const query = projectQuery(view.repo) + '&n=50&before_at=' + encodeURIComponent(last.activity_at || '')
     + '&before_id=' + encodeURIComponent(last.run_id);
   try {
     const {body: page} = await get('/api/projects/runs?' + query);
@@ -740,6 +757,9 @@ async function detail(current) {
   const {body: d} = await get('/api/runs/' + encodeURIComponent(view.id) + '?after=' + after);
   if (current !== generation) return;
   const r = d.run;
+  // Carried on the run, so the chart and the details card read each phase's
+  // own iteration from the one object they are both handed.
+  r.iterations = d.iterations || [];
 
   // Folded in before the phases are drawn, not after: a settled run stops
   // polling at the end of this pass, so a total added later never gets drawn.
@@ -778,15 +798,29 @@ async function detail(current) {
   if (!$('log')) {
     app.innerHTML = `
       <p><a href="#/runs">&larr; all runs</a></p>
-      <section class="card run-project"><h2 id="project-title"></h2><p id="head"></p></section>
+      <section class="card run-project"><h2 id="project-title"></h2><p id="head"></p>
+        <button class="more" id="run-cancel" type="button" onclick="cancelRun()" hidden>Cancel</button></section>
       <section class="card"><h2>phases</h2><div id="phases"></div>
         <div id="phase" class="phase-inspector"></div></section>
       <section class="card"><h2>costs</h2><div id="costs"></div></section>
       <section class="card"><h2>details</h2><dl id="summary" class="stats"></dl></section>
+      <section class="card"><h2>iterations</h2><div id="iterations"></div>
+        <form id="revise" onsubmit="reviseRun(event)" hidden>
+          <label for="revise-request">Request changes</label>
+          <textarea id="revise-request" rows="3" placeholder="What should change in this pull request"></textarea>
+          <p><button class="more" id="revise-submit" type="submit">Request changes</button></p>
+        </form>
+        <p id="revise-status" role="status"></p></section>
       <section class="card"><h2>events</h2><table id="log"></table></section>`;
   }
   $('project-title').innerHTML = esc(r.repo || 'unknown repo');
   $('head').innerHTML = esc(r.request);
+  // The form lives in the scaffold, so a draft survives every poll; only
+  // whether it is offered changes. A build whose latest iteration succeeded is
+  // the only run that may qualify, and the server checks the rest.
+  $('revise').hidden = !(r.workflow === 'build' && r.status === 'ok');
+  $('run-cancel').hidden = !live(r.status);
+  $('iterations').innerHTML = renderIterations(r);
   const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
   shown = {run: r, phases: d.phases};
   draw();
@@ -800,6 +834,7 @@ async function detail(current) {
     stat('tokens', count(r.tokens)),
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),
+    ...(r.iterations.length > 1 ? [stat('active', active(r)), stat('iterations', count(r.iterations.length))] : []),
     stat('repo', esc(base(r.repo))),
     stat('run id', esc(r.run_id)),
   ].join('');
@@ -822,6 +857,92 @@ async function detail(current) {
       <td>${eventPayload(e)}</td>`;
   }
   if (d.events.length && following && followBox.checked) app.scrollTop = app.scrollHeight;
+}
+
+// active is the time iterations spent executing, summed over iterations and
+// never over phases: validation workers run at once, and adding up their
+// phases would count the same minutes four times.
+function active(r) {
+  let ms = 0;
+  for (const i of r.iterations || []) {
+    const start = Date.parse(i.started_at), end = i.ended_at ? Date.parse(i.ended_at) : live(i.status) ? Date.now() : NaN;
+    if (start >= 0 && end >= start) ms += end - start;
+  }
+  return ms ? dur(ms) : '';
+}
+
+// renderIterations is the run's history, one row per submitted request: how
+// each ended, what it published, and the models its configuration used.
+function renderIterations(r) {
+  const its = r.iterations || [];
+  if (!its.length) return '<p class="dim">No iterations recorded.</p>';
+  const sha = s => esc((s || '').slice(0, 8));
+  return `<table>${its.map(i => {
+    const models = Object.entries(i.models || {}).sort().map(([agent, m]) => `${agent}: ${m}`).join('\n');
+    const names = [...new Set(Object.values(i.models || {}).map(m => m.split('/').pop()))].join(', ');
+    const where = !i.commit ? '' : sha(i.commit)
+      + (i.remote && i.remote !== i.commit ? ` <span class="fail">· origin at ${sha(i.remote)}</span>` : '');
+    return `<tr>
+      <td class="dim">#${esc(i.iteration)}</td>
+      <td class="${cls(i.status)}">${esc(i.status)}</td>
+      <td class="wrap" title="${esc(i.request)}">${esc(clip(i.request, 200))}${i.reason
+        ? `<br><span class="${i.status === 'ok' ? 'dim' : 'fail'}">${esc(clip(i.reason, 300))}</span>` : ''}</td>
+      <td class="dim lo">${esc((i.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
+      <td class="num dim">${esc(span(i.started_at, i.ended_at))}</td>
+      <td class="dim">${where}</td>
+      <td class="dim lo" title="${esc(models)}">${esc(names)}</td>
+    </tr>`;
+  }).join('')}</table>`;
+}
+
+function reviseStatus(html, error = false) {
+  $('revise-status').className = error ? 'fail' : '';
+  $('revise-status').innerHTML = html;
+}
+
+// reviseRun asks for another iteration of this run. The page stays here and
+// picks polling back up, so the queued iteration shows as it runs.
+async function reviseRun(e) {
+  e.preventDefault();
+  if (reviseSubmitting) return;
+  const request = $('revise-request').value.trim();
+  if (!request) return reviseStatus('Describe the change to make.', true);
+  const current = generation;
+  reviseSubmitting = true;
+  $('revise-submit').disabled = true;
+  reviseStatus('Queuing…');
+  try {
+    const {ok, body, error} = await send('/api/runs/' + encodeURIComponent(view.id) + '/revisions', {request});
+    if (current !== generation) return;
+    if (!ok) return reviseStatus(esc(error) + (body.run_id ? ' · held by ' + runLink(body.run_id) : ''), true);
+    $('revise-request').value = '';
+    reviseStatus(`Queued iteration ${esc(body.iteration)}.`);
+    done = false;
+    tick();
+  } catch (err) {
+    if (current === generation) reviseStatus(esc(String(err)), true);
+  } finally {
+    if (current === generation) {
+      reviseSubmitting = false;
+      $('revise-submit').disabled = false;
+    }
+  }
+}
+
+// cancelRun is lathe cancel: a queued iteration stops at once, a running one
+// when its worker notices.
+async function cancelRun() {
+  const current = generation;
+  $('run-cancel').disabled = true;
+  try {
+    const {ok, error} = await send('/api/runs/' + encodeURIComponent(view.id) + '/cancel', {});
+    if (current !== generation) return;
+    $('run-cancel').textContent = ok ? 'Cancelling…' : 'Cancel failed';
+    $('run-cancel').title = ok ? '' : error;
+    tick();
+  } catch (err) {
+    if (current === generation) $('run-cancel').title = String(err);
+  }
 }
 
 // timings keeps waiting and working apart: a run that sat in the queue for a
@@ -880,14 +1001,18 @@ function swap(el, html) {
 
 // phaseTiming is the one reading of a phase's status and span the chart and
 // the details card share. The stored status is fail until Finish earns
-// success, so a phase with no end reads running while its run is live and
-// interrupted once it is not — bounded by the run's end, never by now, or a
-// finished run's phase would keep growing.
+// success, so a phase with no end reads running while its iteration is live
+// and interrupted once it is not — bounded by that iteration's end, never by
+// now, or a finished phase would keep growing, and never by a later
+// iteration, or reopening a run would make an old phase look like it is
+// running again. Without iterations, the run stands in for its only one.
 function phaseTiming(p, r, now) {
   const start = Date.parse(p.started_at);
   if (p.ended_at) return {status: p.status, start, end: Date.parse(p.ended_at), bound: false};
-  if (live(r.status)) return {status: 'running', start, end: now, bound: false};
-  return {status: 'interrupted', start, end: Date.parse(r.ended_at), bound: true};
+  const it = (r.iterations || []).find(i => i.iteration === (p.iteration ?? 0));
+  const owner = it || r;
+  if (live(owner.status)) return {status: 'running', start, end: now, bound: false};
+  return {status: 'interrupted', start, end: Date.parse(owner.ended_at), bound: true, by: it ? 'iteration' : 'run'};
 }
 const tone = s => s === 'interrupted' ? 'interrupted' : cls(s);
 // The chart marks status beside the name; the word stays in the accessible
@@ -909,11 +1034,43 @@ function axis(r, now) {
 // geometry places an interval on the axis in percent, clamped to it, or null
 // when its timestamps are missing, invalid or reversed. NaN fails every
 // comparison, so nothing here can emit NaN, infinity or a negative width.
-function geometry(t, ax) {
+function geometry(t, ax, tl) {
   if (!(t.start >= 0 && t.end >= t.start)) return null;
   const clamp = ms => Math.min(Math.max(ms, ax.start), ax.end);
   const s = clamp(t.start), e = clamp(t.end);
-  return {left: (s - ax.start) / ax.span * 100, width: (e - s) / ax.span * 100};
+  return {left: tl.at(s) / tl.span * 100, width: (tl.at(e) - tl.at(s)) / tl.span * 100};
+}
+
+// BREAK is how wide an idle break is drawn, as a share of the active time.
+const BREAK = 0.05;
+// timeline maps the axis for a revised run. Most of such a run's life is the
+// wait between one iteration and the next, so each idle stretch longer than a
+// break is drawn as one — a fixed width, labelled with the time it stands for
+// — and the chart shows the work. at() is a time's position in the squeezed
+// span; with one iteration nothing is squeezed and it is the plain axis.
+function timeline(ax, iterations, now) {
+  const spans = iterations.length < 2 ? [] : iterations.flatMap(i => {
+    const s = Date.parse(i.started_at);
+    if (!(s >= 0)) return [];
+    const e = i.ended_at ? Date.parse(i.ended_at) : live(i.status) ? now : s;
+    return [{n: i.iteration, request: i.request, start: Math.max(s, ax.start), end: Math.min(Math.max(e, s), ax.end)}];
+  });
+  const gaps = spans.map((x, k) => ({from: x.end, to: k + 1 < spans.length ? spans[k + 1].start : ax.end}))
+    .filter(g => g.to > g.from);
+  const width = Math.max(1, (ax.span - gaps.reduce((a, g) => a + g.to - g.from, 0)) * BREAK);
+  const breaks = gaps.filter(g => g.to - g.from > 2 * width);
+  const at = ms => {
+    let x = ms - ax.start;
+    for (const g of breaks) {
+      const len = g.to - g.from;
+      if (ms >= g.to) x -= len - width;
+      else if (ms > g.from) x -= (ms - g.from) * (1 - width / len);
+    }
+    return x;
+  };
+  const span = ax.span - breaks.reduce((a, g) => a + g.to - g.from - width, 0);
+  const pct = (from, to) => `left:${(at(from) / span * 100).toFixed(3)}%;width:${((at(to) - at(from)) / span * 100).toFixed(3)}%`;
+  return {at, span, spans, breaks, pct};
 }
 
 // gantt draws one row per graph node, in the order each was first entered. A
@@ -921,19 +1078,28 @@ function geometry(t, ax) {
 function gantt(r, phases, now) {
   const ax = axis(r, now);
   if (!phases.length) return `<p class="dim">${ax.note && live(r.status) ? ax.note : 'No phases recorded yet.'}</p>`;
+  const tl = ax.note ? null : timeline(ax, r.iterations || [], now);
   const rows = new Map(), untimed = [];
   for (const p of [...phases].sort((a, b) => a.seq - b.seq)) {
-    const t = phaseTiming(p, r, now), g = ax.note ? null : geometry(t, ax);
+    const t = phaseTiming(p, r, now), g = ax.note ? null : geometry(t, ax, tl);
     if (!g) { untimed.push(block(p, t)); continue; }
     bucket(rows, p.name).push(block(p, t, g));
   }
   // UTC throughout, matching every other timestamp on the page.
   const edge = ms => time(new Date(ms).toISOString()) + ' UTC';
+  // A break's real span stays in its title and its label; the iterations row
+  // names each request over the span it ran.
+  const breaks = label => (tl?.breaks || []).map(b => `<span class="brk" style="${tl.pct(b.from, b.to)}"`
+    + ` title="${esc(`idle ${dur(b.to - b.from)} · ${new Date(b.from).toISOString()} to ${new Date(b.to).toISOString()}`)}">`
+    + (label ? esc(`⋯ ${dur(b.to - b.from)}`) : '') + '</span>').join('');
+  const iterations = tl?.spans.length ? `<div class="node" title="iterations">iterations</div><div class="track">`
+    + tl.spans.map(x => `<span class="iter" style="${tl.pct(x.start, x.end)}" title="${esc(`#${x.n} ${x.request}`)}">#${esc(x.n)} ${esc(clip(x.request, 80))}</span>`).join('')
+    + breaks(true) + '</div>' : '';
   return (ax.note ? `<p class="dim">${ax.note}</p>` : '')
     + (rows.size ? `<div class="gantt"><span></span>
         <div class="axis"><span>${edge(ax.start)}</span><span>${ax.live ? 'now' : edge(ax.end)}</span></div>
-        ${[...rows].map(([name, blocks]) =>
-          `<div class="node" title="${esc(name)}">${esc(name)}</div><div class="track">${blocks.join('')}</div>`).join('')}
+        ${iterations}${[...rows].map(([name, blocks]) =>
+          `<div class="node" title="${esc(name)}">${esc(name)}</div><div class="track">${breaks(false)}${blocks.join('')}</div>`).join('')}
       </div>` : '')
     + (untimed.length ? `<p class="dim">Untimed · timestamps missing or invalid</p><div class="untimed">${untimed.join('')}</div>` : '');
 }
@@ -1108,11 +1274,12 @@ function details(p, r, now) {
   };
 
   const valid = t.start >= 0 && t.end >= t.start;
+  const owner = t.by === 'iteration' ? r.iterations.find(i => i.iteration === (p.iteration ?? 0)) : r;
   const took = !valid ? 'Unavailable'
-    : dur(t.end - t.start) + (t.status === 'running' ? ' so far' : t.bound ? ' · bounded by the run’s end' : '');
+    : dur(t.end - t.start) + (t.status === 'running' ? ' so far' : t.bound ? ` · bounded by ${t.by === 'iteration' ? 'its iteration' : 'the run'}’s end` : '');
   const facts = `<table class="facts">
       <tr><th>Started</th><td>${esc(p.started_at || 'Not recorded')}</td></tr>
-      <tr><th>Ended</th><td>${esc(p.ended_at || 'Not recorded')}${t.bound && r.ended_at ? ` <span class="dim">· run ended ${esc(r.ended_at)}</span>` : ''}</td></tr>
+      <tr><th>Ended</th><td>${esc(p.ended_at || 'Not recorded')}${t.bound && owner?.ended_at ? ` <span class="dim">· ${t.by === 'iteration' ? 'iteration' : 'run'} ended ${esc(owner.ended_at)}</span>` : ''}</td></tr>
       <tr><th>Duration</th><td>${took}</td></tr>
     </table>`;
 
@@ -1155,9 +1322,15 @@ function details(p, r, now) {
       <td class="num">${count(u.tokens)} tok</td><td class="num cost">${money(u.cost)}</td></tr>`).join('')}</table>`
     : absent('usage', 'Usage not recorded.'));
 
+  // A phase from an earlier request says so, most of all while a newer one is
+  // queued or running and this report is not what is happening now.
+  const n = p.iteration ?? 0, latest = r.iteration ?? 0;
+  const earlier = n >= latest ? '' : `<p class="running">From iteration ${esc(n)}, a previous request${
+    (r.iterations || []).find(i => i.iteration === n)?.request ? `: ${esc(clip(r.iterations.find(i => i.iteration === n).request, 120))}` : ''}.
+    The latest is iteration ${esc(latest)}${live(r.status) ? `, which is ${esc(r.status)}` : ''}.</p>`;
   return `<h2>phase</h2>
     <p><b>${esc(p.name)}</b> <span class="dim">· #${p.seq} · ${esc(p.owner)} ·</span> <span class="${tone(t.status)}">${esc(t.status)}</span></p>`
-    + facts + error
+    + earlier + facts + error
     + `<div class="phase-output">${result}${command}${spent}</div>`
     + disclosure('raw', 'Raw responses', responses.get(id) || '<p class="dim">Raw response not recorded here. Older responses may be available in the run’s raw.jsonl.</p>')
     + disclosure('inputs', 'Inputs', inputs.get(id) || '<p class="dim">Input context not recorded.</p>');

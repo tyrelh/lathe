@@ -26,10 +26,11 @@ lathe implement --issue tyrelh/lathe#41   # implement from a GitHub issue
 lathe implement "add retry"              # plan, implement, test; leave it uncommitted
 lathe build "add retry"                  # implement, then branch, commit and open a PR
 lathe build --detach "add retry"         # queue it and exit
+lathe revise <id> "log the retry count"  # push another change to that build's pull request
 
 lathe runs                               # recent runs, every repo
-lathe show <id>                          # outcome and reports (--json too)
-lathe wait <id>
+lathe show <id>                          # outcome, iterations and reports (--json, --iteration n)
+lathe wait <id>                          # or --iteration n, for one iteration's outcome
 lathe cancel <id>
 lathe manager                            # queue and dashboard at http://127.0.0.1:4700
 ```
@@ -38,6 +39,7 @@ lathe manager                            # queue and dashboard at http://127.0.0
 plan:      request → plan → review   (up to 4 send-backs)
 implement: … → implement → validate → adjudicate   (up to 4 repairs)
 build:     … → branch → implement → validate → adjudicate → commit → pr
+revise:    request → plan → review → implement → validate → adjudicate → commit → push to the same pr
 ```
 
 ## Running
@@ -46,6 +48,7 @@ build:     … → branch → implement → validate → adjudicate → commit �
 - The first submission starts a manager if none is running. Workers inherit its environment, so export `MOONSHOT_API_KEY` first. `LATHE_CAPACITY` sets concurrent runs (default 1).
 - `implement` and `build` need a clean checkout. Don't edit files or switch branches there until they finish.
 - `build` needs `gh` logged in. A failed build keeps its commit.
+- `revise` extends a build whose latest iteration succeeded and whose pull request is still open. The checkout must be clean, on the pull request's branch, and at the commit lathe last pushed, with origin at that commit too; lathe does not switch branches, merge or rebase to get there, and says what to restore. Every revision is planned and validated from scratch, and only an accepted change is committed and pushed, with the push refused if origin moved. The run keeps its ID, pull request and totals; `show` lists each iteration and `wait --iteration n` waits for one.
 - The builder can only write files its plan named. The shell deny list is a rough filter, not a sandbox.
 - Traces go to `~/.local/share/lathe/lathe.db`, or under `$XDG_DATA_HOME`.
 

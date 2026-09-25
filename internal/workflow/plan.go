@@ -28,7 +28,11 @@ type PlanOutput struct {
 // Validate returns what is missing, phrased as the agent will read it. An empty
 // files list is a violation rather than an empty scope: a plan that permits no
 // writes is a plan nothing can be built from.
-func (p *PlanOutput) Validate() []string {
+func (p *PlanOutput) Validate() []string { return p.validate(false) }
+
+// validate is Validate with the one rule a revision relaxes: a revision may be
+// answered without any code change.
+func (p *PlanOutput) validate(noFiles bool) []string {
 	var v []string
 	if p.Summary == nil || *p.Summary == "" {
 		v = append(v, `"summary" is missing or empty`)
@@ -39,7 +43,7 @@ func (p *PlanOutput) Validate() []string {
 	switch {
 	case p.Files == nil:
 		v = append(v, `"files" is missing`)
-	case len(*p.Files) == 0:
+	case len(*p.Files) == 0 && !noFiles:
 		v = append(v, `"files" is empty; it is the only list of files the builder may write, so an empty one leaves nothing to build`)
 	}
 	if p.Risks == nil {
@@ -60,12 +64,23 @@ func (p *PlanOutput) Artifacts() []string {
 	return *p.Wrote
 }
 
+// revisionPlan is a revision's plan. It may permit no files at all: a request
+// that needs no code change is answered by validating the branch as it stands
+// and committing nothing. Everything else about it is PlanOutput.
+type revisionPlan PlanOutput
+
+func (p *revisionPlan) Validate() []string  { return (*PlanOutput)(p).validate(true) }
+func (p *revisionPlan) Artifacts() []string { return (*PlanOutput)(p).Artifacts() }
+
 // FilesPermitted rejects a plan that would hand a builder a path it must never
 // have. The check belongs here rather than at the first blocked write: a plan
 // naming .env costs one planner turn to reject and a whole run to discover.
 func FilesPermitted(protected []string) run.Gate {
 	return func(e run.Envelope, _ *run.Run) []string {
 		p, ok := e.(*PlanOutput)
+		if rp, revision := e.(*revisionPlan); revision {
+			p, ok = (*PlanOutput)(rp), true
+		}
 		if !ok || p.Files == nil {
 			return nil
 		}
@@ -116,7 +131,7 @@ func Plan(r *run.Run) int {
 	g := run.NewGraph(r)
 	g.Add(run.Node{Name: "request", Owner: "engineer"},
 		func(e *run.Entry) (string, error) { return "", e.Log("request", r.Request) })
-	addPlanNodes(g, r, &out)
+	addPlanNodes(g, r, &out, "")
 
 	err := g.Run()
 	// The plan is the product of this workflow, so it goes to the terminal as
@@ -139,7 +154,10 @@ const maxSendBacks = 4
 // They are shared rather than repeated because the graph, not the helper, is
 // what decides where review forwards to — so nothing here has to know whether
 // a builder comes next.
-func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
+//
+// A nonempty revision is a revision's planner brief: the planner's first
+// request instead of the run's, and a plan that may permit no files.
+func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 	if r.Issue != "" {
 		g.Add(run.Node{Name: "issue", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 			request, err := e.IssueRequest()
@@ -156,8 +174,15 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
 	var feedback, blocking []string
 	var unusable bool
 
+	var plan run.Envelope = out
+	if revision != "" {
+		plan = (*revisionPlan)(out)
+	}
 	g.Add(run.Node{Name: "plan", Owner: "planner"}, func(e *run.Entry) (string, error) {
 		request := r.Request
+		if revision != "" {
+			request = revision
+		}
 		if e.Round > 0 {
 			var revision strings.Builder
 			revision.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
@@ -169,7 +194,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput) {
 			}
 			request = revision.String()
 		}
-		return "", e.Call(out, request, run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected()))
+		return "", e.Call(plan, request, run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected()))
 	})
 
 	g.Add(run.Node{Name: "review", Owner: "plan-reviewer", SendBacks: maxSendBacks}, func(e *run.Entry) (string, error) {

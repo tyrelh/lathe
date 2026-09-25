@@ -68,8 +68,10 @@ func scanProjects(rows *sql.Rows, total float64) ([]ProjectSpend, error) {
 	return projects, rows.Err()
 }
 
-// ProjectRuns pages through every run for an exact repository. The cursor is
-// the last displayed row's ordering pair, so new runs cannot shift an offset.
+// ProjectRuns pages through every run for an exact repository, most recently
+// active first. The cursor is the last displayed row's ordering pair, so new
+// runs cannot shift an offset; a run revised mid-page moves to the top, where
+// the dashboard's merge by ID absorbs it.
 func (d *DB) ProjectRuns(repo, beforeAt, beforeID string, limit int) ([]Row, bool, error) {
 	if limit < 1 {
 		limit = 50
@@ -77,11 +79,11 @@ func (d *DB) ProjectRuns(repo, beforeAt, beforeID string, limit int) ([]Row, boo
 	query := runColumns + ` FROM runs WHERE COALESCE(repo, '') = ?`
 	args := []any{repo}
 	if beforeID != "" {
-		query += ` AND (COALESCE(submitted_at, '') < ? OR
-			(COALESCE(submitted_at, '') = ? AND run_id < ?))`
+		query += ` AND (COALESCE(activity_at, '') < ? OR
+			(COALESCE(activity_at, '') = ? AND run_id < ?))`
 		args = append(args, beforeAt, beforeAt, beforeID)
 	}
-	query += ` ORDER BY COALESCE(submitted_at, '') DESC, run_id DESC LIMIT ?`
+	query += ` ORDER BY COALESCE(activity_at, '') DESC, run_id DESC LIMIT ?`
 	args = append(args, limit+1)
 	rows, err := d.sql.Query(query, args...)
 	if err != nil {

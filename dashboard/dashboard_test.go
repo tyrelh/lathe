@@ -69,7 +69,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	h := handler(ro, "v0.2.0-test", nil)
+	h := handler(ro, "v0.2.0-test", Actions{})
 
 	get := func(path string) string {
 		w := httptest.NewRecorder()
@@ -178,7 +178,7 @@ func TestOverviewAndMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	h := handler(ro, "v0.2.0", nil)
+	h := handler(ro, "v0.2.0", Actions{})
 
 	do := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -273,7 +273,7 @@ func TestOverviewAndMeta(t *testing.T) {
 	}
 	defer fresh.Close()
 	w := httptest.NewRecorder()
-	handler(fresh, "dev", nil).ServeHTTP(w, local("GET", "/api/overview", nil))
+	handler(fresh, "dev", Actions{}).ServeHTTP(w, local("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
 		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_providers":[]`) ||
 		!strings.Contains(body, `"top_projects":[]`) ||
@@ -303,13 +303,13 @@ func TestSubmitRun(t *testing.T) {
 
 	var calls [][4]string
 	var result error
-	h := handler(ro, "dev", func(workflow, repo, prompt, issue string) (string, error) {
+	h := handler(ro, "dev", Actions{Submit: func(workflow, repo, prompt, issue string) (string, error) {
 		calls = append(calls, [4]string{workflow, repo, prompt, issue})
 		if result != nil {
 			return "", result
 		}
 		return "20260923T120000Z_build_1", nil
-	})
+	}})
 	post := func(h http.Handler, host, origin, contentType, body string) (int, map[string]string) {
 		r := local("POST", "/api/projects/runs", strings.NewReader(body))
 		r.Host = host
@@ -328,7 +328,7 @@ func TestSubmitRun(t *testing.T) {
 	}
 	build := `{"repo":"/repos/alpha","workflow":"build","prompt":"  add retries  "}`
 
-	if code, _ := post(handler(ro, "dev", nil), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
+	if code, _ := post(handler(ro, "dev", Actions{}), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
 		t.Errorf("nil submit: %d, want the POST route unregistered (405)", code)
 	}
 
@@ -392,5 +392,137 @@ func TestSubmitRun(t *testing.T) {
 	result = errors.New("checkout has uncommitted changes")
 	if code, out := send(build); code != http.StatusBadRequest || out["error"] != result.Error() {
 		t.Errorf("checkout problem: %d %v, want 400 with the reason", code, out)
+	}
+}
+
+// The run page's two writes: revise and cancel. They carry New run's
+// protections, go through the actions handed in, and map refusals to
+// statuses the page can explain. The run payload carries the iterations and
+// the models each ran with.
+func TestReviseAndCancelRoutes(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, attempt, token := claimed(t, db, "build", "/repos/alpha", "greet")
+	if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Revise(id, 0, "greet louder",
+		[]byte(`{"roster":{"agents":{"planner":{"provider":"moonshotai","model":"kimi-k3"}}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	ro, err := trace.OpenRO(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+
+	var revised, cancelled []string
+	var reviseErr, cancelErr error
+	h := handler(ro, "dev", Actions{
+		Revise: func(runID, request string) (int, error) {
+			revised = append(revised, runID+": "+request)
+			return 2, reviseErr
+		},
+		Cancel: func(runID string) (string, error) {
+			cancelled = append(cancelled, runID)
+			return "running", cancelErr
+		},
+	})
+	post := func(path, origin, contentType, body string) (int, map[string]any) {
+		r := local("POST", path, strings.NewReader(body))
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		r.Header.Set("Content-Type", contentType)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var out map[string]any
+		json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	send := func(path, body string) (int, map[string]any) {
+		return post(path, "http://"+Addr, "application/json", body)
+	}
+	revise, cancel := "/api/runs/"+id+"/revisions", "/api/runs/"+id+"/cancel"
+
+	for _, path := range []string{revise, cancel} {
+		if code, _ := post(path, "", "application/json", `{"request":"x"}`); code != http.StatusForbidden {
+			t.Errorf("%s without an Origin: %d", path, code)
+		}
+		if code, _ := post(path, "http://"+Addr, "text/plain", `{"request":"x"}`); code != http.StatusForbidden {
+			t.Errorf("%s as a simple request: %d", path, code)
+		}
+	}
+	if len(revised)+len(cancelled) != 0 {
+		t.Fatal("a forbidden request reached an action")
+	}
+	if code, _ := send(revise, `{"request":"  "}`); code != http.StatusBadRequest {
+		t.Errorf("empty request: %d", code)
+	}
+	if code, out := send(revise, `{"request":" louder still "}`); code != http.StatusCreated || out["iteration"] != float64(2) || out["run_id"] != id {
+		t.Errorf("revise: %d %v", code, out)
+	}
+	if len(revised) != 1 || revised[0] != id+": louder still" {
+		t.Errorf("revise called with %v", revised)
+	}
+	reviseErr = fmt.Errorf("%w: iteration 1 is still queued", trace.ErrNotRevisable)
+	if code, out := send(revise, `{"request":"x"}`); code != http.StatusConflict || !strings.Contains(fmt.Sprint(out["error"]), "still queued") {
+		t.Errorf("not revisable: %d %v", code, out)
+	}
+	reviseErr = fmt.Errorf("%w: other_run", trace.ErrDuplicateBuild)
+	if code, out := send(revise, `{"request":"x"}`); code != http.StatusConflict || out["run_id"] != "other_run" {
+		t.Errorf("checkout held: %d %v", code, out)
+	}
+	reviseErr = errors.New("origin/feat/x is at 1234abcd")
+	if code, out := send(revise, `{"request":"x"}`); code != http.StatusBadRequest || out["error"] != reviseErr.Error() {
+		t.Errorf("checkout refusal: %d %v", code, out)
+	}
+
+	if code, out := send(cancel, `{}`); code != http.StatusOK || out["status"] != "running" || len(cancelled) != 1 {
+		t.Errorf("cancel: %d %v %v", code, out, cancelled)
+	}
+	cancelErr = trace.ErrAlreadyDone
+	if code, _ := send(cancel, `{}`); code != http.StatusConflict {
+		t.Errorf("cancel after completion: %d", code)
+	}
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, local("GET", "/api/runs/"+id, nil))
+	var d struct {
+		Run        trace.Row
+		Iterations []struct {
+			Iteration int               `json:"iteration"`
+			Request   string            `json:"request"`
+			Status    string            `json:"status"`
+			Models    map[string]string `json:"models"`
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Run.Iteration != 1 || len(d.Iterations) != 2 || d.Iterations[1].Request != "greet louder" ||
+		d.Iterations[1].Status != "queued" || d.Iterations[1].Models["planner"] != "moonshotai/kimi-k3" ||
+		d.Iterations[0].Status != "ok" {
+		t.Fatalf("run payload = %s", w.Body)
+	}
+	if strings.Contains(w.Body.String(), `"roster"`) {
+		t.Fatal("the run payload resends the whole configuration snapshot")
+	}
+
+	// Without the actions, neither route exists.
+	bare := handler(ro, "dev", Actions{})
+	for _, path := range []string{revise, cancel} {
+		r := local("POST", path, strings.NewReader(`{}`))
+		r.Header.Set("Origin", "http://"+Addr)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		bare.ServeHTTP(w, r)
+		if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
+			t.Errorf("%s on a read-only dashboard: %d", path, w.Code)
+		}
 	}
 }

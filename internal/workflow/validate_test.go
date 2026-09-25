@@ -48,7 +48,21 @@ func codeStub(t *testing.T) string {
 		"summary": "filled in the template", "title": "feat: greet the world",
 		"body": "## What\n\nGreets the world.\n", "artifacts": []string{}}))
 
+	// gh pr view answers from gh-states, one state per view in order (the last
+	// repeats; OPEN without the file), so a test can close a pull request at a
+	// chosen moment. Every gh pr create is counted in gh-creates.
 	gh := fmt.Sprintf(`#!/bin/sh
+if [ "$1 $2" = "pr view" ]; then
+  n=0; [ ! -f %[1]q/gh-views ] || n=$(cat %[1]q/gh-views); echo $((n+1)) > %[1]q/gh-views
+  state=OPEN
+  if [ -f %[1]q/gh-states ]; then
+    state=$(sed -n "$((n+1))p" %[1]q/gh-states); [ -n "$state" ] || state=$(tail -n 1 %[1]q/gh-states)
+  fi
+  base=main; [ ! -f %[1]q/gh-base ] || base=$(cat %[1]q/gh-base)
+  printf '{"url":"%[2]s","state":"%%s","headRefName":"feat/greet-the-world","baseRefName":"%%s"}\n' "$state" "$base"
+  exit 0
+fi
+echo created >> %[1]q/gh-creates
 printf '%%s\n' "$@" > %[1]q/gh-args
 for a in "$@"; do [ ! -f "$a" ] || cp "$a" %[1]q/gh-body; done
 if [ -f %[1]q/gh-fail ]; then echo "no git remote found" >&2; exit 1; fi
