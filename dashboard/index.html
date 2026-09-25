@@ -33,15 +33,15 @@
   * { box-sizing: border-box; }
 
   /* The shell: bars span the viewport, the rail sits between them, and only
-     the main pane scrolls — so navigation and status never leave the screen. */
+     content panels scroll — so navigation and status never leave the screen. */
   body {
     margin: 0; height: 100vh; overflow: hidden;
     background: var(--bg); color: var(--fg);
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     --rail: 190px;
     display: grid;
-    grid-template-columns: var(--rail) 1fr;
-    grid-template-rows: auto 1fr auto;
+    grid-template-columns: var(--rail) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas: "top top" "nav main" "bottom bottom";
   }
   body[data-nav="collapsed"] { --rail: 46px; }
@@ -72,7 +72,7 @@
   #collapse { margin-top: auto; }
   body[data-nav="collapsed"] .label { display: none; }
 
-  main { grid-area: main; overflow: auto; padding: 16px; }
+  main { grid-area: main; overflow: hidden; padding: var(--gap); min-width: 0; min-height: 0; display: grid; }
   footer { grid-area: bottom; border-top: 1px solid var(--line); background: var(--card);
            padding: 4px 14px; color: var(--dim); display: flex; gap: 14px;
            white-space: nowrap; overflow: hidden; }
@@ -88,7 +88,7 @@
   /* Each section sits in its own box, so a page reads as a set of panels
      rather than one continuous column of rows. */
   .card { background: var(--card); border: 1px solid var(--line);
-          border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+          border-radius: 6px; padding: var(--inset); margin: 0; }
   .card > h2 { margin-top: 0; }
   .card > :last-child { margin-bottom: 0; }
   table { width: 100%; border-collapse: collapse; }
@@ -113,10 +113,10 @@
   #new-run textarea, #new-run input, #new-run select {
     width: 100%; font: inherit; color: var(--fg); background: var(--panel);
     border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
-  #new-run textarea { resize: vertical; }
+  #new-run textarea { resize: none; }
   #revise label { display: block; color: var(--dim); margin: 12px 0 4px; }
   #revise textarea { width: 100%; font: inherit; color: var(--fg); background: var(--panel);
-    border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; resize: vertical; }
+    border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; resize: none; }
   [hidden] { display: none !important; }
   #new-run select { width: auto; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); }
@@ -124,58 +124,38 @@
   details[open] > summary { margin-bottom: 8px; }
   details pre { padding: 8px; background: var(--panel); }
   pre.fail { color: var(--fail); }
-  /* The phase chart: one row per graph node, time running left to right from
-     the run's start. Block geometry is in percent so it follows the width;
-     sublanes and label placement are pixels, measured after render by
-     layout(). */
-  .gantt { display: grid; grid-template-columns: fit-content(18ch) minmax(0, 1fr);
-           gap: 4px 10px; align-items: start; }
-  .node { color: var(--fg); font-weight: 600; line-height: 40px; white-space: nowrap;
+  /* One compact line per graph node; usage lives in the block tooltip. */
+  .gantt { --phase-row: 20px; display: grid; grid-template-columns: fit-content(18ch) minmax(0, 1fr);
+           gap: 2px 10px; align-items: start; }
+  .node { color: var(--fg); font-weight: 600; line-height: var(--phase-row); white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis; }
   .axis { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; }
-  .track { position: relative; height: 40px; background: var(--panel); border-radius: 3px; }
-  /* The fill says which model ran a block (see MODEL_TIERS), the border
-     how it went, and the label says both in words. */
+  .track { position: relative; height: var(--phase-row); background: var(--panel); border-radius: 3px; }
+  /* Fill identifies the model; border and emoji identify the outcome. */
   .block {
     --hue: var(--dim);
-    position: absolute; top: 1px; height: 38px; min-width: 0; padding: 0; margin: 0;
+    position: absolute; top: 1px; height: calc(var(--phase-row) - 2px); min-width: 0; padding: 0; margin: 0;
     border: 1px solid var(--hue); border-radius: 3px; overflow: visible;
     background: color-mix(in srgb, var(--hue) 40%, var(--card));
     color: var(--fg); font: inherit; font-size: 12px; line-height: 16px;
-    text-align: left; cursor: pointer;
+    text-align: right; cursor: pointer;
   }
   .block.fail { border: 2px solid var(--fail); }
   .block.running { border: 2px solid var(--run); }
   .block.interrupted { border: 1px dashed var(--fg); }
   .block[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); z-index: 1; }
-  /* Two lines, status and model over cost; the row already names the phase.
-     layout() places each piece inside the block or beside it; a dot fills the
-     gap between pieces sharing a line. */
-  .block .piece { position: absolute; left: 4px; white-space: nowrap;
-                  overflow: hidden; text-overflow: ellipsis; opacity: .75; }
-  .block .piece[data-line="0"] { top: calc(50% - 16px); }
-  .block .piece[data-line="1"] { top: 50%; }
-  .block[data-lines="1"] .piece { top: calc(50% - 8px); }
-  .block .piece[data-sep="1"] { padding-left: 14px; }
-  .block .piece[data-sep="1"]::before { content: '·'; position: absolute; left: 0; width: 14px;
-                                        text-align: center; opacity: .6; }
-  /* The model sits a space from the status mark, not a dot: pulled into the
-     gap layout() left for one, which only leaves more room after it. */
-  .block .piece.tight[data-sep="1"] { margin-left: -8px; }
-  .block .piece.tight[data-sep="1"]::before { content: none; }
-  /* A revised run's timeline: a row naming each iteration over its span, and
-     idle stretches between iterations drawn as labelled breaks in every row. */
-  .iter { position: absolute; top: 1px; height: 38px; padding: 0 4px; overflow: hidden;
-          white-space: nowrap; text-overflow: ellipsis; font-size: 12px; line-height: 38px;
+  .block .piece { position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+                  white-space: nowrap; line-height: 16px; }
+  /* Iteration requests and idle spans remain available in their tooltips. */
+  .iter { position: absolute; top: 1px; height: calc(var(--phase-row) - 2px); padding: 0 4px; overflow: hidden;
+          white-space: nowrap; text-overflow: ellipsis; font-size: 12px; line-height: calc(var(--phase-row) - 2px);
           border-left: 2px solid var(--cost); color: var(--dim); }
   .brk { position: absolute; top: 0; bottom: 0; border: 1px dashed var(--line); border-width: 0 1px;
-         background: var(--bg); color: var(--dim); font-size: 11px; line-height: 38px;
+         background: var(--bg); color: var(--dim); font-size: 11px; line-height: calc(var(--phase-row) - 2px);
          text-align: center; overflow: hidden; white-space: nowrap; }
-  .untimed { display: flex; flex-wrap: wrap; gap: 6px; }
+  .untimed { display: flex; flex-wrap: wrap; gap: 4px; }
   .untimed .block { position: static; height: auto; padding: 1px 4px; }
-  .untimed .block .piece { position: static; }
-  .untimed .piece + .piece::before { content: ' · '; color: var(--dim); }
-  .untimed .piece.tight::before { content: ' '; }
+  .untimed .block .piece { position: static; transform: none; }
   .facts { width: auto; margin: 8px 0; }
   .phase-output { max-width: 100ch; overflow-wrap: anywhere; }
   .phase-output h3 { margin: 12px 0 8px; }
@@ -186,42 +166,149 @@
   .phase-output ul, .phase-output ol { margin-top: 0; padding-left: 3ch; }
   .run-project h2, .run-project #head { overflow-wrap: anywhere; }
   .run-project h2 { text-transform: none; letter-spacing: normal; color: var(--fg); font-size: 14px; }
-  .phase-inspector { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-  .run-cost-total { font-size: 28px; line-height: 1.2; overflow-wrap: anywhere; }
-  /* Providers and models side by side once each list has room for its rows. */
-  .cost-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(32ch, 1fr)); gap: 0 24px; }
-  .model-costs { list-style: none; padding: 0; margin: 12px 0 0; }
-  .model-costs li { display: flex; align-items: baseline; gap: 8px;
-                    padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .run-cost-total { font-size: 28px; line-height: 1.2; white-space: nowrap; }
+  .model-costs { list-style: none; padding: 0; margin: 0; }
+  .model-costs li { display: flex; align-items: baseline; gap: 8px; height: 21px;
+                    padding: 0; border-bottom: 1px solid var(--line); }
   .model-costs li:last-child { border-bottom: 0; }
   .model-dot { flex: none; width: 9px; height: 9px; border-radius: 50%;
                background: var(--model-color); align-self: center; }
-  .model-name { min-width: 0; overflow-wrap: anywhere; }
+  .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-amount { margin-left: auto; white-space: nowrap; }
   #phase > details { margin-top: 14px; }
   #phase > details > summary { color: var(--dim); }
   #phase > details > summary.fail { color: var(--fail); }
   #phase p { margin: 8px 0 4px; }
-  #log td:last-child { white-space: normal; width: 100%; }
+  #log td:last-child { white-space: normal; width: auto; }
 
-  /* Two compact lifetime totals, then the rankings in two independent columns. */
-  .totals { display: flex; gap: 40px; margin-bottom: 8px; }
+  /* Compact lifetime totals above the workspace. */
+  .totals { display: flex; gap: 24px; margin: 0; flex: none; }
   .totals b { display: block; font-size: 20px; font-weight: normal;
               font-variant-numeric: tabular-nums; }
   .totals .cost b { color: var(--cost); }
   .totals span { color: var(--dim); font-size: 12px; }
   /* A labelled value per cell, as many columns as the width holds. */
-  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(18ch, 1fr));
-           gap: 10px 20px; margin: 0; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10ch, 1fr));
+           gap: 4px 12px; margin: 0; }
   .stats dt { color: var(--dim); font-size: 12px; }
   .stats dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
-  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
-  @media (max-width: 720px) {
+
+  /* The viewport owns the frame; only named content bodies may scroll. */
+  :root { --gap: 10px; --inset: 10px; }
+  .page, .workspace, .panel, .sidebar, .tabbed, .phase-workspace, .ranking-grid,
+  .cost-lists, .cost-list, .paged, .paged-body { min-width: 0; min-height: 0; }
+  .page { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--gap); overflow: hidden; }
+  .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: var(--gap); overflow: hidden; }
+  .panel { display: flex; flex-direction: column; overflow: hidden; }
+  .panel > h2, .panel-heading { flex: none; margin: 0; padding-bottom: 8px; }
+  .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel-heading h2 { margin: 0; }
+  .scroll { min-width: 0; min-height: 0; overflow: auto; overflow-wrap: anywhere; overscroll-behavior: contain; overflow-anchor: none; }
+  .panel > .scroll { flex: 1; }
+  .summary-row { display: flex; align-items: center; gap: 24px; min-width: 0; }
+  .identity { flex: 1; min-width: 0; }
+  .identity p, .page-summary p { margin: 4px 0; }
+  .identity h2 { margin: 0; }
+  .one-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .page-summary .stats { margin-top: 8px; }
+  .ranking-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: var(--gap); }
+  .ranking-grid > :nth-child(2) { grid-column: 1; grid-row: 2; }
+  .ranking-grid > :nth-child(3) { grid-column: 2; grid-row: 1; }
+  .ranking-grid table { table-layout: auto; }
+  #rank-runs table { table-layout: fixed; }
+  #rank-runs td:nth-child(1) { width: 3ch; }
+  #rank-runs td:nth-child(2) { width: 7ch; }
+  #rank-runs td:nth-child(3) { width: 18%; }
+  #rank-runs td:nth-child(4) { width: 8ch; }
+  #rank-runs td:nth-child(5) { width: 12ch; }
+  #rank-runs td.wrap { width: auto; }
+  #rank-runs td span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  td, th { white-space: normal; overflow-wrap: anywhere; }
+  td.num, th.num { white-space: nowrap; }
+  thead th { position: sticky; top: 0; background: var(--card); z-index: 2; }
+  .run-group + .run-group { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .run-group h2 { margin: 0 0 6px; overflow-wrap: anywhere; }
+  .run-table .timestamp { width: 17ch; }
+  .project-workspace .run-table .timestamp { display: none; }
+  .run-table .request-cell { width: 38%; }
+  .run-table .request-cell span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .sidebar { display: flex; flex-direction: column; gap: var(--gap); overflow: hidden; }
+  .sidebar > * { flex: none; }
+  .sidebar .cost-panel { flex: 1 1 40%; min-height: 232px; }
+  .sidebar .history-panel { flex: 1 1 60%; }
+  .tabbed { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+  .tabs { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; }
+  button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .tabs [aria-selected="true"] { border-color: var(--cost); box-shadow: inset 0 -2px var(--cost); }
+  .phase-workspace { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--gap); }
+  #phases { min-width: 0; padding: 2px; }
+  #phases > p { margin: 4px 0; }
+  #phase { border-top: 1px solid var(--line); padding-top: 10px; margin: 0; }
+  #phase > h2 { position: sticky; top: -10px; background: var(--card); padding: 4px 0; z-index: 2; }
+  #events-panel { display: flex; flex-direction: column; min-height: 0; }
+  #event-controls { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; }
+  #log { table-layout: fixed; }
+  #log td:nth-child(1) { width: 11ch; white-space: nowrap; }
+  #log td:nth-child(2), #log td:nth-child(3) { width: 13ch; }
+  #head { margin: 4px 0; max-height: 3em; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .actions .more { margin: 0; }
+  .cost-lists { display: flex; flex: 1; gap: 4px; flex-direction: column; }
+  .cost-lists:empty { display: none; }
+  #costs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .cost-list { display: flex; flex-direction: column; flex: 1; }
+  .cost-panel > .panel-heading { padding-bottom: 4px; }
+  .cost-panel > .panel-heading button { padding: 1px 6px; }
+  #costs > p { margin: 2px 0; }
+  .cost-list[data-cost-list="providers"] { flex: 0 0 calc(22px + var(--rows) * 21px); }
+  .cost-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 22px; flex: none; }
+  .cost-list h3 { font-size: 13px; margin: 0; font-weight: normal; }
+  .cost-list .pager { height: 22px; }
+  .cost-list .pager button { padding: 0 4px; }
+  .paged { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+  .paged-body { flex: 1; overflow: hidden; }
+  .pager { height: 30px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+  .pager button { padding: 1px 6px; }
+  .history-row { height: 88px; padding: 5px 0; border-bottom: 1px solid var(--line); overflow: hidden; }
+  .history-row .preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; height: 3em; overflow-wrap: anywhere; }
+  .history-row button { border: 0; background: none; padding: 0; text-decoration: underline; }
+  .history-row .row-heading { display: flex; gap: 8px; align-items: baseline; }
+  #revise { flex: none; }
+  #revise label, #new-run label { margin: 6px 0 3px; }
+  #revise p, #new-run p { margin: 5px 0; }
+  #revise textarea { height: 64px; max-height: 12vh; }
+  #new-run textarea { height: 130px; max-height: 22vh; }
+  #new-run { min-height: 0; overflow: hidden; }
+  #new-run .target { max-height: 3em; overflow: hidden; overflow-wrap: anywhere; }
+  #run-status, #revise-status { flex: none; max-height: 5em; overflow: auto; overflow-wrap: anywhere; margin: 4px 0 0; }
+  .metadata { display: flex; align-items: center; gap: 6px; }
+  .metadata .one-line { flex: 1; }
+  dialog { width: min(80ch, 90vw); max-height: 85vh; padding: 14px; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+  dialog[open] { display: flex; flex-direction: column; }
+  dialog::backdrop { background: #0008; }
+  #reader-body { white-space: pre-wrap; }
+  @media (max-width: 1100px), (max-height: 850px) {
     body { --rail: 46px; }
-    .label { display: none; }
-    .totals { gap: 20px; }
+    nav .label { display: none; }
+    :root { --gap: 8px; --inset: 8px; }
+    .workspace { grid-template-columns: minmax(0, 1fr) 280px; }
     .lo { display: none; }
+  }
+  @media (max-height: 850px) {
+    .sidebar .cost-panel { display: none; }
+  }
+  @media (max-height: 740px) {
+    .gantt { --phase-row: 18px; row-gap: 1px; }
+    #head { max-height: 1.5em; }
+    #new-run textarea { height: 72px; }
+    .page-summary .stats { margin-top: 4px; }
+  }
+  @media (max-width: 760px) {
+    .workspace { grid-template-columns: minmax(0, 1fr) 240px; }
+    .summary-row { gap: 10px; }
+    .totals { gap: 12px; }
+    .run-table .timestamp, #log td:nth-child(3) { display: none; }
   }
 </style>
 
@@ -259,8 +346,12 @@
 <footer>
   <span id="status"></span>
   <span id="note"></span>
-  <label id="follow-label"><input type="checkbox" id="follow-box"> follow</label>
+  <span id="follow-home" hidden><label id="follow-label"><input type="checkbox" id="follow-box" onchange="setFollow()"> Follow <span id="follow-state"></span></label></span>
 </footer>
+<dialog id="reader" aria-labelledby="reader-title" onclose="readerClosed()">
+  <div class="panel-heading"><h2 id="reader-title">Details</h2><button type="button" onclick="$('reader').close()" autofocus>Close</button></div>
+  <pre id="reader-body" class="scroll" tabindex="0"></pre>
+</dialog>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -308,6 +399,48 @@ const pct = n => (100 * (n || 0)).toFixed(1) + '%';
 const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo).replace(/'/g, '%27');
 // bucket is the list stored under key, created empty on first use.
 const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
+
+// Stable page bodies survive polling; only their contents change.
+const panel = (id, title) => `<section class="card panel"><h2>${title}</h2><div id="${id}" class="scroll" tabindex="0" aria-label="${title}"></div></section>`;
+function pageShell(page) {
+  if (page === 'project') return projectShell(view.repo);
+  if (page === 'overview') return `<div class="page"><div id="page-summary" class="card page-summary"></div><div class="ranking-grid">`
+    + panel('rank-projects', 'top projects by spend') + panel('rank-runs', 'top runs by spend')
+    + panel('rank-models', 'top models by spend') + panel('rank-providers', 'top providers by spend') + '</div></div>';
+  if (page === 'runs' || page === 'projects') return `<div class="page"><div id="page-summary" class="card page-summary"></div>${panel('list-body', page === 'runs' ? 'latest runs' : 'projects by spend')}</div>`;
+  return '';
+}
+function ensurePage(page) {
+  if (app.dataset.page === page) return;
+  app.dataset.page = page;
+  app.innerHTML = pageShell(page);
+}
+// A page summary: who or what on the left, lifetime totals on the right.
+const summaryRow = (identity, totals) => `<div class="summary-row"><div class="identity">${identity}</div><div class="totals">${totals}</div></div>`;
+const tally = (value, label, cost = false) => `<div${cost ? ' class="cost"' : ''}><b>${value}</b><span>${label}</span></div>`;
+const projectTable = rows => `<table><thead><tr><th>#</th><th>Repository</th><th class="num">Cost</th><th class="num">Share</th><th class="num">Runs</th><th class="num lo">Tokens</th></tr></thead><tbody>${rows}</tbody></table>`;
+const runTable = rows => `<table class="run-table"><thead><tr><th class="timestamp">Submitted</th><th>Status</th><th>Workflow</th><th class="lo">Duration</th><th>Tokens</th><th class="num">Cost</th><th>Request</th></tr></thead><tbody>${rows}</tbody></table>`;
+let readerTrigger = null;
+function readText(title, body, trigger) {
+  readerTrigger = trigger || document.activeElement;
+  $('reader-title').textContent = title;
+  $('reader-body').textContent = body;
+  $('reader').showModal();
+  $('reader-body').scrollTop = 0;
+}
+function readerClosed() {
+  const key = readerTrigger?.dataset.focus;
+  const trigger = readerTrigger?.isConnected ? readerTrigger : key ? focusTarget(app, key) : null;
+  trigger?.focus({preventScroll: true});
+  readerTrigger = null;
+}
+function readRun(trigger) {
+  if (!shown) return;
+  const r = shown.run;
+  readText('Run details', `${r.repo}\n${r.run_id}\n${r.workflow} · ${r.status}\n\n${r.request}\n\nSubmitted: ${r.submitted_at || '—'}\nStarted: ${r.started_at || '—'}\nEnded: ${r.ended_at || '—'}\n\nProviders\n`
+    + providerCosts().map(p => `${p.provider}: ${money(p.cost)}`).join('\n') + '\n\nModels\n'
+    + modelSpend().map(m => `${m.model}: ${money(m.cost)}`).join('\n'), trigger);
+}
 
 // Aggregate usage by provider. A missing provider reads as 'unknown'.
 function providerCosts() {
@@ -360,20 +493,113 @@ function modelSpend() {
     (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
 }
 
+// A pager remembers its first row's identity, not a page number that would
+// shift the reader when a new iteration arrives. Capacities are page-local.
+const pagers = new Map();
+function pageRows(key, rows, identity) {
+  const state = pagers.get(key) || {start: 0, capacity: Infinity, anchor: null};
+  if (state.anchor !== null) {
+    const at = rows.findIndex(r => identity(r) === state.anchor);
+    if (at >= 0) state.start = at;
+  }
+  state.start = Math.max(0, Math.min(state.start, Math.max(0, rows.length - state.capacity)));
+  state.total = rows.length;
+  state.anchor = rows.length ? identity(rows[state.start]) : null;
+  pagers.set(key, state);
+  return rows.slice(state.start, state.start + state.capacity);
+}
+function pageControls(key) {
+  const p = pagers.get(key), end = Math.min(p.total, p.start + p.capacity);
+  return `<div class="pager" data-pager="${key}" ${p.total <= p.capacity ? 'hidden' : ''}>
+    <button type="button" data-focus="${key}-prev" aria-label="Previous ${key}" onclick="turnPage('${key}', -1)" ${p.start === 0 ? 'disabled' : ''}>←</button>
+    <span>${p.start + 1}–${end} of ${p.total}</span>
+    <button type="button" data-focus="${key}-next" aria-label="Next ${key}" onclick="turnPage('${key}', 1)" ${end >= p.total ? 'disabled' : ''}>→</button></div>`;
+}
+function turnPage(key, direction) {
+  const p = pagers.get(key);
+  p.start = Math.max(0, Math.min(Math.max(0, p.total - p.capacity), p.start + direction * p.capacity));
+  p.anchor = null;
+  renderSide();
+}
 function renderCosts(r) {
+  const list = (rows, key) => {
+    const visible = pageRows(key, rows, row => row.name);
+    return rows.length ? `<div class="cost-list" data-cost-list="${key}" style="--rows:${Math.min(2, rows.length)}"><div class="cost-list-heading"><h3 class="dim">${key}</h3>${pageControls(key)}</div><div class="paged-body" data-page-body="${key}"><ul class="model-costs">${visible.map(m => `<li style="--model-color:${m.colour}" title="${esc(m.name)}">
+      <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span><span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div></div>` : '';
+  };
   const providers = providerCosts(), models = modelSpend();
-  const list = (rows, label) => rows.length
-    ? `<div><h3 class="dim">${esc(label)}</h3><ul class="model-costs">${rows.map(m => `<li style="--model-color:${m.colour}">
-        <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span>
-        <span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div>`
-    : '';
-  const providerList = list(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers');
-  const modelList = list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models');
-  const loading = draining ? '<p class="dim">Loading usage…</p>' : '';
-  const empty = !providers.length && !models.length && !draining
-    ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '';
-  return `<div class="run-cost-total cost">${money(r.cost)}</div><div class="dim">total cost</div>`
-    + `<div class="cost-lists">${providerList}${modelList}</div>` + loading + empty;
+  return `<div class="cost-lists">`
+    + list(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers')
+    + list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models') + '</div>'
+    + (draining ? '<p class="dim">Loading usage…</p>' : !providers.length && !models.length
+      ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '');
+}
+function renderSide() {
+  if (!shown) return;
+  swap($('costs'), renderCosts(shown.run));
+  swap($('iterations'), renderIterations(shown.run));
+}
+// Rows have bounded previews. Measure their rendered height and the space
+// after headings/forms; reserve the pager only if the whole list won't fit.
+function fitPages() {
+  for (let pass = 0; pass < 2; pass++) {
+    let changed = false;
+    for (const body of app.querySelectorAll('[data-page-body]')) {
+      if (!body.clientHeight || !body.clientWidth) continue;
+      const key = body.dataset.pageBody, state = pagers.get(key);
+      const row = body.querySelector(key === 'iterations' ? '.history-row' : 'li');
+      if (!row || !state) continue;
+      const height = row.getBoundingClientRect().height;
+      if (!height) continue;
+      const pager = body.parentElement.querySelector('[data-pager]');
+      // Cost controls share the heading, so paging never takes row space.
+      const below = key === 'iterations';
+      const available = body.clientHeight + (below && !pager.hidden ? pager.getBoundingClientRect().height : 0);
+      const capacity = Math.max(1, Math.floor((available - (below && state.total * height > available ? 30 : 0)) / height));
+      if (capacity !== state.capacity) { state.capacity = capacity; changed = true; }
+    }
+    if (!changed) break;
+    renderSide();
+  }
+}
+let activeTab = 'phases', followSuspended = false, eventScrollTop = 0;
+function showTab(name, focus = false) {
+  activeTab = name;
+  for (const tab of ['phases', 'events']) {
+    const on = name === tab;
+    $('tab-' + tab).setAttribute('aria-selected', String(on));
+    $('tab-' + tab).tabIndex = on ? 0 : -1;
+    $(tab + '-panel').hidden = !on;
+  }
+  if (focus) $('tab-' + name).focus();
+  if (name === 'phases') requestAnimationFrame(layout);
+  else {
+    const body = $('events-body');
+    body.scrollTop = followBox.checked && !followSuspended ? body.scrollHeight : 0;
+    eventScrollTop = body.scrollTop;
+  }
+}
+function tabKey(e) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  e.preventDefault();
+  showTab(e.key === 'Home' ? 'phases' : e.key === 'End' ? 'events' : activeTab === 'phases' ? 'events' : 'phases', true);
+}
+function atLiveEnd(body) { return body.scrollTop + body.clientHeight >= body.scrollHeight - 40; }
+function eventScrolled() {
+  const body = $('events-body');
+  if (activeTab !== 'events' || !body.clientHeight) return;
+  if (followBox.checked && body.scrollTop < eventScrollTop) followSuspended = true;
+  eventScrollTop = body.scrollTop;
+  $('follow-state').textContent = followSuspended && followBox.checked ? '(paused)' : '';
+}
+function toTail(body) {
+  body.scrollTop = body.scrollHeight;
+  eventScrollTop = body.scrollTop;
+}
+function setFollow() {
+  followSuspended = false;
+  $('follow-state').textContent = '';
+  if (followBox.checked && activeTab === 'events') toTail($('events-body'));
 }
 
 // route maps the hash to a page. `#/overview` is the landing page and an empty
@@ -408,7 +634,11 @@ function navigate() {
   runSubmitting = reviseSubmitting = false;
   // A project page is built once, as three parts: polling redraws the summary
   // and the runs around the form, so a draft and its focus survive.
-  app.innerHTML = view.page === 'project' ? projectShell(view.repo) : '';
+  $('follow-home').appendChild(followLabel);
+  if ($('reader').open) $('reader').close();
+  activeTab = 'phases'; followSuspended = false; eventScrollTop = 0; pagers.clear();
+  app.dataset.page = view.page;
+  app.innerHTML = pageShell(view.page);
   followBox.checked = false;
   followLabel.style.display = 'none';
   for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs'], ['nav-projects', 'projects']]) {
@@ -476,9 +706,9 @@ function missing() {
 
 const projectRow = (p, i, withTokens) => {
   const href = esc(projectHref(p.repo));
-  return `<tr class="project" onclick="location.hash='${href}'">
+  return `<tr class="project" data-row="${esc(p.repo)}" onclick="location.hash='${href}'">
     <td class="dim">${i + 1}</td>
-    <td title="${esc(p.repo)}"><a href="${href}">${esc(base(p.repo) || 'unknown repo')}</a></td>
+    <td title="${esc(p.repo)}"><a data-focus="${esc('project-' + p.repo)}" href="${href}">${esc(base(p.repo) || 'unknown repo')}</a></td>
     <td class="num cost">${money(p.cost)}</td>
     <td class="num dim">${pct(p.share)}</td>
     <td class="num dim${withTokens ? '' : ' lo'}">${count(p.runs)} run${p.runs === 1 ? '' : 's'}</td>
@@ -491,16 +721,16 @@ async function overview(current) {
   if (current !== generation) return;
 
   const runRow = (r, i) => `
-    <tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
+    <tr class="run" data-row="${esc(r.run_id)}" onclick="location.hash='/runs/${esc(r.run_id)}'">
       <td class="dim">${i + 1}</td>
-      <td>${esc(r.workflow)}</td>
+      <td><a data-focus="${esc('run-' + r.run_id)}" href="#/runs/${esc(r.run_id)}">${esc(r.workflow)}</a></td>
       <td class="dim lo">${esc(base(r.repo))}</td>
       <td class="${cls(r.status)}">${esc(r.status)}</td>
       <td class="num cost">${money(r.cost)}</td>
-      <td class="wrap lo" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
+      <td class="wrap lo" title="${esc(r.request)}"><span>${esc(clip(r.request, 150))}</span></td>
     </tr>`;
   const modelRow = (m, i) => `
-    <tr>
+    <tr data-row="${esc(JSON.stringify([m.provider, m.model]))}">
       <td class="dim">${i + 1}</td>
       <td>${esc((m.provider || 'unknown') + '/' + (m.model || 'unknown'))}</td>
       <td class="num cost">${money(m.cost)}</td>
@@ -508,7 +738,7 @@ async function overview(current) {
       <td class="num dim lo">${count(m.phases)} phase${m.phases === 1 ? '' : 's'}</td>
     </tr>`;
   const providerRow = (p, i) => `
-    <tr>
+    <tr data-row="${esc(p.provider)}">
       <td class="dim">${i + 1}</td>
       <td>${esc(p.provider || 'unknown')}</td>
       <td class="num cost">${money(p.cost)}</td>
@@ -517,36 +747,13 @@ async function overview(current) {
     </tr>`;
   const empty = what => `<tr><td class="dim">No ${what} recorded yet.</td></tr>`;
 
-  app.innerHTML = `
-    <div class="card totals">
-      <div><b>${count(o.runs)}</b><span>runs recorded</span></div>
-      <div class="cost"><b>${money(o.cost)}</b><span>recorded spend</span></div>
-    </div>
-    <p class="dim">Every run in every repository, for all time.
-      Spend updates after each model response.</p>
-    <div class="cols">
-      <div>
-        <div class="card">
-          <h2>top projects by spend</h2>
-          <table>${o.top_projects.map((p, i) => projectRow(p, i, false)).join('') || empty('project spend')}</table>
-        </div>
-        <div class="card">
-          <h2>top runs by spend</h2>
-          <table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>
-        </div>
-      </div>
-      <div>
-        <div class="card">
-          <h2>top models by spend</h2>
-          <table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table>
-          <p class="dim">${attribution(o)}</p>
-        </div>
-        <div class="card">
-          <h2>top providers by spend</h2>
-          <table>${o.top_providers.map(providerRow).join('') || empty('provider spend')}</table>
-        </div>
-      </div>
-    </div>`;
+  ensurePage('overview');
+  swap($('page-summary'), summaryRow('<h2>Overview</h2><p class="dim">Every run in every repository, for all time. Spend updates after each model response.</p>',
+    tally(count(o.runs), 'runs recorded') + tally(money(o.cost), 'recorded spend', true)));
+  swap($('rank-projects'), `<table>${o.top_projects.map((p, i) => projectRow(p, i, false)).join('') || empty('project spend')}</table>`);
+  swap($('rank-runs'), `<table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>`);
+  swap($('rank-models'), `<table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table><p class="dim">${attribution(o)}</p>`);
+  swap($('rank-providers'), `<table>${o.top_providers.map(providerRow).join('') || empty('provider spend')}</table>`);
 
   bar.innerHTML = 'Overview · all repositories · all time'
     + `<span class="lo"> · ${count(o.tokens)} tok</span>`;
@@ -567,25 +774,24 @@ async function projects(current) {
   const {body: rows} = await get('/api/projects');
   if (current !== generation) return;
   const total = rows.reduce((n, p) => n + p.cost, 0);
-  app.innerHTML = `<div class="card totals">
-      <div><b>${count(rows.length)}</b><span>projects recorded</span></div>
-      <div class="cost"><b>${money(total)}</b><span>recorded spend</span></div>
-    </div>
-    <p class="dim">Every repository with a run, for all time. Sorted by spend.</p>
-    <section class="card"><h2>projects by spend</h2><table>${rows.map((p, i) => projectRow(p, i, true)).join('') || '<tr><td class="dim">No projects recorded yet.</td></tr>'}</table></section>`;
+  ensurePage('projects');
+  swap($('page-summary'), summaryRow('<h2>Projects</h2><p class="dim">Every repository with a run, for all time. Sorted by spend.</p>',
+    tally(count(rows.length), 'projects recorded') + tally(money(total), 'recorded spend', true)));
+  swap($('list-body'), projectTable(rows.map((p, i) => projectRow(p, i, true)).join('') || '<tr><td colspan="6" class="dim">No projects recorded yet.</td></tr>'));
+
   bar.textContent = `Projects · ${count(rows.length)} repositories · all time`;
   stamp();
 }
 
 const projectQuery = repo => 'repo=' + encodeURIComponent(repo);
-const runListRow = r => `<tr class="run" onclick="location.hash='/runs/${esc(r.run_id)}'">
-  <td class="dim">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
+const runListRow = r => `<tr class="run" data-row="${esc(r.run_id)}" onclick="location.hash='/runs/${esc(r.run_id)}'">
+  <td class="dim timestamp">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
   <td class="${cls(r.status)}">${esc(r.status)}</td>
-  <td>${esc(r.workflow)}${r.iteration ? `<span class="dim"> · rev ${esc(r.iteration)}</span>` : ''}</td>
+  <td><a data-focus="${esc('run-' + r.run_id)}" href="#/runs/${esc(r.run_id)}">${esc(r.workflow)}</a>${r.iteration ? `<span class="dim"> · rev ${esc(r.iteration)}</span>` : ''}</td>
   <td class="num dim lo">${esc(took(r))}</td>
   <td class="num dim">${count(r.tokens)} tok</td>
   <td class="num cost">${money(r.cost)}</td>
-  <td class="wrap" title="${esc(r.request)}">${esc(clip(r.request, 150))}</td>
+  <td class="wrap request-cell" title="${esc(r.request)}"><span>${esc(clip(r.request, 150))}</span></td>
 </tr>`;
 
 function mergeProjectRows(rows) {
@@ -613,10 +819,10 @@ async function project(current) {
 }
 
 function projectShell(repo) {
-  return `<div id="project-head"></div>
-    <form id="new-run" class="card" onsubmit="submitRun(event)">
+  return `<div class="page"><div id="project-head" class="card page-summary"></div>
+    <div class="workspace project-workspace">${panel('project-runs', 'runs')}<form id="new-run" class="card" onsubmit="submitRun(event)">
       <h2>new run</h2>
-      <p class="dim">Target: <code>${esc(repo)}</code></p>
+      <p class="dim target" title="${esc(repo)}">Target: <code>${esc(repo)}</code></p>
       <label for="run-prompt">Prompt</label>
       <textarea id="run-prompt" rows="4"></textarea>
       <label for="run-issue">Issue reference</label>
@@ -628,8 +834,7 @@ function projectShell(repo) {
       </select>
       <p><button class="more" id="run-submit" type="submit">Submit</button></p>
       <p id="run-status" role="status"></p>
-    </form>
-    <div id="project-runs"></div>`;
+    </form></div></div>`;
 }
 
 // send posts JSON to one of the dashboard's write routes and returns the
@@ -686,19 +891,15 @@ async function submitRun(e) {
 function renderProject() {
   const p = projectSummary;
   if (!p) return;
-  $('project-head').innerHTML = `<p><a href="#/projects">&larr; all projects</a></p>
-    <div class="card"><b>${esc(base(p.repo) || 'unknown repo')}</b><br>
-      <span class="dim">${esc(p.repo || 'Repository path not recorded')}</span></div>
-    <div class="card totals">
-      <div><b>${count(p.runs)}</b><span>runs recorded</span></div>
-      <div><b>${count(p.tokens)}</b><span>tokens</span></div>
-      <div class="cost"><b>${money(p.cost)}</b><span>recorded spend</span></div>
-    </div>
-    <p class="dim">Lifetime metrics for this repository. ${pct(p.share)} of total recorded spend.</p>`;
-  $('project-runs').innerHTML = `<section class="card"><h2>runs</h2>
-      <table>${projectRows.map(runListRow).join('') || '<tr><td class="dim">No runs recorded yet.</td></tr>'}</table>
-      ${projectMore ? `<button class="more" type="button" onclick="moreProjectRuns()" ${projectLoading ? 'disabled' : ''}>${projectLoading ? 'Loading…' : 'Load more runs'}</button>` : ''}
-    </section>`;
+  ensurePage('project');
+  swap($('project-head'), summaryRow(`<a data-focus="all-projects" href="#/projects">&larr; all projects</a><h2>${esc(base(p.repo) || 'unknown repo')}</h2>
+    <p class="one-line dim" title="${esc(p.repo)}">${esc(p.repo || 'Repository path not recorded')}</p>
+    <button type="button" data-focus="repo-reader" onclick="readText('Repository', view.repo, this)">Full path</button>`,
+    tally(count(p.runs), 'runs recorded') + tally(count(p.tokens), 'tokens') + tally(money(p.cost), 'recorded spend', true))
+    + `<p class="dim">Lifetime metrics for this repository. ${pct(p.share)} of total recorded spend.</p>`);
+  swap($('project-runs'), runTable(projectRows.map(runListRow).join('') || '<tr><td colspan="7" class="dim">No runs recorded yet.</td></tr>')
+    + (projectMore ? `<button class="more" data-focus="more-runs" type="button" onclick="moreProjectRuns()" ${projectLoading ? 'disabled' : ''}>${projectLoading ? 'Loading…' : 'Load more runs'}</button>` : ''));
+
   bar.innerHTML = `Projects · ${esc(base(p.repo) || 'unknown repo')} · showing ${count(projectRows.length)} of ${count(p.runs)} runs`;
   stamp();
 }
@@ -734,16 +935,14 @@ async function list(current) {
   let cost = 0, tokens = 0;
   for (const r of runs) {
     cost += r.cost; tokens += r.tokens;
-    const k = base(r.repo);
-    if (!repos.has(k)) repos.set(k, []);
-    repos.get(k).push(r);
+    bucket(repos, r.repo).push(r);
   }
 
-  app.innerHTML = [...repos].map(([repo, rows]) => `
-    <section class="card">
-    <h2>${esc(repo)}</h2>
-    <table>${rows.map(runListRow).join('')}</table></section>`).join('')
-    || '<p class="dim">No runs yet. Start one with <code>lathe scout</code>.</p>';
+  ensurePage('runs');
+  swap($('page-summary'), summaryRow('<h2>Runs</h2><p class="dim">Latest 50 runs · grouped by repository</p>',
+    tally(count(runs.length), 'displayed runs') + tally(money(cost), 'displayed spend', true)));
+  swap($('list-body'), [...repos].map(([repo, rows]) => `<section class="run-group"><h2 title="${esc(repo)}"><a href="${esc(projectHref(repo))}">${esc(base(repo) || 'unknown repo')}</a> <span class="dim lo">${esc(repo)}</span></h2>${runTable(rows.map(runListRow).join(''))}</section>`).join('')
+    || '<p class="dim">No runs yet. Start one with <code>lathe scout</code>.</p>');
 
   // Explicitly "displayed", because these are the 50 most recent and the
   // database holds more.
@@ -763,7 +962,8 @@ async function detail(current) {
 
   // Folded in before the phases are drawn, not after: a settled run stops
   // polling at the end of this pass, so a total added later never gets drawn.
-  for (const e of d.events) {
+  const events = d.events.filter(e => e.event_id > after);
+  for (const e of events) {
     if (e.type === 'input' || isCommand(e)) {
       // Rendered once, on arrival: the details card is redrawn every poll, and
       // re-escaping every system prompt each second is the cost of not doing it.
@@ -791,37 +991,56 @@ async function detail(current) {
   // page means the server capped this poll and there is more to fetch first.
   draining = d.events.length >= PAGE;
   if (!live(r.status) && !draining) done = true;
-  followLabel.style.display = (view.page === 'run' && !done) ? 'inline-flex' : 'none';
+  followLabel.style.display = view.page === 'run' ? 'inline-flex' : 'none';
 
   // The header, chart, costs and details are re-rendered every poll; the log
   // is appended, so scrolling through a phase is not undone a second later.
   if (!$('log')) {
-    app.innerHTML = `
-      <p><a href="#/runs">&larr; all runs</a></p>
-      <section class="card run-project"><h2 id="project-title"></h2><p id="head"></p>
-        <button class="more" id="run-cancel" type="button" onclick="cancelRun()" hidden>Cancel</button></section>
-      <section class="card"><h2>phases</h2><div id="phases"></div>
-        <div id="phase" class="phase-inspector"></div></section>
-      <section class="card"><h2>costs</h2><div id="costs"></div></section>
-      <section class="card"><h2>details</h2><dl id="summary" class="stats"></dl></section>
-      <section class="card"><h2>iterations</h2><div id="iterations"></div>
-        <form id="revise" onsubmit="reviseRun(event)" hidden>
-          <label for="revise-request">Request changes</label>
-          <textarea id="revise-request" rows="3" placeholder="What should change in this pull request"></textarea>
-          <p><button class="more" id="revise-submit" type="submit">Request changes</button></p>
-        </form>
-        <p id="revise-status" role="status"></p></section>
-      <section class="card"><h2>events</h2><table id="log"></table></section>`;
+    app.innerHTML = `<div class="page">
+      <section class="card page-summary run-project"><div class="summary-row"><div class="identity">
+        <a href="#/runs">&larr; all runs</a><h2 id="project-title" class="one-line"></h2><p id="head"></p>
+        <div class="actions"><button type="button" onclick="readRun(this)">Full request &amp; details</button>
+          <button class="more" id="run-cancel" type="button" onclick="cancelRun()" hidden>Cancel</button></div>
+        </div><div><div id="run-total" class="run-cost-total cost"></div><div class="dim">total cost</div></div></div>
+        <dl id="summary" class="stats"></dl></section>
+      <div class="workspace"><section class="card tabbed">
+        <div class="tabs" role="tablist" aria-label="Run activity" onkeydown="tabKey(event)">
+          <button id="tab-phases" type="button" role="tab" aria-selected="true" aria-controls="phases-panel" onclick="showTab('phases')">Phases</button>
+          <button id="tab-events" type="button" role="tab" aria-selected="false" aria-controls="events-panel" tabindex="-1" onclick="showTab('events')">Live events</button></div>
+        <div id="phases-panel" class="phase-workspace" role="tabpanel" aria-labelledby="tab-phases">
+          <div id="phases" aria-label="Phase timeline"></div>
+          <div id="phase" class="scroll" tabindex="0" aria-label="Selected phase output"></div></div>
+        <div id="events-panel" role="tabpanel" aria-labelledby="tab-events" hidden>
+          <div id="event-controls"><span class="dim">Live events</span></div>
+          <div id="events-body" class="scroll" tabindex="0" aria-label="Live events" onscroll="eventScrolled()"><table id="log"></table></div></div>
+      </section><aside id="run-side" class="sidebar" aria-label="Run details">
+        <div class="card metadata"><span id="run-identity" class="one-line dim"></span><button type="button" onclick="readRun(this)">Details</button></div>
+        <section class="card panel cost-panel"><div class="panel-heading"><h2>costs</h2><button type="button" onclick="readRun(this)">All costs</button></div><div id="costs"></div></section>
+        <section class="card panel history-panel"><div class="panel-heading"><h2>iterations</h2><button type="button" aria-label="All iterations" onclick="readIterations(this)">All</button></div><div id="iterations" class="paged"></div>
+          <form id="revise" onsubmit="reviseRun(event)" hidden>
+            <label for="revise-request">Request changes</label><textarea id="revise-request" rows="3" placeholder="What should change in this pull request"></textarea>
+            <p><button class="more" id="revise-submit" type="submit">Request changes</button></p></form>
+          <p id="revise-status" role="status"></p></section>
+      </aside></div></div>`;
+    $('event-controls').appendChild(followLabel);
+    resized.observe($('run-side'));
+    resized.observe($('iterations'));
+    resized.observe($('costs'));
   }
   $('project-title').innerHTML = esc(r.repo || 'unknown repo');
   $('head').innerHTML = esc(r.request);
+  $('run-total').textContent = money(r.cost);
+  $('run-identity').textContent = r.run_id;
+  $('run-identity').title = r.run_id;
   // The form lives in the scaffold, so a draft survives every poll; only
   // whether it is offered changes. A build whose latest iteration succeeded is
   // the only run that may qualify, and the server checks the rest.
   $('revise').hidden = !(r.workflow === 'build' && r.status === 'ok');
   $('run-cancel').hidden = !live(r.status);
-  $('iterations').innerHTML = renderIterations(r);
-  const following = app.scrollTop + app.clientHeight >= app.scrollHeight - 40;
+  const eventBody = $('events-body');
+  const visibleEvents = activeTab === 'events' && eventBody.clientHeight > 0;
+  const following = followBox.checked && !followSuspended && (!visibleEvents || atLiveEnd(eventBody));
+  if (visibleEvents && followBox.checked && !following) followSuspended = true;
   shown = {run: r, phases: d.phases};
   draw();
 
@@ -835,8 +1054,6 @@ async function detail(current) {
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),
     ...(r.iterations.length > 1 ? [stat('active', active(r)), stat('iterations', count(r.iterations.length))] : []),
-    stat('repo', esc(base(r.repo))),
-    stat('run id', esc(r.run_id)),
   ].join('');
   bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
     + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
@@ -847,7 +1064,7 @@ async function detail(current) {
   // before appending, or the new rows have already moved the answer. Scrolling
   // up to read a tool call is how you say "stop following".
   const log = $('log');
-  for (const e of d.events) {
+  for (const e of events) {
     after = e.event_id;
     const row = log.insertRow();
     row.innerHTML = `
@@ -856,7 +1073,8 @@ async function detail(current) {
       <td>${esc(e.name)}</td>
       <td>${eventPayload(e)}</td>`;
   }
-  if (d.events.length && following && followBox.checked) app.scrollTop = app.scrollHeight;
+  if (d.events.length && visibleEvents && following) toTail(eventBody);
+  fitPages();
 }
 
 // active is the time iterations spent executing, summed over iterations and
@@ -873,26 +1091,32 @@ function active(r) {
 
 // renderIterations is the run's history, one row per submitted request: how
 // each ended, what it published, and the models its configuration used.
+const newestFirst = its => [...(its || [])].sort((a, b) => b.iteration - a.iteration);
 function renderIterations(r) {
-  const its = r.iterations || [];
+  const its = newestFirst(r.iterations);
+  const visible = pageRows('iterations', its, i => i.iteration);
   if (!its.length) return '<p class="dim">No iterations recorded.</p>';
   const sha = s => esc((s || '').slice(0, 8));
-  return `<table>${its.map(i => {
+  return `<div class="paged-body" data-page-body="iterations">${visible.map(i => {
     const models = Object.entries(i.models || {}).sort().map(([agent, m]) => `${agent}: ${m}`).join('\n');
-    const names = [...new Set(Object.values(i.models || {}).map(m => m.split('/').pop()))].join(', ');
-    const where = !i.commit ? '' : sha(i.commit)
-      + (i.remote && i.remote !== i.commit ? ` <span class="fail">· origin at ${sha(i.remote)}</span>` : '');
-    return `<tr>
-      <td class="dim">#${esc(i.iteration)}</td>
-      <td class="${cls(i.status)}">${esc(i.status)}</td>
-      <td class="wrap" title="${esc(i.request)}">${esc(clip(i.request, 200))}${i.reason
-        ? `<br><span class="${i.status === 'ok' ? 'dim' : 'fail'}">${esc(clip(i.reason, 300))}</span>` : ''}</td>
-      <td class="dim lo">${esc((i.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
-      <td class="num dim">${esc(span(i.started_at, i.ended_at))}</td>
-      <td class="dim">${where}</td>
-      <td class="dim lo" title="${esc(models)}">${esc(names)}</td>
-    </tr>`;
-  }).join('')}</table>`;
+    const where = !i.commit ? '' : sha(i.commit) + (i.remote && i.remote !== i.commit ? ` · origin at ${sha(i.remote)}` : '');
+    return `<div class="history-row" data-row="${esc(i.iteration)}" title="${esc(models)}">
+      <div class="row-heading"><button type="button" data-focus="iteration-${esc(i.iteration)}" data-iteration="${esc(i.iteration)}" onclick="readIteration(this.dataset.iteration, this)">#${esc(i.iteration)}</button>
+        <span class="${cls(i.status)}">${esc(i.status)}</span><span class="dim one-line">${where}</span></div>
+      <div class="preview" title="${esc(i.request)}">${esc(clip(i.request, 200))}</div>
+      <div class="one-line ${i.reason && i.status !== 'ok' ? 'fail' : 'dim'}">${esc(i.reason || span(i.started_at, i.ended_at))}</div></div>`;
+  }).join('')}</div>${pageControls('iterations')}`;
+}
+function iterationText(i) {
+  return `#${i.iteration} · ${i.status}\n\n${i.request}\n\n${i.reason || ''}\n\nSubmitted: ${i.submitted_at || '—'}\nStarted: ${i.started_at || '—'}\nEnded: ${i.ended_at || '—'}\nCommit: ${i.commit || '—'}\nRemote: ${i.remote || '—'}\n\n`
+    + Object.entries(i.models || {}).map(([agent, model]) => `${agent}: ${model}`).join('\n');
+}
+function readIteration(n, trigger) {
+  const i = shown?.run.iterations.find(i => String(i.iteration) === String(n));
+  if (i) readText('Iteration #' + i.iteration, iterationText(i), trigger);
+}
+function readIterations(trigger) {
+  if (shown) readText('Iterations', newestFirst(shown.run.iterations).map(iterationText).join('\n\n────────\n\n') || 'No iterations recorded.', trigger);
 }
 
 function reviseStatus(html, error = false) {
@@ -976,7 +1200,7 @@ function draw() {
   const {run: r, phases} = shown, now = Date.now();
   swap(chart, gantt(r, phases, now));
   swap($('phase'), details(phases.find(p => p.phase_id === selected), r, now));
-  $('costs').innerHTML = renderCosts(r);
+  renderSide();
   layout();
   if (observed !== chart) { resized.observe(chart); observed = chart; }
 }
@@ -985,18 +1209,37 @@ function draw() {
 function pick(id) {
   selected = selected === id ? '' : id;
   draw();
+  $('phase').scrollTop = 0;
 }
 
 // swap replaces a region's markup and, only when focus was inside it, puts
 // focus back on the matching control without scrolling the reader anywhere.
+const rendered = new WeakMap();
+function focusTarget(root, key) {
+  return [...root.querySelectorAll('[data-focus]')].find(x => x.dataset.focus === key);
+}
 function swap(el, html) {
+  // innerHTML normalizes boolean attributes and table markup. Compare with
+  // our last input so an unchanged poll leaves links and disclosures alone.
+  if (rendered.get(el) === html) return;
+  rendered.set(el, html);
   const a = document.activeElement;
   const key = a && el.contains(a) ? a.dataset?.focus : undefined;
-  el.innerHTML = html;
-  if (!key) return;
-  for (const x of el.querySelectorAll('[data-focus]')) {
-    if (x.dataset.focus === key) { x.focus({preventScroll: true}); return; }
+  const top = el.scrollTop, left = el.scrollLeft;
+  // Anchor list refreshes to the first visible row, including an offset into
+  // it. New runs above it should not replace what the reader is reading.
+  // Unscrolled regions skip the measurement, and the forced layout with it.
+  let edge = 0, offset = 0, identity;
+  if (top > 0) {
+    edge = el.getBoundingClientRect().top;
+    const anchor = [...el.querySelectorAll('[data-row]')].find(row => row.getBoundingClientRect().bottom > edge);
+    if (anchor) { offset = anchor.getBoundingClientRect().top - edge; identity = anchor.dataset.row; }
   }
+  el.innerHTML = html;
+  const replacement = identity === undefined ? null : [...el.querySelectorAll('[data-row]')].find(row => row.dataset.row === identity);
+  el.scrollTop = replacement ? el.scrollTop + replacement.getBoundingClientRect().top - edge - offset : top;
+  el.scrollLeft = left;
+  if (key) focusTarget(el, key)?.focus({preventScroll: true});
 }
 
 // phaseTiming is the one reading of a phase's status and span the chart and
@@ -1015,8 +1258,8 @@ function phaseTiming(p, r, now) {
   return {status: 'interrupted', start, end: Date.parse(owner.ended_at), bound: true, by: it ? 'iteration' : 'run'};
 }
 const tone = s => s === 'interrupted' ? 'interrupted' : cls(s);
-// The chart marks status beside the name; the word stays in the accessible
-// name and the details card.
+// The chart shows only the status mark; the tooltip and accessible name
+// include the status word, model, and cost.
 const MARK = {success: '✅', ok: '✅', fail: '❌', running: '⏳', interrupted: '⚠️'};
 
 // axis spans the run's own execution: queue time is left out, as in timings().
@@ -1110,119 +1353,60 @@ function gantt(r, phases, now) {
 // min() keeps that floor inside the track at its right edge.
 function block(p, t, g) {
   const s = spend.get(p.phase_id);
-  const lines = [[MARK[t.status] || '❔', s?.model].filter(Boolean), [s && money(s.cost)].filter(Boolean)];
   const name = [`#${p.seq} ${p.name}`, s?.model, t.status, s && money(s.cost)].filter(Boolean).join(' · ');
   const at = ` style="--hue:${modelColour(s?.model)}${g ? `;left:min(${g.left.toFixed(3)}%, calc(100% - 2px));width:max(2px, ${g.width.toFixed(3)}%)` : ''}"`;
-  return `<button type="button" class="block ${tone(t.status)}"${at} data-owner="${esc(p.owner)}" data-lines="${lines[1].length ? 2 : 1}" data-phase="${esc(p.phase_id)}"`
+  return `<button type="button" class="block ${tone(t.status)}"${at} data-owner="${esc(p.owner)}" data-phase="${esc(p.phase_id)}"`
     + ` data-focus="${esc('block-' + p.phase_id)}" aria-pressed="${selected === p.phase_id}"`
     + ` aria-label="${esc(name)}" title="${esc(name)}" onclick="pick(this.dataset.phase)">`
-    + lines.map((line, l) => line.map((x, j) =>
-      `<span class="piece${!l && j ? ' tight' : ''}" data-line="${l}">${esc(x)}</span>`).join('')).join('')
+    + `<span class="piece" aria-hidden="true">${MARK[t.status] || '❔'}</span>`
     + '</button>';
 }
 
-// Labels keep a gap from their block and from whatever they sit beside, and
-// pieces sharing a line sit SEP apart. A lane is one block's height plus the
-// space between sublanes. Cut below FEW pixels, a piece is a stray glyph, so
-// it is hidden instead.
-const GAP = 4, SEP = 14, LANE = 40, FEW = 24;
-// fit counts the leading pieces of a line that fit in room; spread is the width
-// those pieces take side by side.
-const spread = ws => ws.reduce((a, w, i) => a + w + (i ? SEP : 0), 0);
-const fit = (ws, room) => { let n = 0; while (n < ws.length && spread(ws.slice(0, n + 1)) <= room) n++; return n; };
-
-// arrange lays one node row out from measured pixels. Each block takes the
-// first sublane it does not overlap, so minimum-width blocks stay selectable.
-// Its label is two lines of pieces, and each line keeps inside the block the
-// leading pieces that fit there, in reading order. The rest of every line go
-// to the right, else the left, else the wider of the two, where a piece that
-// still does not fit is cut, or hidden when too narrow to read. A label never
-// reaches over another block or another block's label.
-//
-// Each block is {left, width, lines: [[piece width, …], …]}; each placement
-// is {x, sep, cut?} or {hidden}, with x from the block's left edge.
+// Right-align a status inside its block. A narrow block spills to the right
+// first, then to the left when the next block or track edge prevents that.
+// If neither side has room, the tooltip and accessible name still give its
+// status. Keep every block on the same line, including minimum-width rounds.
+const GAP = 3;
 function arrange(blocks, width) {
-  const out = blocks.map(() => ({lane: 0, side: '', lines: []}));
-  const order = blocks.map((b, i) => i).sort((a, b) => blocks[a].left - blocks[b].left);
-  const ends = [], lanes = [];
-  for (const i of order) {
-    const b = blocks[i];
-    let lane = ends.findIndex(end => b.left >= end);
-    if (lane < 0) lane = ends.length;
-    ends[lane] = b.left + b.width;
-    out[i].lane = lane;
-    (lanes[lane] ||= []).push(i);
-  }
-  for (const members of lanes) {
-    let used = 0;   // right edge of the previous block or its right-hand label
-    members.forEach((i, k) => {
-      const b = blocks[i], right = b.left + b.width;
-      const next = k + 1 < members.length ? blocks[members[k + 1]].left : width;
-      const room = {right: next - right - 2 * GAP, left: b.left - used - 2 * GAP};
-      const inside = b.width - 2 * GAP;
-      const kept = b.lines.map(ws => fit(ws, inside));
-      const need = Math.max(0, ...b.lines.map((ws, l) => spread(ws.slice(kept[l]))));
-      const side = need <= room.right ? 'right' : need <= room.left ? 'left' : room.right >= room.left ? 'right' : 'left';
-      const space = room[side];
-      let reach = 0;   // widest line put beside the block
-      out[i].side = need ? side : '';
-      out[i].lines = b.lines.map((ws, l) => {
-        const spots = [];
-        let x = GAP;
-        const place = (w, sep, cut) => { spots.push(cut === undefined ? {x, sep} : {x, sep, cut}); x += cut ?? (w + (sep ? SEP : 0)); };
-        let n = kept[l];
-        // A name too long for either side is better cut inside a block
-        // that has more room for it than the side does.
-        if (!n && ws.length && ws[0] > space && inside > space && inside >= FEW) { place(ws[0], false, inside); n = 1; }
-        else ws.slice(0, n).forEach((w, j) => place(w, j > 0));
-        const rest = ws.slice(n);
-        if (!rest.length) return spots;
-        const shown = fit(rest, space);
-        const left = space - spread(rest.slice(0, shown)) - (shown ? SEP : 0);
-        const cut = shown < rest.length && left >= FEW ? left + (shown ? SEP : 0) : undefined;
-        const total = spread(rest.slice(0, shown)) + (cut ?? 0);
-        x = side === 'right' ? b.width + GAP : -GAP - total;
-        rest.forEach((w, j) => {
-          if (j < shown) place(w, j > 0);
-          else if (j === shown && cut !== undefined) place(w, j > 0, cut);
-          else spots.push({hidden: true});
-        });
-        if (side === 'right') reach = Math.max(reach, total);
-        return spots;
-      });
-      used = right + (reach ? GAP + reach : 0);
-    });
-  }
+  const out = blocks.map(() => ({hidden: true}));
+  const order = blocks.map((_, i) => i).sort((a, b) => blocks[a].left - blocks[b].left);
+  let used = 0;
+  order.forEach((i, k) => {
+    const b = blocks[i], right = b.left + b.width;
+    const next = k + 1 < order.length ? blocks[order[k + 1]].left : width + GAP;
+    let x, side;
+    if (b.width >= b.label + 2 * GAP && right - GAP <= next - GAP && right - GAP - b.label >= used) {
+      x = b.width - GAP - b.label; side = 'inside';
+    } else if (right + GAP >= used && right + GAP + b.label <= next - GAP) {
+      x = b.width + GAP; side = 'right';
+    } else if (b.left - GAP - b.label >= used) {
+      x = -GAP - b.label; side = 'left';
+    }
+    if (x !== undefined) out[i] = {x, side};
+    used = Math.max(used, right, x === undefined ? 0 : b.left + x + b.label + GAP);
+  });
   return out;
 }
 
-// layout measures each row and applies arrange(). Placements are cleared
-// first, so the last one does not decide this one.
+// Reset, measure, then write. Hidden tabs have no useful pixel geometry.
 function layout() {
   const chart = $('phases');
-  if (!chart) return;
-  // Every reset, then every read, then every write: one reflow, not one per row.
-  const rows = [...chart.querySelectorAll('.track')].map(track => ({track, blocks: [...track.querySelectorAll('.block')].map(el =>
-    ({el, lines: [0, 1].map(l => [...el.children].filter(c => c.dataset.line === String(l)))}))}));
-  for (const {blocks} of rows) for (const b of blocks) for (const c of b.lines.flat()) {
-    c.style.left = ''; c.style.maxWidth = ''; c.style.display = ''; c.dataset.sep = '';
+  if (!chart || !chart.clientWidth) return;
+  const rows = [...chart.querySelectorAll('.track')].map(track => ({track,
+    blocks: [...track.querySelectorAll('.block')].map(el => ({el, label: el.children[0]}))}));
+  for (const {blocks} of rows) for (const {label} of blocks) {
+    label.style.left = ''; label.style.right = ''; label.style.display = '';
   }
-  for (const row of rows) row.spots = arrange(row.blocks.map(b =>
-    ({left: b.el.offsetLeft, width: b.el.offsetWidth, lines: b.lines.map(cs => cs.map(c => c.scrollWidth))})),
-    row.track.clientWidth);
-  for (const {track, blocks, spots} of rows) {
-    spots.forEach((s, i) => {
-      blocks[i].el.style.top = s.lane * LANE + 1 + 'px';
-      s.lines.forEach((line, l) => line.forEach((spot, j) => {
-        const c = blocks[i].lines[l][j];
-        if (spot.hidden) { c.style.display = 'none'; return; }
-        c.style.left = spot.x + 'px';
-        c.dataset.sep = spot.sep ? '1' : '';
-        if (spot.cut !== undefined) c.style.maxWidth = spot.cut + 'px';
-      }));
-    });
-    track.style.height = (Math.max(0, ...spots.map(s => s.lane)) + 1) * LANE + 'px';
-  }
+  for (const row of rows) row.spots = arrange(row.blocks.map(({el, label}) =>
+    ({left: el.offsetLeft, width: el.offsetWidth, label: label.scrollWidth})), row.track.clientWidth);
+  for (const {blocks, spots} of rows) spots.forEach((spot, i) => {
+    const {el, label} = blocks[i];
+    if (spot.hidden) { label.style.display = 'none'; return; }
+    // Placement is relative to the border box; positioned children start at
+    // the padding edge, which varies with the status border's thickness.
+    label.style.left = spot.x - el.clientLeft + 'px';
+    label.style.right = 'auto';
+  });
 }
 
 // Label room depends on the track's pixel width, which moves with the window
@@ -1231,7 +1415,7 @@ let observed = null, measuring = false;
 const resized = new ResizeObserver(() => {
   if (measuring) return;
   measuring = true;
-  requestAnimationFrame(() => { measuring = false; layout(); });
+  requestAnimationFrame(() => { measuring = false; layout(); fitPages(); });
 });
 
 // Output is rendered as text, never interpreted as HTML or Markdown from an
@@ -1402,12 +1586,16 @@ navigate();
 
   const collapse = document.getElementById('collapse');
   let nav = read('lathe-nav', 'expanded') === 'collapsed';
+  const compact = matchMedia('(max-width: 1100px), (max-height: 850px)');
   const showNav = () => {
-    document.body.dataset.nav = nav ? 'collapsed' : 'expanded';
-    collapse.setAttribute('aria-expanded', String(!nav));
-    collapse.title = nav ? 'Expand navigation' : 'Collapse navigation';
-    collapse.querySelector('svg').style.transform = nav ? 'rotate(180deg)' : '';
+    const collapsed = nav || compact.matches;
+    document.body.dataset.nav = collapsed ? 'collapsed' : 'expanded';
+    collapse.setAttribute('aria-expanded', String(!collapsed));
+    collapse.disabled = compact.matches;
+    collapse.title = compact.matches ? 'Navigation compact at this window size' : collapsed ? 'Expand navigation' : 'Collapse navigation';
+    collapse.querySelector('svg').style.transform = collapsed ? 'rotate(180deg)' : '';
   };
+  compact.addEventListener('change', showNav);
   collapse.addEventListener('click', () => {
     nav = !nav;
     write('lathe-nav', nav ? 'collapsed' : 'expanded');
