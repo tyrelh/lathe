@@ -173,6 +173,11 @@ type Phase struct {
 	Error  string
 	Start  string
 	End    string
+	// Iteration is the submitted request this phase works on. Attempt, when
+	// set, binds the write to the worker that owns the run: a worker that lost
+	// its claim, or one from an earlier iteration, writes nothing.
+	Iteration int
+	Attempt   string
 }
 
 // NewRunID builds the canonical run ID <UTC timestamp>_<workflow>_<random>.
@@ -215,7 +220,8 @@ func (p *Phase) Finish(status, errMsg string) {
 
 // PhaseUpsert writes the whole phase row, creating or replacing it. Leaving
 // p.Start empty stamps it now (and sticks, so the second write keeps it);
-// p.End stays empty until Finish sets it.
+// p.End stays empty until Finish sets it. With p.Attempt set, the write lands
+// only while that attempt owns the run, and ErrClaimLost says it did not.
 func (d *DB) PhaseUpsert(p *Phase) error {
 	if p.Start == "" {
 		p.Start = nowUTC()
@@ -223,15 +229,43 @@ func (d *DB) PhaseUpsert(p *Phase) error {
 	if p.Status == "" {
 		p.Status = "fail"
 	}
-	_, err := d.sql.Exec(
-		`INSERT INTO phases (phase_id, run_id, seq, name, owner, status, error, started_at, ended_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	res, err := d.sql.Exec(
+		`INSERT INTO phases (phase_id, run_id, seq, name, owner, status, error, started_at, ended_at, iteration)
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 WHERE ? = '' OR `+owned+`
 		 ON CONFLICT(phase_id) DO UPDATE SET
 		   seq=excluded.seq, name=excluded.name, owner=excluded.owner,
 		   status=excluded.status, error=excluded.error,
 		   started_at=excluded.started_at, ended_at=excluded.ended_at`,
-		p.ID, p.RunID, p.Seq, p.Name, p.Owner, p.Status, p.Error, p.Start, nullIfEmpty(p.End))
-	return err
+		p.ID, p.RunID, p.Seq, p.Name, p.Owner, p.Status, p.Error, p.Start, nullIfEmpty(p.End), p.Iteration,
+		p.Attempt, p.RunID, p.Attempt)
+	if err != nil {
+		return err
+	}
+	return claimed(res)
+}
+
+// owned is the ownership condition a worker's write carries: its attempt is
+// the run's current one and the run is still executing. It takes the run ID
+// and the attempt ID, in that order.
+const owned = `EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND attempt_id = ? AND status IN ('starting', 'running'))`
+
+// claimed turns a guarded write that changed nothing into ErrClaimLost.
+func claimed(res sql.Result) error {
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrClaimLost
+	}
+	return nil
+}
+
+// MaxSeq is the highest phase number a run has used, so a later iteration's
+// phases carry on from it: phase IDs embed the number, and none is reused.
+func (d *DB) MaxSeq(runID string) (int, error) {
+	var n int
+	err := d.sql.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM phases WHERE run_id = ?`, runID).Scan(&n)
+	return n, err
 }
 
 // Event appends to the one append-only table. payload is marshalled to JSON;
@@ -269,16 +303,22 @@ type Row struct {
 	Cancelled string  `json:"cancel_requested_at"`
 	Tokens    int     `json:"tokens"`
 	Cost      float64 `json:"cost"`
+	// Iteration is the latest submitted request, counted from zero; Status,
+	// Reason and Ended follow it. Activity is when it was submitted, which is
+	// what orders the queue and the lists. Submitted and Started stay the
+	// run's original creation and first start.
+	Iteration int    `json:"iteration"`
+	Activity  string `json:"activity_at"`
 	// Spec is the execution specification captured at submission. It is only
 	// loaded by the worker, so it stays out of the JSON the dashboard reads.
 	Spec []byte `json:"-"`
 }
 
-// Recent returns the n most recent runs across every repo — the whole point of
-// one global database.
+// Recent returns the n most recently active runs across every repo — the
+// whole point of one global database. A revised run moves to the top.
 func (d *DB) Recent(n int) ([]Row, error) {
 	rows, err := d.sql.Query(
-		runColumns+` FROM runs ORDER BY submitted_at DESC, run_id DESC LIMIT ?`, n)
+		runColumns+` FROM runs ORDER BY COALESCE(activity_at, '') DESC, run_id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
@@ -325,6 +365,8 @@ type PhaseRow struct {
 	Error  string `json:"error"`
 	Start  string `json:"started_at"`
 	End    string `json:"ended_at"`
+	// Iteration is the submitted request the phase worked on.
+	Iteration int `json:"iteration"`
 }
 
 type EventRow struct {
@@ -355,7 +397,7 @@ func (d *DB) Get(runID string) (Row, error) {
 // Phases returns a run's phases in the order they ran.
 func (d *DB) Phases(runID string) ([]PhaseRow, error) {
 	rows, err := d.sql.Query(
-		`SELECT phase_id, seq, name, owner, status, error, started_at, ended_at
+		`SELECT phase_id, seq, name, owner, status, error, started_at, ended_at, iteration
 		 FROM phases WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, err
@@ -366,7 +408,7 @@ func (d *DB) Phases(runID string) ([]PhaseRow, error) {
 	for rows.Next() {
 		var p PhaseRow
 		var errMsg, end sql.NullString
-		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.Owner, &p.Status, &errMsg, &p.Start, &end); err != nil {
+		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.Owner, &p.Status, &errMsg, &p.Start, &end, &p.Iteration); err != nil {
 			return nil, err
 		}
 		p.Error, p.End = errMsg.String, end.String

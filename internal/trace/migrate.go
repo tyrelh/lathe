@@ -38,6 +38,39 @@ CREATE INDEX IF NOT EXISTS runs_exclusive ON runs (repo, exclusive, status);
 `,
 	// 3: project run pages read one repository in newest-first order.
 	`CREATE INDEX IF NOT EXISTS runs_repo_recent ON runs (COALESCE(repo, ''), COALESCE(submitted_at, '') DESC, run_id DESC);`,
+	// 4: iterations. A revision extends a finished run rather than starting a
+	// new one, so a run is now one or more submitted requests. The run row keeps
+	// its identity, its totals and its original timestamps; each iteration keeps
+	// its own request, configuration, lifecycle and publication evidence.
+	// activity_at is the latest submission, which is what orders the queue and
+	// the run lists. Every existing run becomes its own iteration 0 from what
+	// its row recorded; nothing it did not record is filled in.
+	`
+CREATE TABLE IF NOT EXISTS iterations (
+  run_id       TEXT NOT NULL REFERENCES runs,
+  iteration    INTEGER NOT NULL,
+  request      TEXT,
+  spec         TEXT,
+  status       TEXT,
+  reason       TEXT,
+  submitted_at TEXT,
+  started_at   TEXT,
+  ended_at     TEXT,
+  base_commit  TEXT,
+  commit_sha   TEXT,
+  remote_sha   TEXT,
+  PRIMARY KEY (run_id, iteration)
+);
+ALTER TABLE runs ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN activity_at TEXT;
+ALTER TABLE attempts ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE phases ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0;
+UPDATE runs SET activity_at = submitted_at;
+INSERT INTO iterations (run_id, iteration, request, spec, status, reason, submitted_at, started_at, ended_at)
+  SELECT run_id, 0, request, spec, status, reason, submitted_at, started_at, ended_at FROM runs;
+CREATE INDEX IF NOT EXISTS runs_activity ON runs (COALESCE(activity_at, '') DESC, run_id DESC);
+CREATE INDEX IF NOT EXISTS runs_repo_activity ON runs (COALESCE(repo, ''), COALESCE(activity_at, '') DESC, run_id DESC);
+`,
 }
 
 // migrate applies every migration the database has not seen yet.

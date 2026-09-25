@@ -56,17 +56,19 @@ func TestProjectsAndRunPages(t *testing.T) {
 	}
 
 	// All three runs share a submission time, so the run id must break ties.
+	// Lists order by latest activity, which for an unrevised run is its
+	// submission.
 	for _, id := range []string{"z3", "z2", "z1"} {
 		seedRun(t, db, id, "/zero")
 	}
-	if _, err := db.sql.Exec(`UPDATE runs SET submitted_at = '2026-09-23T12:00:00Z' WHERE repo = '/zero'`); err != nil {
+	if _, err := db.sql.Exec(`UPDATE runs SET submitted_at = '2026-09-23T12:00:00Z', activity_at = '2026-09-23T12:00:00Z' WHERE repo = '/zero'`); err != nil {
 		t.Fatal(err)
 	}
 	rows, more, err := db.ProjectRuns("/zero", "", "", 2)
 	if err != nil || !more || len(rows) != 2 || rows[0].ID != "zero" || rows[1].ID != "z3" {
 		t.Fatalf("first page = %+v, more %v, %v", rows, more, err)
 	}
-	rows, more, err = db.ProjectRuns("/zero", rows[1].Submitted, rows[1].ID, 2)
+	rows, more, err = db.ProjectRuns("/zero", rows[1].Activity, rows[1].ID, 2)
 	if err != nil || more || len(rows) != 2 || rows[0].ID != "z2" || rows[1].ID != "z1" {
 		t.Fatalf("second page = %+v, more %v, %v", rows, more, err)
 	}

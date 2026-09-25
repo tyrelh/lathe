@@ -95,19 +95,27 @@ type Run struct {
 	Repo     string // absolute target root: what makes one global database legible
 	Dir      string // per-run directory in the data root; the structured reports live here
 	Work     string // per-attempt directory: raw.jsonl, the guard, the scope and the Pi session
+	// Iteration is the submitted request this execution works on, counted
+	// from zero. A revision's reports go in its own Dir, so none overwrites an
+	// earlier iteration's.
+	Iteration int
+	// Revision is what a revision inherits from the run it extends; nil for
+	// every other workflow.
+	Revision *Revision
 
 	// PiBin overrides the `pi` found on PATH. Tests set it; production does not.
 	PiBin string
 	// Out is where the closing banner goes.
 	Out io.Writer
 
-	cfg   config.Snapshot
-	ctx   context.Context
-	db    *trace.DB
-	raw   *os.File
-	rawW  io.Writer // raw behind a lock: a validation group's workers stream into it at once
-	guard string    // the extension, written once and passed to every spawn
-	clean bool      // EnsureClean passed, which is what licenses a revert
+	cfg     config.Snapshot
+	attempt string // binds phase and publication writes to this worker's claim
+	ctx     context.Context
+	db      *trace.DB
+	raw     *os.File
+	rawW    io.Writer // raw behind a lock: a validation group's workers stream into it at once
+	guard   string    // the extension, written once and passed to every spawn
+	clean   bool      // EnsureClean passed, which is what licenses a revert
 
 	// mu guards everything below it. A validation group runs phases in
 	// goroutines, and each of them numbers a phase, charges spend, settles
@@ -149,6 +157,30 @@ type Options struct {
 	Ctx      context.Context
 	Out      io.Writer
 	PiBin    string
+	// Iteration and Attempt identify this execution. With Attempt set, every
+	// phase and publication write lands only while that attempt owns the run,
+	// so a stale worker cannot alter a later iteration.
+	Iteration int
+	Attempt   string
+	Revision  *Revision
+}
+
+// Revision is the run a revision extends, as the worker established it under
+// its claim: the pull request, its branch, the commit last published to it,
+// and every earlier iteration.
+type Revision struct {
+	PR     string // the pull request URL
+	Branch string // its head branch, which is checked out
+	Base   string // its base branch, what the branch diff is taken against
+	Head   string // the commit lathe last published; the push's expected remote head
+	Prior  []Prior
+}
+
+// Prior is one earlier iteration: what was asked, and where its reports are.
+type Prior struct {
+	Iteration int
+	Request   string
+	Dir       string
 }
 
 // Open prepares the run directory, the raw stream and the guard for an
@@ -168,6 +200,10 @@ func Open(o Options) (*Run, error) {
 		cfg:      o.Snapshot,
 		ctx:      o.Ctx,
 		db:       o.DB,
+
+		Iteration: o.Iteration,
+		Revision:  o.Revision,
+		attempt:   o.Attempt,
 	}
 	if r.Out == nil {
 		r.Out = os.Stdout
@@ -184,7 +220,12 @@ func Open(o Options) (*Run, error) {
 	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
 		return nil, err
 	}
+	// Phase numbers carry on from earlier iterations: an ID embeds its
+	// number, and a later iteration must never reuse one.
 	var err error
+	if r.seq, err = r.db.MaxSeq(r.ID); err != nil {
+		return nil, err
+	}
 	if r.raw, err = os.Create(filepath.Join(r.Work, "raw.jsonl")); err != nil {
 		return nil, err
 	}
@@ -208,6 +249,7 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 	r.mu.Lock()
 	r.seq++
 	ph := trace.NewPhase(r.ID, r.seq, p.Name, p.Owner)
+	ph.Iteration, ph.Attempt = r.Iteration, r.attempt
 	r.mu.Unlock()
 	if err := r.db.PhaseUpsert(ph); err != nil {
 		return r.fail(err)
@@ -268,8 +310,14 @@ func (r *Run) Finish(accepted bool, reason string) int {
 	r.status, r.reason = status, reason
 	r.raw.Close()
 
+	// The run's own totals, which span every iteration: this execution's
+	// counters would report only its own share of a revised run.
+	tokens, cost := r.tokens, r.cost
+	if row, err := r.db.Get(r.ID); err == nil {
+		tokens, cost = row.Tokens, row.Cost
+	}
 	fmt.Fprintf(r.Out, "\nlathe %s %s: %s  %d tokens  $%.5f\n  %s\n",
-		r.Workflow, r.ID, status, r.tokens, r.cost, r.Dir)
+		r.Workflow, r.ID, status, tokens, cost, r.Dir)
 	if reason != "" {
 		fmt.Fprintf(r.Out, "  %s\n", reason)
 	}
@@ -335,7 +383,13 @@ func (r *Run) sweep(h *Handle) ([]string, error) {
 
 // Shipped records the branch and commit a run's work landed on, for a workflow
 // that commits: the run row otherwise still names what it started from.
-func (r *Run) Shipped(branch, sha string) error { return r.db.SetShipped(r.ID, branch, sha) }
+func (r *Run) Shipped(branch, sha string) error { return r.db.SetShipped(r.ID, r.attempt, branch, sha) }
+
+// Evidence records the commit this iteration made and the branch's remote
+// head when last verified, without moving the run's shipped commit.
+func (r *Run) Evidence(commit, remote string) error {
+	return r.db.SetEvidence(r.ID, r.attempt, commit, remote)
+}
 
 // Protected is the roster's deny list, which the plan gate checks a file list
 // against before a builder is ever handed one.

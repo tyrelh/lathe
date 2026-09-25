@@ -125,10 +125,19 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 	if err := revalidate(spec, row); err != nil {
 		return 0, err
 	}
+	// A revision rechecks the pull request and the branch under its claim,
+	// before any agent starts: the checkout had a person in it the whole time
+	// the request waited.
+	var revision *run.Revision
+	if spec.Workflow == "revise" {
+		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path); err != nil {
+			return 0, err
+		}
+	}
 	// A checkout with no commits yet has none to record, which is not a
 	// reason to refuse to read it.
 	commit, _ := workspace.Head(spec.Workspace.Path)
-	if err := db.SetCommit(row.ID, commit); err != nil {
+	if err := db.SetCommit(row.ID, attemptID, commit); err != nil {
 		return 0, err
 	}
 
@@ -149,12 +158,16 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 		Request:  spec.Request,
 		Issue:    spec.Issue,
 		Repo:     spec.Workspace.Path,
-		Dir:      filepath.Join(dataRoot, "runs", row.ID),
+		Dir:      ReportDir(dataRoot, row.ID, row.Iteration),
 		Work:     AttemptDir(dataRoot, row.ID, attemptID),
 		Snapshot: spec.Roster,
 		DB:       db,
 		Ctx:      ctx,
 		Out:      out,
+
+		Iteration: row.Iteration,
+		Attempt:   attemptID,
+		Revision:  revision,
 	})
 	if err != nil {
 		return 0, err
@@ -252,6 +265,21 @@ func beat(ctx context.Context, db *trace.DB, attemptID, token string, stop conte
 	return done
 }
 
+// Models is the provider and model a recorded specification assigned each
+// agent, which is the part of an iteration's configuration a reader compares.
+// An unreadable specification has none.
+func Models(spec []byte) map[string]string {
+	var s Spec
+	if json.Unmarshal(spec, &s) != nil {
+		return nil
+	}
+	models := map[string]string{}
+	for name, a := range s.Roster.Agents {
+		models[name] = a.Provider + "/" + a.Model
+	}
+	return models
+}
+
 // Marshal is how the submitter records a specification.
 func (s Spec) Marshal() ([]byte, error) { return json.Marshal(s) }
 
@@ -279,9 +307,73 @@ func signals(ctx context.Context, stop context.CancelFunc) {
 	}()
 }
 
+// ReportDir is where one iteration's reports live. The first iteration's are
+// the run directory itself, which is where readers have always looked; each
+// revision gets its own beside it, so a new plan or validation report never
+// overwrites an earlier one.
+func ReportDir(dataRoot, runID string, iteration int) string {
+	dir := filepath.Join(dataRoot, "runs", runID)
+	if iteration > 0 {
+		dir = filepath.Join(dir, fmt.Sprintf("iteration-%d", iteration))
+	}
+	return dir
+}
+
+// Evidence is what a run's records establish about the pull request it
+// opened: its URL from pr.json, and the branch and commit the run row says it
+// shipped. A run from before revisions qualifies when its records have all
+// three. Nothing is inferred from the pull request as it is now: a URL alone
+// does not say the branch is still what lathe left there.
+func Evidence(dataRoot string, row trace.Row) (workspace.Evidence, error) {
+	if row.Workflow != "build" {
+		return workspace.Evidence{}, fmt.Errorf("%s is a %s run; only a build opens a pull request to revise", row.ID, row.Workflow)
+	}
+	var pr struct {
+		URL   string `json:"url"`
+		Draft bool   `json:"draft"`
+	}
+	path := filepath.Join(ReportDir(dataRoot, row.ID, 0), "pr.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return workspace.Evidence{}, fmt.Errorf("%s has no recorded pull request (%s): it never opened one, or its record is gone", row.ID, path)
+	}
+	if err := json.Unmarshal(b, &pr); err != nil || pr.URL == "" {
+		return workspace.Evidence{}, fmt.Errorf("%s does not record a pull request URL", path)
+	}
+	ev := workspace.Evidence{PR: pr.URL, Branch: row.Branch, Commit: row.Commit}
+	if ev.Branch == "" || ev.Commit == "" {
+		return ev, fmt.Errorf("%s does not record the branch and commit it shipped to %s, so lathe cannot tell whether that branch is still as it left it", row.ID, pr.URL)
+	}
+	return ev, nil
+}
+
+// revisionOf establishes, under the worker's claim, everything a revision
+// inherits: the checks the submitter ran, again, and the earlier iterations.
+func revisionOf(db *trace.DB, dataRoot string, row trace.Row, repo string) (*run.Revision, error) {
+	ev, err := Evidence(dataRoot, row)
+	if err != nil {
+		return nil, err
+	}
+	pr, err := workspace.CheckRevisable(repo, ev)
+	if err != nil {
+		return nil, fmt.Errorf("%w; nothing was changed", err)
+	}
+	iterations, err := db.Iterations(row.ID)
+	if err != nil {
+		return nil, err
+	}
+	rev := &run.Revision{PR: ev.PR, Branch: ev.Branch, Base: pr.Base, Head: ev.Commit}
+	for _, it := range iterations {
+		if it.N < row.Iteration {
+			rev.Prior = append(rev.Prior, run.Prior{Iteration: it.N, Request: it.Request, Dir: ReportDir(dataRoot, row.ID, it.N)})
+		}
+	}
+	return rev, nil
+}
+
 // AttemptDir is where one attempt's raw stream, guard, scope and Pi session
-// live. Reports stay in the run directory, which is where readers already
-// look for them.
+// live. Reports stay in the iteration's report directory, which is where
+// readers look for them.
 func AttemptDir(dataRoot, runID, attemptID string) string {
 	return filepath.Join(dataRoot, "runs", runID, attemptID)
 }

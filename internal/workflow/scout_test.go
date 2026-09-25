@@ -111,7 +111,7 @@ func executeWith(t *testing.T, cfg config.Config, name, repo, request string, ct
 	r, err := run.Open(run.Options{
 		ID: id, Workflow: name, Request: request, Repo: repo,
 		Dir: filepath.Join(dataRoot, "runs", id), Snapshot: roster, DB: db,
-		Out: out, Ctx: ctx,
+		Out: out, Ctx: ctx, Attempt: attempt,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 ---
 name: lathe
-description: Run a bounded, traced agent workflow against the current repository. Use when asked to scout, map, or investigate a codebase with lathe, to plan or implement a change with lathe, to build a change through to a pull request, or when the user says "lathe".
+description: Run a bounded, traced agent workflow against the current repository. Use when asked to scout, map, or investigate a codebase with lathe, to plan or implement a change with lathe, to build a change through to a pull request, to revise that pull request with another change, or when the user says "lathe".
 ---
 
 # lathe
@@ -44,13 +44,16 @@ automatically if none is running.
   `gh pr create`. No agent can commit or push: the guard denies both. None of
   the three sends work back, so a failure in any of them ends the run. An accepted change opens a normal pull request. Unresolved findings at the send-back limit, or incomplete validation, still commit and open a draft pull request that carries the validation report, and the run fails: the draft is unfinished work, not an accepted change. Cancellation and a source change during validation publish nothing.
 
-The plan, implement and build workflows share a read-only review loop:
+- `revise <run-id> "<change>"` — another change to a build's open pull request, as the next iteration of the same run. It needs the build's latest iteration to have succeeded, the pull request still open, and the checkout clean, on the pull request's branch and at the commit lathe last pushed, with origin at that commit too. Lathe refuses rather than switching branches, merging or rebasing, and says what to restore; a manual commit or an accepted GitHub suggestion makes the run ineligible until the branch is back where lathe left it. The request must spell out the change: review comments are not collected. Every revision enters at the planner, which is shown the original request, earlier revisions, the previous plan and validation, and the branch diff. A request that needs no code change is validated as the branch stands and succeeds without a commit. Only an accepted change is committed and pushed — the push is refused if origin moved since the last check — and the pull request's title and description are left alone. Anything unaccepted, and cancellation, keep the work uncommitted in the checkout and publish nothing; that also ends the run's revisions. `revise` waits for the iteration it submitted; `--detach` returns straight away. There are no idempotency keys: if a submission's acknowledgement is lost, check `lathe show <id>` before resubmitting.
+
+The plan, implement, build and revise workflows share a read-only review loop:
 
 ```
 request → plan → review → [plan → review, up to four send-backs]
 plan:      → print the reviewed plan
 implement: → implement → validate → adjudicate → [implement → validate → adjudicate, up to four repairs]
 build:     → branch → implement → validate → adjudicate → [...] → commit → pr (draft when unaccepted)
+revise:    → implement → validate → adjudicate → [...] → commit → publish (accepted only)
 ```
 
 `validate` runs `test`, `code-review-general`, `code-review-security` and `code-review-slop` at once, each traced as its own phase. A worker that fails outright is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete.
@@ -99,3 +102,5 @@ running ones included.
 `lathe show <id>` prints one run's state, outcome and report locations,
 `lathe wait <id>` blocks until it is terminal and exits with its outcome, and
 `lathe cancel <id>` asks it to stop. Both `show` and `wait` take `--json`.
+
+A revised run has several iterations. Its tokens and cost are always the whole run's. `lathe show <id>` lists every iteration — request, outcome, the commit it made and where origin was — and prints the latest iteration's reports, or the previous iteration's, labelled, while the latest is still queued or running; `--iteration n` picks one. Iteration 0's reports are in the run directory as always; iteration n's are in `<dir>/iteration-n/`. `lathe wait --iteration n <id>` exits with that iteration's outcome even if another has been submitted since; plain `lathe wait <id>` follows the run's latest.

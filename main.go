@@ -3,7 +3,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/tyrelh/lathe/dashboard"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/install"
 	"github.com/tyrelh/lathe/internal/manager"
@@ -34,11 +37,16 @@ commands:
   plan "<request>"    plan a change to the current repo; write nothing
   implement "<req>"   plan, implement and test a change; leave it uncommitted
   build "<request>"   implement it, then branch, commit and open a pull request
+  revise <id> "<change>"
+                      plan, validate and push another change to a build's open
+                      pull request, as the next iteration of the same run
   manager             run the scheduler and the dashboard in the foreground
   runs                list recent runs, from every repo
-  show <id>           state, outcome, reports and artifact locations for one run
+  show <id>           state, outcome, iterations and reports for one run
+                      (--iteration <n> for an earlier iteration's reports)
   wait <id>           block until a run is terminal; exit with its outcome
-  cancel <id>         ask a run to stop
+                      (--iteration <n> waits for that iteration instead)
+  cancel <id>         ask a run's current iteration to stop
   install             link this repo into each agent's skills directory
   version             print the version of this binary
   help                show this message
@@ -59,6 +67,11 @@ none is running, and serves the dashboard.
 implement and build need a clean checkout and own it until they stop. build
 leaves the checkout on the branch it created, and a failure after its commit
 leaves that commit there rather than losing the work.
+
+revise needs a build whose latest iteration succeeded and whose pull request is
+still open, with the checkout clean, on that branch, and both it and origin at
+the commit lathe last pushed. It publishes only a change validation accepts,
+and leaves the pull request's title and description alone.
 
 environment:
   Workers inherit the manager's environment: credentials such as
@@ -84,6 +97,8 @@ func dispatch(args []string) int {
 	switch cmd := args[0]; cmd {
 	case "scout", "plan", "implement", "build":
 		return submit(cmd, args[1:])
+	case "revise":
+		return reviseCmd(args[1:])
 	case "manager":
 		return managerCmd()
 	case "worker":
@@ -186,7 +201,7 @@ func submit(name string, args []string) int {
 		return 0
 	}
 	defer db.Close()
-	return block(db, dataRoot, id, false)
+	return block(db, dataRoot, id, -1, false)
 }
 
 // prepare turns a submission into the row that records it: the checkout
@@ -198,22 +213,7 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 	if err != nil {
 		return trace.Request{}, err
 	}
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		return trace.Request{}, err
-	}
-	// The target's lathe.toml is read here, at submission, so its values are
-	// frozen into the snapshot with everything else. A broken file is a
-	// warning, not a failure: the run goes ahead on the roster.
-	if loaded, err := cfg.LoadProject(root); err != nil {
-		fmt.Fprintln(warn, "lathe: ignoring", err)
-	} else if loaded {
-		fmt.Fprintln(warn, "lathe: loaded", filepath.Join(root, "lathe.toml"))
-	}
-	// Resolving now turns an unknown agent, a bad timeout or a missing prompt
-	// into an error before a run row exists — and the resolved roster is what
-	// the worker executes from, so editing a prompt cannot change queued work.
-	roster, err := cfg.Capture(workflow.Agents[name], ov)
+	roster, err := capture(name, root, ov, warn)
 	if err != nil {
 		return trace.Request{}, err
 	}
@@ -244,6 +244,116 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec,
 		Exclusive: workflow.Writes[name],
 	}, nil
+}
+
+// capture resolves the configuration a workflow's agents run with, as it is
+// now. The target's lathe.toml is read here, at submission, so its values are
+// frozen into the snapshot with everything else. A broken file is a warning,
+// not a failure: the run goes ahead on the roster. Resolving now turns an
+// unknown agent, a bad timeout or a missing prompt into an error before
+// anything is recorded — and the resolved roster is what the worker executes
+// from, so editing a prompt cannot change queued work.
+func capture(name, root string, ov config.Overrides, warn io.Writer) (config.Snapshot, error) {
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		return config.Snapshot{}, err
+	}
+	if loaded, err := cfg.LoadProject(root); err != nil {
+		fmt.Fprintln(warn, "lathe: ignoring", err)
+	} else if loaded {
+		fmt.Fprintln(warn, "lathe: loaded", filepath.Join(root, "lathe.toml"))
+	}
+	return cfg.Capture(workflow.Agents[name], ov)
+}
+
+// submitRevision is the one revision submission; the CLI and the dashboard
+// both call it. It checks everything a revision needs before recording it —
+// the run's state, the evidence its records hold, the checkout, the pull
+// request and origin — and then Revise checks the run's state again inside
+// the transaction that appends the iteration, so whatever changed between the
+// two is refused rather than queued. A refusal changes nothing. The
+// configuration is resolved now and recorded with the iteration.
+func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Overrides, warn io.Writer) (int, error) {
+	request = strings.TrimSpace(request)
+	if request == "" {
+		return 0, errors.New("a revision needs the change to make")
+	}
+	row, err := db.Get(runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("no run %s", runID)
+	} else if err != nil {
+		return 0, err
+	}
+	if err := trace.Revisable(row); err != nil {
+		return 0, err
+	}
+	ev, err := worker.Evidence(dataRoot, row)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", trace.ErrNotRevisable, err)
+	}
+	var recorded worker.Spec
+	if err := json.Unmarshal(row.Spec, &recorded); err != nil || recorded.Workspace.Path == "" {
+		return 0, fmt.Errorf("%w: %s records no checkout to revise it in", trace.ErrNotRevisable, runID)
+	}
+	ws := recorded.Workspace
+	if err := ws.Check(); err != nil {
+		return 0, err
+	}
+	if err := permit.Clean(ws.Path); err != nil {
+		return 0, err
+	}
+	if _, err := workspace.CheckRevisable(ws.Path, ev); err != nil {
+		return 0, err
+	}
+	roster, err := capture("revise", ws.Path, ov, warn)
+	if err != nil {
+		return 0, err
+	}
+	spec, err := worker.Spec{
+		Version: worker.SpecVersion, Workflow: "revise", Request: request,
+		Workspace: ws, Roster: roster, Overrides: ov,
+	}.Marshal()
+	if err != nil {
+		return 0, err
+	}
+	return db.Revise(runID, row.Iteration, request, spec)
+}
+
+// reviseCmd submits a revision and, unless detached, waits for the iteration
+// it submitted — not the run's latest, which a later submission could move.
+func reviseCmd(args []string) int {
+	fs := flag.NewFlagSet("revise", flag.ExitOnError)
+	detach := fs.Bool("detach", false, "record the revision, print the run ID and iteration, and exit")
+	ov := overrideFlags(fs)
+	fs.Parse(args)
+	id := fs.Arg(0)
+	request := strings.TrimSpace(strings.Join(fs.Args()[min(1, fs.NArg()):], " "))
+	if id == "" || request == "" {
+		fmt.Fprintf(os.Stderr, "lathe revise: needs a run ID and the change, e.g. lathe revise <run-id> %q\n",
+			"handle the empty result without showing an error")
+		return 2
+	}
+	dataRoot, db, code := openData()
+	if db == nil {
+		return code
+	}
+	defer db.Close()
+	n, err := submitRevision(db, dataRoot, id, request, *ov, os.Stderr)
+	if err != nil {
+		return fail(err)
+	}
+	if err := manager.Start(dataRoot); err != nil {
+		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
+	}
+	row, _ := db.Get(id)
+	fmt.Printf("lathe revise %s: %s belongs to lathe until this iteration stops.\n"+
+		"  Do not edit files, commit or switch branches there. It pushes to %s only once validation accepts the change.\n",
+		id, row.Repo, row.Branch)
+	fmt.Printf("revise %s iteration %d queued\n", id, n)
+	if *detach {
+		return 0
+	}
+	return block(db, dataRoot, id, n, false)
 }
 
 // prepareAndSubmit is the dashboard's submission: exactly one of prompt and
@@ -279,14 +389,49 @@ func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 	return db.Submit(req)
 }
 
-// block waits for a terminal state and prints the run's report. Interrupting
-// it detaches: a detached run is a success of the command that was typed, so
-// the exit code is 0 and a shell chain keeps going.
-func block(db *trace.DB, dataRoot, id string, asJSON bool) int {
+// dashboardRevise and dashboardCancel are the dashboard's other two writes,
+// through the same paths the CLI takes: its own database handle is read-only.
+func dashboardRevise(runID, request string) (int, error) {
+	dataRoot, db, err := openWriter()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	return submitRevision(db, dataRoot, runID, request, config.Overrides{}, io.Discard)
+}
+
+func dashboardCancel(runID string) (string, error) {
+	_, db, err := openWriter()
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	return db.RequestCancel(runID)
+}
+
+func openWriter() (string, *trace.DB, error) {
+	dataRoot, err := trace.DataRoot()
+	if err != nil {
+		return "", nil, err
+	}
+	db, err := trace.Open(dataRoot)
+	return dataRoot, db, err
+}
+
+// block waits for a terminal state and prints the report. iteration is the
+// one to wait for, or -1 for the run as a whole: a run is terminal when its
+// latest iteration is, and a revision submitted meanwhile makes it live again.
+// Interrupting it detaches: a detached run is a success of the command that
+// was typed, so the exit code is 0 and a shell chain keeps going.
+func block(db *trace.DB, dataRoot, id string, iteration int, asJSON bool) int {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
+	again := "lathe wait " + id
+	if iteration >= 0 {
+		again = fmt.Sprintf("lathe wait --iteration %d %s", iteration, id)
+	}
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -294,12 +439,23 @@ func block(db *trace.DB, dataRoot, id string, asJSON bool) int {
 		if err != nil {
 			return fail(err)
 		}
-		if trace.Terminal(row.Status) {
-			return report(row, dataRoot, asJSON)
+		n, status := row.Iteration, row.Status
+		if iteration >= 0 {
+			its, err := db.Iterations(id)
+			if err != nil {
+				return fail(err)
+			}
+			if iteration >= len(its) {
+				return fail(fmt.Errorf("%s has no iteration %d", id, iteration))
+			}
+			n, status = iteration, its[iteration].Status
+		}
+		if trace.Terminal(status) {
+			return report(db, row, dataRoot, n, asJSON)
 		}
 		select {
 		case <-sig:
-			fmt.Printf("\ndetached from %s; it keeps running\n  lathe wait %s\n  lathe cancel %s\n", id, id, id)
+			fmt.Printf("\ndetached from %s; it keeps running\n  %s\n  lathe cancel %s\n", id, again, id)
 			return 0
 		case <-tick.C:
 		}
@@ -328,10 +484,32 @@ func outcome(status string) int {
 // parallel; validation.json now holds every round's reports and how it ended.
 var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "validation.json", "pr.json"}
 
-// report prints what a finished run produced, including the partial reports
-// of one that failed, was cancelled, or was lost.
-func report(row trace.Row, dataRoot string, asJSON bool) int {
-	dir := filepath.Join(dataRoot, "runs", row.ID)
+// iterationView is one iteration as show and wait --json print it, with the
+// models its recorded configuration assigned each agent.
+type iterationView struct {
+	trace.Iteration
+	Models map[string]string `json:"models"`
+}
+
+// report prints what an iteration produced, including the partial reports of
+// one that failed, was cancelled, or was lost, and the run's history around
+// it. Tokens and cost are the run's, across every iteration. An iteration
+// still queued or running has written nothing yet, so the reports shown are
+// the previous iteration's, and say so.
+func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) int {
+	its, err := db.Iterations(row.ID)
+	if err != nil {
+		return fail(err)
+	}
+	it := trace.Iteration{N: n, Request: row.Request, Status: row.Status, Reason: row.Reason}
+	if n < len(its) {
+		it = its[n]
+	}
+	from := n
+	if !trace.Terminal(it.Status) && n > 0 {
+		from = n - 1
+	}
+	dir := worker.ReportDir(dataRoot, row.ID, from)
 	var present []string
 	for _, name := range reportFiles {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
@@ -339,19 +517,44 @@ func report(row trace.Row, dataRoot string, asJSON bool) int {
 		}
 	}
 	if asJSON {
+		views := make([]iterationView, len(its))
+		for i, x := range its {
+			views[i] = iterationView{x, worker.Models(x.Spec)}
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(map[string]any{"run": row, "dir": dir, "reports": present})
-		return outcome(row.Status)
+		enc.Encode(map[string]any{"run": row, "iteration": n, "iterations": views,
+			"dir": dir, "reports_iteration": from, "reports": present})
+		return outcome(it.Status)
 	}
 
-	fmt.Printf("\nlathe %s %s: %s  %d tokens  $%.5f\n  %s\n",
-		row.Workflow, row.ID, row.Status, row.Tokens, row.Cost, dir)
-	if row.Reason != "" {
-		fmt.Printf("  %s\n", row.Reason)
+	label := ""
+	if len(its) > 1 {
+		label = fmt.Sprintf(" iteration %d", n)
+	}
+	fmt.Printf("\nlathe %s %s%s: %s  %d tokens  $%.5f\n  %s\n",
+		row.Workflow, row.ID, label, it.Status, row.Tokens, row.Cost, dir)
+	if it.Reason != "" {
+		fmt.Printf("  %s\n", it.Reason)
 	}
 	if row.Commit != "" {
-		fmt.Printf("  %s @ %s\n", row.Branch, row.Commit[:min(8, len(row.Commit))])
+		fmt.Printf("  %s @ %s\n", row.Branch, workspace.Short(row.Commit))
+	}
+	if len(its) > 1 {
+		fmt.Println("  iterations:")
+		for _, x := range its {
+			commit := ""
+			if x.Commit != "" {
+				commit = "  @ " + workspace.Short(x.Commit)
+				if x.Remote != "" && x.Remote != x.Commit {
+					commit += " (not on origin, which is at " + workspace.Short(x.Remote) + ")"
+				}
+			}
+			fmt.Printf("    %d  %-9s %s%s\n", x.N, x.Status, clip(x.Request, 72), commit)
+		}
+	}
+	if from != n {
+		fmt.Printf("  iteration %d is %s; the reports below are iteration %d's\n", n, it.Status, from)
 	}
 	for _, name := range present {
 		b, err := os.ReadFile(filepath.Join(dir, name))
@@ -386,7 +589,8 @@ func managerCmd() int {
 	// that calls os.Exit cannot be reused by a second command.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := manager.Run(ctx, dataRoot, version, os.Stdout, prepareAndSubmit); err != nil {
+	actions := dashboard.Actions{Submit: prepareAndSubmit, Revise: dashboardRevise, Cancel: dashboardCancel}
+	if err := manager.Run(ctx, dataRoot, version, os.Stdout, actions); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe manager:", err)
 		return 1
 	}
@@ -438,10 +642,12 @@ func runs(args []string) int {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SUBMITTED\tSTATUS\tWORKFLOW\tREPO\tQUEUED\tRAN\tTOKENS\tCOST\tRUN")
+	// Ordered by latest activity, so a revised run sits where its revision
+	// was submitted; SUBMITTED stays when the run was created.
+	fmt.Fprintln(w, "SUBMITTED\tSTATUS\tWORKFLOW\tITER\tREPO\tQUEUED\tRAN\tTOKENS\tCOST\tRUN")
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t$%.5f\t%s\n",
-			r.Submitted, r.Status, r.Workflow, filepath.Base(r.Repo),
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%d\t$%.5f\t%s\n",
+			r.Submitted, r.Status, r.Workflow, r.Iteration, filepath.Base(r.Repo),
 			span(r.Submitted, r.Started), span(r.Started, r.Ended), r.Tokens, r.Cost, r.ID)
 	}
 	return flush(w)
@@ -466,6 +672,7 @@ func span(from, to string) string {
 func show(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the run as JSON")
+	iteration := fs.Int("iteration", -1, "show this iteration's outcome and reports (default: the latest)")
 	fs.Parse(args)
 	id := fs.Arg(0)
 	if id == "" {
@@ -481,12 +688,26 @@ func show(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	return report(row, dataRoot, *asJSON)
+	n := row.Iteration
+	if *iteration >= 0 {
+		n = *iteration
+	}
+	return report(db, row, dataRoot, n, *asJSON)
+}
+
+// clip shortens s to n runes for a one-line listing.
+func clip(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }
 
 func waitCmd(args []string) int {
 	fs := flag.NewFlagSet("wait", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the result as JSON")
+	iteration := fs.Int("iteration", -1, "wait for this iteration rather than the run")
 	fs.Parse(args)
 	id := fs.Arg(0)
 	if id == "" {
@@ -501,7 +722,7 @@ func waitCmd(args []string) int {
 	if _, err := db.Get(id); err != nil {
 		return fail(err)
 	}
-	return block(db, dataRoot, id, *asJSON)
+	return block(db, dataRoot, id, *iteration, *asJSON)
 }
 
 func cancel(args []string) int {

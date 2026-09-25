@@ -1,5 +1,6 @@
 // Package dashboard serves a view of the trace database through an embedded
-// page and JSON endpoints, plus one route that queues a run for a project.
+// page and JSON endpoints, plus three routes that write through the CLI's own
+// paths: queue a run for a project, revise a run, and cancel one.
 package dashboard
 
 import (
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/worker"
 )
 
 //go:embed index.html
@@ -32,6 +34,16 @@ var hosts = map[string]bool{Addr: true, "localhost:4700": true}
 // configuration, checkout and issue handling out of this package.
 type Submit func(workflow, repo, prompt, issue string) (string, error)
 
+// Actions are the dashboard's writes, each the CLI's own path handed in by the
+// manager: Submit queues a run, Revise appends an iteration to one and returns
+// its number, Cancel asks one to stop and returns its status. A nil action
+// registers no route, which is what keeps a read-only dashboard read-only.
+type Actions struct {
+	Submit Submit
+	Revise func(runID, request string) (int, error)
+	Cancel func(runID string) (string, error)
+}
+
 // maxSubmitBody bounds a POST body; a prompt is text someone typed.
 const maxSubmitBody = 64 << 10
 
@@ -40,9 +52,8 @@ const maxSubmitBody = 64 << 10
 // listener. The database is opened read-only — a UI bug cannot write — and
 // created first if it is not there yet, so a fresh install serves an empty
 // dashboard rather than an error telling you to go start a run. Submissions go
-// through submit, never through this handle; a nil submit registers no POST
-// route at all.
-func Handler(dataRoot, version string, submit Submit) http.Handler {
+// through actions, never through this handle.
+func Handler(dataRoot, version string, actions Actions) http.Handler {
 	if err := trace.Init(dataRoot); err != nil {
 		return failed(err)
 	}
@@ -50,7 +61,7 @@ func Handler(dataRoot, version string, submit Submit) http.Handler {
 	if err != nil {
 		return failed(err)
 	}
-	return handler(db, version, submit)
+	return handler(db, version, actions)
 }
 
 func failed(err error) http.Handler {
@@ -61,10 +72,16 @@ func failed(err error) http.Handler {
 
 // handler is the whole server minus the listener, which is what lets a test
 // exercise the routes without binding a port.
-func handler(db *trace.DB, version string, submit Submit) http.Handler {
+func handler(db *trace.DB, version string, actions Actions) http.Handler {
 	mux := http.NewServeMux()
-	if submit != nil {
-		mux.HandleFunc("POST /api/projects/runs", submitRun(db, submit))
+	if actions.Submit != nil {
+		mux.HandleFunc("POST /api/projects/runs", submitRun(db, actions.Submit))
+	}
+	if actions.Revise != nil {
+		mux.HandleFunc("POST /api/runs/{id}/revisions", reviseRun(actions.Revise))
+	}
+	if actions.Cancel != nil {
+		mux.HandleFunc("POST /api/runs/{id}/cancel", cancelRun(actions.Cancel))
 	}
 	mux.HandleFunc("GET /api/meta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"version": version}, nil)
@@ -137,11 +154,27 @@ func handler(db *trace.DB, version string, submit Submit) http.Handler {
 			writeJSON(w, nil, err)
 			return
 		}
+		iterations, err := db.Iterations(id)
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		// The configuration each iteration ran with, as the models it gave each
+		// agent: the whole snapshot carries every prompt, which is too much to
+		// resend every poll.
+		type iterationView struct {
+			trace.Iteration
+			Models map[string]string `json:"models"`
+		}
+		views := make([]iterationView, len(iterations))
+		for i, it := range iterations {
+			views[i] = iterationView{it, worker.Models(it.Spec)}
+		}
 		// The cursor bounds one poll; whatever is left arrives on the next one.
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), 500)
-		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events}, err)
+		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events, "iterations": views}, err)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hosts[r.Host] {
@@ -152,30 +185,17 @@ func handler(db *trace.DB, version string, submit Submit) http.Handler {
 	})
 }
 
-// submitRun queues a run against a recorded project. It is browser-only: the
-// Origin must be the page this server served, which a missing Origin is not,
-// and the JSON content type keeps a cross-site form post from being a simple
-// request. The CLI stays the way to script submissions.
+// submitRun queues a run against a recorded project. It is browser-only, as
+// every write route is: see browserJSON.
 func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if r.Header.Get("Origin") != "http://"+r.Host || mediaType != "application/json" {
-			submitError(w, http.StatusForbidden, "forbidden", "")
-			return
-		}
 		var body struct {
 			Repo     string `json:"repo"`
 			Workflow string `json:"workflow"`
 			Prompt   string `json:"prompt"`
 			Issue    string `json:"issue"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBody)).Decode(&body); err != nil {
-			var tooBig *http.MaxBytesError
-			if errors.As(err, &tooBig) {
-				submitError(w, http.StatusRequestEntityTooLarge, "request is larger than 64 KiB", "")
-				return
-			}
-			submitError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "")
+		if !browserJSON(w, r, &body) {
 			return
 		}
 		prompt, issue := strings.TrimSpace(body.Prompt), strings.TrimSpace(body.Issue)
@@ -201,10 +221,7 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 			return
 		}
 		id, err := submit(body.Workflow, body.Repo, prompt, issue)
-		if errors.Is(err, trace.ErrDuplicateBuild) {
-			// Submit names the holder after the sentinel's text.
-			holder, _ := strings.CutPrefix(err.Error(), trace.ErrDuplicateBuild.Error()+": ")
-			submitError(w, http.StatusConflict, trace.ErrDuplicateBuild.Error(), holder)
+		if duplicate(w, err) {
 			return
 		}
 		// ponytail: every other failure is reported as the request's problem;
@@ -217,6 +234,99 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"run_id": id})
 	}
+}
+
+// reviseRun appends a revision to a run, with the same protections as New
+// run. A refusal is the run's state, not the request's shape, so it is a
+// conflict; the page stays on the run and shows its queued state on success.
+func reviseRun(revise func(runID, request string) (int, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Request string `json:"request"`
+		}
+		if !browserJSON(w, r, &body) {
+			return
+		}
+		request := strings.TrimSpace(body.Request)
+		if request == "" {
+			submitError(w, http.StatusBadRequest, "describe the change to make", "")
+			return
+		}
+		id := r.PathValue("id")
+		n, err := revise(id, request)
+		if duplicate(w, err) {
+			return
+		}
+		switch {
+		case errors.Is(err, trace.ErrNotRevisable):
+			submitError(w, http.StatusConflict, err.Error(), "")
+			return
+		case err != nil:
+			submitError(w, http.StatusBadRequest, err.Error(), "")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"run_id": id, "iteration": n})
+	}
+}
+
+// cancelRun is lathe cancel for the run page: a queued iteration is cancelled
+// outright, an active one stops when its worker notices.
+func cancelRun(cancel func(runID string) (string, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !browserJSON(w, r, &struct{}{}) {
+			return
+		}
+		status, err := cancel(r.PathValue("id"))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			submitError(w, http.StatusNotFound, "no such run", "")
+			return
+		case errors.Is(err, trace.ErrAlreadyDone):
+			submitError(w, http.StatusConflict, "already finished: "+status, "")
+			return
+		case err != nil:
+			submitError(w, http.StatusInternalServerError, err.Error(), "")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": status})
+	}
+}
+
+// browserJSON is every write route's gate and decoder. The Origin must be the
+// page this server served, which a missing Origin is not, and the JSON content
+// type keeps a cross-site form post from being a simple request. The CLI stays
+// the way to script writes. It reports false once it has answered.
+func browserJSON(w http.ResponseWriter, r *http.Request, body any) bool {
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if r.Header.Get("Origin") != "http://"+r.Host || mediaType != "application/json" {
+		submitError(w, http.StatusForbidden, "forbidden", "")
+		return false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBody)).Decode(body); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			submitError(w, http.StatusRequestEntityTooLarge, "request is larger than 64 KiB", "")
+			return false
+		}
+		submitError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "")
+		return false
+	}
+	return true
+}
+
+// duplicate answers a submission another run's checkout ownership refused,
+// naming the holder, and reports whether it did.
+func duplicate(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, trace.ErrDuplicateBuild) {
+		return false
+	}
+	// Submit and Revise name the holder after the sentinel's text.
+	holder, _ := strings.CutPrefix(err.Error(), trace.ErrDuplicateBuild.Error()+": ")
+	submitError(w, http.StatusConflict, trace.ErrDuplicateBuild.Error(), holder)
+	return true
 }
 
 func submitError(w http.ResponseWriter, code int, msg, runID string) {

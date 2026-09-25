@@ -27,9 +27,9 @@ func seed(t *testing.T, db *DB, runID string) string {
 func seedRun(tb testing.TB, db *DB, runID, repo string) {
 	tb.Helper()
 	if _, err := db.sql.Exec(
-		`INSERT INTO runs (run_id, workflow, repo, request, status, submitted_at, started_at)
-		 VALUES (?, 'build', ?, 'do a thing', 'running', ?, ?)`,
-		runID, repo, nowUTC(), nowUTC()); err != nil {
+		`INSERT INTO runs (run_id, workflow, repo, request, status, submitted_at, started_at, activity_at)
+		 VALUES (?, 'build', ?, 'do a thing', 'running', ?, ?, ?)`,
+		runID, repo, nowUTC(), nowUTC(), nowUTC()); err != nil {
 		tb.Fatal(err)
 	}
 }

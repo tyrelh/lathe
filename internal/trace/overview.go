@@ -158,7 +158,8 @@ func (d *DB) Total() (int, error) {
 const runColumns = `SELECT run_id, workflow, repo, request, status,
 	COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(attempt_id, ''),
 	COALESCE(reason, ''), COALESCE(submitted_at, ''), COALESCE(started_at, ''),
-	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, '')`
+	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, ''),
+	iteration, COALESCE(activity_at, '')`
 
 func scanRows(rows *sql.Rows) ([]Row, error) {
 	defer rows.Close()
@@ -168,7 +169,7 @@ func scanRows(rows *sql.Rows) ([]Row, error) {
 		var spec string
 		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status,
 			&r.Branch, &r.Commit, &r.AttemptID, &r.Reason, &r.Submitted, &r.Started,
-			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec); err != nil {
+			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity); err != nil {
 			return nil, err
 		}
 		r.Spec = []byte(spec)
