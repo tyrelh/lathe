@@ -83,7 +83,7 @@ func TestRoutes(t *testing.T) {
 	if body := get("/"); !strings.Contains(body, "<title>lathe</title>") {
 		t.Error("/ did not serve the embedded page")
 	} else {
-		for _, want := range []string{"<h2>phases</h2>", "<h2>costs</h2>", "<h2>details</h2>", "<h2>events</h2>"} {
+		for _, want := range []string{`role="tablist"`, `aria-controls="phases-panel"`, `aria-controls="events-panel"`, `id="run-side"`, "<h2>costs</h2>"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("/ missing %q", want)
 			}

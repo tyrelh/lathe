@@ -7,8 +7,10 @@ class Element {
   constructor() {
     this.innerHTML = ''; this.children = []; this.attrs = new Map();
     this.textContent = ''; this.className = ''; this.style = {}; this.dataset = {};
-    this.scrollTop = 0; this.clientHeight = 100; this.scrollHeight = 1000;
+    this.clientLeft = 0; this.scrollLeft = 0; this.clientWidth = 400; this.scrollTop = 0; this.clientHeight = 100; this.scrollHeight = 1000;
   }
+  appendChild(el) { this.children.push(el); }
+  getBoundingClientRect() { return {top: 0, bottom: 0}; }
   insertRow() { const row = new Element(); this.children.push(row); return row; }
   setAttribute(k, v) { this.attrs.set(k, v); }
   removeAttribute(k) { this.attrs.delete(k); }
@@ -20,29 +22,34 @@ class Element {
 }
 for (const id of ['app', 'status', 'note', 'version',
                   'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label',
-                  'project-head', 'project-runs']) nodes.set(id, new Element());
+                  'project-head', 'project-runs', 'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
 // Parse only the scaffold IDs when app is replaced. In particular, do not
 // precreate #log: that would skip the first-render branch in detail().
 const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
-                     'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status', 'log'];
+  'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status', 'log', 'run-total', 'run-identity',
+  'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
+const pageIDs = ['page-summary', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
+  'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status'];
 const appNode = nodes.get('app');
 let appHTML = '', scaffoldCount = 0;
 Object.defineProperty(appNode, 'innerHTML', {
   get: () => appHTML,
   set: html => {
     appHTML = html;
-    for (const id of scaffoldIDs) nodes.delete(id);
+    for (const id of [...scaffoldIDs, ...pageIDs]) nodes.delete(id);
     const ids = [...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
     for (const id of ids) {
-      assert(scaffoldIDs.includes(id), `unregistered app ID ${id}`);
+      assert([...scaffoldIDs, ...pageIDs].includes(id), `unregistered app ID ${id}`);
       nodes.set(id, new Element());
     }
     if (ids.includes('log')) {
       scaffoldCount++;
-      assert.deepEqual(ids, scaffoldIDs, 'all run regions come from the initial scaffold');
+      for (const id of scaffoldIDs) assert(ids.includes(id), `stable run region: ${id}`);
     }
   },
 });
+const pageHTML = () => appHTML.replace(/(<[^>]+id="([^"]+)"[^>]*>)/g,
+  (tag, _, id) => tag + (nodes.get(id)?.innerHTML || ''));
 let response, resolveFetch, failNext = null, frames = [];
 let routeResponses = null;
 const observers = [];
@@ -135,10 +142,8 @@ const planRow = html.split('class="node"')[1];
 assert(planRow.indexOf('data-phase="c1"') < planRow.indexOf('data-phase="c3"'), 'blocks follow seq');
 assert(!planRow.split('class="track"')[1].split('</div>')[0].includes('c2'), 'review is its own row');
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
-assert(html.includes('<span class="piece" data-line="0">✅</span>'), 'the status mark leads the label');
-assert(!html.includes('data-line="0">plan<'), 'the row names the phase, so the block does not');
-assert(!html.includes('data-line="1">success'), 'the status word is only in the accessible name');
-assert(html.includes('data-lines="1"'), 'a label with nothing under the status sits on one centred line');
+assert(html.includes('<span class="piece" aria-hidden="true">✅</span>'), 'the block shows its status mark');
+assert(!html.includes('data-line='), 'all chart rows use a single line');
 assert(html.includes('class="block ok" style="--hue:var(--dim);'), 'a phase with no model fills dim, border the status');
 assert.equal(call('modelColour', 'claude-fable-5.1'), 'color-mix(in srgb, #D57355 100%, var(--card))', 'dotted names match');
 assert.equal(call('modelColour', 'kimi-k2.6'), 'color-mix(in srgb, #1C81FA 75%, var(--card))', 'models draw at their tier');
@@ -170,7 +175,7 @@ const open = ph(1,'implement',T(0),'',{status:'fail'});
 const liveRun = {status:'running', started_at:T(0), ended_at:''};
 const w = now => call('gantt', liveRun, [ph(1,'implement',T(5),'',{status:'fail'})], now);
 assert(w(ms(10)).includes('implement · running') && w(ms(10)).includes('>now<'));
-assert(w(ms(10)).includes('data-line="0">⏳</span>'), 'running is marked');
+assert(w(ms(10)).includes('aria-hidden="true">⏳</span>'), 'running is marked');
 assert(w(ms(10)).includes('left:min(50.000%, calc(100% - 2px));width:max(2px, 50.000%)'), w(ms(10)));
 assert(w(ms(20)).includes('left:min(25.000%, calc(100% - 2px));width:max(2px, 75.000%)'), 'a running phase grows with now');
 const cut = {status:'fail', started_at:T(0), ended_at:T(40)};
@@ -222,41 +227,15 @@ const history = call('renderIterations', {iterations:[
 for (const text of ['&lt;greet>', 'abcdef12', 'origin at abcdef12', 'kimi-k3', 'planner: moonshotai/kimi-k3', 'not published'])
   assert(history.includes(text), `history: ${text}`);
 
-// arrange: each piece inside or beside its block, cut or hidden when there is
-// no room, and sublanes for overlaps. x is from the block's left edge.
+// Status marks stay right-aligned inside wide blocks and prefer spilling right.
 const arrange = (blocks, width) => JSON.parse(JSON.stringify(call('arrange', blocks, width)));
-const lines = (blocks, width) => arrange(blocks, width).map(b => b.lines);
-const at = (x, sep = false) => ({x, sep});
-// Everything fits: one piece, then two side by side under it.
-assert.deepEqual(lines([{left:0, width:200, lines:[[40], [50, 50]]}], 400),
-  [[[at(4)], [at(4), at(54, true)]]]);
-// Pieces choose one by one, in reading order: what fits stays inside, the
-// rest of that line starts again beside the block.
-assert.deepEqual(lines([{left:0, width:60, lines:[[30], [40, 50, 60]]}], 400),
-  [[[at(4)], [at(4), at(64), at(114, true)]]]);
-assert.deepEqual(arrange([{left:0, width:100, lines:[[40], [50, 50]]}], 400)[0],
-  {lane:0, side:'right', lines:[[at(4)], [at(4), at(104)]]});
-// No room on the right: the left, with the line ending at the gap.
-assert.deepEqual(arrange([{left:300, width:20, lines:[[40], []]}], 330)[0],
-  {lane:0, side:'left', lines:[[at(-44)], []]});
-// Nowhere fits whole: cut to the wider side, and the next block's label then
-// sees what that took.
-assert.deepEqual(lines([{left:0, width:10, lines:[[100], []]}, {left:60, width:10, lines:[[5], []]}], 200),
-  [[[{x:14, sep:false, cut:42}], []], [[at(14)], []]]);
-// A long name is cut inside a block with more room than either side.
-assert.deepEqual(lines([{left:0, width:100, lines:[[300], [20]]}], 110),
-  [[[{x:4, sep:false, cut:92}], [at(4)]]]);
-// A spilled label is an obstacle for its neighbour, which then has no room.
-assert.deepEqual(lines([{left:0, width:10, lines:[[40], []]}, {left:60, width:10, lines:[[40], []]}], 70),
-  [[[at(14)], []], [[{hidden:true}], []]]);
-// Nowhere wide enough to read: hidden rather than a stray glyph at the edge.
-assert.deepEqual(lines([{left:0, width:3, lines:[[80], []]}, {left:20, width:3, lines:[[80], []]}], 30),
-  [[[{hidden:true}], []], [[{hidden:true}], []]]);
-// The first piece past the room is cut and the rest of its line hidden.
-assert.deepEqual(lines([{left:0, width:10, lines:[[20], [30, 40, 50]]}], 100),
-  [[[at(14)], [at(14), {x:44, sep:true, cut:52}, {hidden:true}]]]);
-assert.deepEqual(arrange([{left:50, width:2, lines:[[5]]}, {left:51, width:2, lines:[[5]]}, {left:60, width:2, lines:[[5]]}], 200)
-  .map(s => s.lane), [0, 1, 0], 'overlapping minimum-width blocks take sublanes');
+assert.deepEqual(arrange([{left:0, width:200, label:20}], 400), [{x:177, side:'inside'}]);
+assert.deepEqual(arrange([{left:40, width:2, label:16}], 100), [{x:5, side:'right'}]);
+assert.deepEqual(arrange([{left:98, width:2, label:16}], 100), [{x:-19, side:'left'}]);
+assert.deepEqual(arrange([{left:40, width:2, label:16}, {left:50, width:40, label:16}], 100),
+  [{x:-19, side:'left'}, {x:21, side:'inside'}], 'a neighbour can force left overflow');
+assert.deepEqual(arrange([{left:0, width:2, label:16}], 10), [{hidden:true}],
+  'a status with no room remains available in the tooltip instead of clipping');
 
 // Generic reports are data, escaped to the keys, and nothing falsy vanishes.
 const generic = call('renderReport', {'<key>': [{name: '<b>', none: null, off: false, zero: 0, list: [], obj: {}}], text: 'a\n  b'});
@@ -281,32 +260,28 @@ const costs = () => nodes.get('costs').innerHTML;
   serve(events, phases, {...run, repo:'/repo/MiXeD <&"\'>', request:'fix <prompt>&'});
   await evaluate('tick()');
   assert.equal(scaffoldCount, 1, 'the first poll creates the whole run scaffold');
-  const scaffold = nodes.get('app').innerHTML;
-  const sections = [...scaffold.matchAll(/<section class="card[^>]*>([\s\S]*?)<\/section>/g)].map(m => m[1]);
-  assert.equal(sections.length, 6, 'only the six requested top-level sections');
-  assert.deepEqual(sections.map(s => s.match(/<h2[^>]*>(.*?)<\/h2>/)[1]),
-    ['', 'phases', 'costs', 'details', 'iterations', 'events']);
-  assert(sections[1].includes('<div id="phases"></div>') && sections[1].includes('id="phase"'),
-    'the selected-phase inspector stays nested within PHASES');
-  assert(sections[2].includes('id="costs"') && sections[3].includes('id="summary"'));
+  const scaffold = pageHTML();
+  for (const id of ['phases-panel', 'events-panel', 'events-body', 'run-side'])
+    assert(scaffold.includes(`id="${id}"`), `bounded run region: ${id}`);
+  assert(scaffold.includes('role="tablist"') && scaffold.includes('aria-controls="phases-panel"'));
+  assert(scaffold.includes('id="events-panel" role="tabpanel" aria-labelledby="tab-events" hidden'));
   assert.equal(nodes.get('project-title').innerHTML, '/repo/MiXeD &lt;&amp;&quot;&#39;>');
   assert.equal(nodes.get('head').innerHTML, 'fix &lt;prompt>&amp;');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
-  assert(costs().includes('$0.30000') && costs().includes('unknown') && costs().includes('model') && costs().includes('$0.10000'), costs());
+  assert(nodes.get('run-total').textContent === '$0.30000' && costs().includes('unknown') && costs().includes('model') && costs().includes('$0.10000'), costs());
   assert(costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), 'partial rows still load');
-  assert(costs().indexOf('$0.30000') < costs().indexOf('providers') && costs().indexOf('providers') < costs().indexOf('models'),
-    'run total precedes providers, which precede models');
+  assert(costs().indexOf('providers') < costs().indexOf('models'), 'providers precede models');
   assert(!costs().includes('unknown/model'), 'model names are bare');
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate('providerCosts()'))), [{provider:'unknown', cost:0.1}],
     'missing provider becomes unknown in providerCosts');
   assert(chart().includes('fix · model · success · $0.10000'), chart());
-  assert(chart().includes('data-line="0">✅</span><span class="piece tight" data-line="0">model</span><span class="piece" data-line="1">$0.10000</span>'),
-    'status and model share the first line, cost the second');
+  assert(chart().includes('<span class="piece" aria-hidden="true">✅</span></button>'),
+    'only the status is visible; model and cost remain in the tooltip');
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
   assert.equal(chart().split('class="node"').length - 1, 1, 'both entries share a row');
   assert(panel().includes('Select a phase.'));
-  assert.equal(nodes.get('app').scrollTop, 0, 'must not scroll a reader away');
-  assert.equal(observers[0].watching[0], nodes.get('phases'), 'the chart is watched for width changes');
+  assert.equal(nodes.get('events-body').scrollTop, 0, 'must not scroll a reader away');
+  assert(observers[0].watching.includes(nodes.get('phases')), 'the chart is watched for width changes');
   assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow toggle is shown on a run page');
   assert.equal(nodes.get('follow-box').checked, undefined, 'follow defaults off');
 
@@ -329,13 +304,13 @@ const costs = () => nodes.get('costs').innerHTML;
 
   // With follow disabled, being at the bottom must not pull the page down.
   nodes.get('follow-box').checked = false;
-  nodes.get('app').scrollTop = nodes.get('app').scrollHeight - nodes.get('app').clientHeight;
+  nodes.get('events-body').scrollTop = nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight;
   serve([event('input',{prompt:'correction'}),event('usage',{attempt:1,seq:1,provider:'pi',tokens:20,cost:0.2}),
          event('log','test command','p2','command'),event('log','  <b>spaced</b>\n  out','p2','output'),
          event('log','','p2','output')]);
   await evaluate('tick()');
   assert.equal(evaluate('done'), true);
-  assert.equal(nodes.get('app').scrollTop, nodes.get('app').scrollHeight - nodes.get('app').clientHeight, 'follow off preserves scroll position');
+  assert.equal(nodes.get('events-body').scrollTop, nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight, 'follow off preserves scroll position');
   assert.deepEqual({...twin.focused}, {preventScroll: true}, 'focus restored without scrolling');
   twin.focused = null; context.document.activeElement = new Element();
   evaluate('draw()');
@@ -370,48 +345,48 @@ const costs = () => nodes.get('costs').innerHTML;
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
   const summary = nodes.get('summary').innerHTML;
   for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
-                      '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>',
-                      '<dt>repo</dt><dd>repo</dd>', '<dt>run id</dt><dd>run</dd>'])
+                      '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>'])
     assert(summary.includes(text), `details card: ${text}`);
-  assert(!summary.includes('<dt>cost</dt>'), 'cost is only in COSTS, not DETAILS');
+  assert(!summary.includes('<dt>cost</dt>'), 'cost is shown once in the run summary');
   assert(!costs().includes('Loading usage…') && costs().includes('pi') && costs().includes('model'),
     'finished pages have final rows');
   assert(!costs().includes('pi/unknown') && !costs().includes('unknown/model'), 'model names are bare');
   assert.equal(scaffoldCount, 1, 'a redraw does not rebuild the append-only event stream');
   assert.equal(nodes.get('note').textContent, 'run complete');
-  assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
+  assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow remains available in event controls after completion');
 
   // Label placement reads the rendered pixels, resets what it set last time,
   // and runs again when the chart's width changes.
-  const piece = (line, scrollWidth) => Object.assign(new Element(), {dataset: {line: String(line)}, scrollWidth});
-  const blocks = [[piece(0, 20), piece(1, 30)], [piece(0, 40)]]
+  const piece = scrollWidth => Object.assign(new Element(), {scrollWidth});
+  const blocks = [[piece(20)], [piece(40)]]
     .map((children, i) => Object.assign(new Element(), {offsetLeft: i * 100, offsetWidth: 10, children}));
   const pieces = blocks.flatMap(b => b.children);
   const track = Object.assign(new Element(), {clientWidth: 400, querySelectorAll: () => blocks});
   nodes.get('phases').querySelectorAll = sel => sel === '.track' ? [track] : [];
-  pieces[2].style.display = 'none';   // left over from an earlier placement
+  pieces[1].style.display = 'none';
   evaluate('layout()');
-  assert.deepEqual(pieces.map(c => c.style.left), ['14px', '14px', '14px']);
-  assert.equal(pieces[2].style.display, '', 'placement starts from a clean slate');
-  track.clientWidth = 150;   // the rail expanded: the last label no longer fits on the right
+  assert.deepEqual(pieces.map(c => c.style.left), ['13px', '13px']);
+  assert.equal(pieces[1].style.display, '', 'placement starts from a clean slate');
+  track.clientWidth = 150;
   observers[0].callback([]); observers[0].callback([]);
   assert.equal(frames.length, 1, 'resize callbacks coalesce into one frame');
   frames.shift()();
-  assert.deepEqual(pieces.map(c => c.style.left), ['14px', '14px', '-44px']);
-  blocks[1].offsetLeft = 5;   // overlapping minimum-width blocks
+  assert.deepEqual(pieces.map(c => c.style.left), ['13px', '-43px']);
+  blocks[1].offsetLeft = 5;
   evaluate('layout()');
-  assert.deepEqual(blocks.map(b => b.style.top), ['1px', '41px']);
-  assert.equal(track.style.height, '80px');
+  assert.equal(pieces[0].style.display, 'none');
+  assert(blocks.every(b => b.style.top === undefined), 'overlaps never introduce extra lanes');
+  assert.equal(track.style.height, undefined);
   nodes.get('phases').querySelectorAll = () => [];
 
   // With follow enabled, the page snaps to the tail when the reader is already at the bottom.
-  evaluate('done = false');
+  evaluate("done = false; activeTab = 'events'");
   nodes.get('follow-box').checked = true;
-  nodes.get('app').scrollTop = nodes.get('app').scrollHeight - nodes.get('app').clientHeight;
+  nodes.get('events-body').scrollTop = nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight;
   serve([event('log','tail event')]);
   await evaluate('tick()');
-  assert.equal(nodes.get('app').scrollTop, nodes.get('app').scrollHeight, 'follow on scrolls to the tail');
-  assert.equal(nodes.get('follow-label').style.display, 'none', 'follow toggle is hidden once the run is complete');
+  assert.equal(nodes.get('events-body').scrollTop, nodes.get('events-body').scrollHeight, 'follow on scrolls to the tail');
+  assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow remains available in event controls after completion');
 
   // Each plan/review keeps its own output across pages. The readable result
   // precedes raw replies and inputs, with nested disclosures retained on polls.
@@ -492,7 +467,7 @@ const costs = () => nodes.get('costs').innerHTML;
   serve(blankPage, phases, priced);
   await evaluate('tick()');
   assert.equal(scaffoldCount, 2, 'navigation makes a new run scaffold');
-  assert(costs().includes('$0.90000') && costs().includes('Loading usage…'), costs());
+  assert(nodes.get('run-total').textContent === '$0.90000' && costs().includes('Loading usage…'), costs());
   assert(!costs().includes('No usage recorded') && !costs().includes('unknown/model'),
     'neither an empty state nor the previous run leaks into a partial page');
 
@@ -530,7 +505,7 @@ const costs = () => nodes.get('costs').innerHTML;
   const beforeColours = colouredRows(costsHtml);
   assert([...beforeColours.values()].every(Boolean), 'every cost row has a coloured dot');
   assert(costsHtml.includes('class="model-dot" aria-hidden="true"'), 'dots are decorative');
-  assert.equal(costsHtml.indexOf('$0.90000') < costsHtml.indexOf('class="model-costs"'), true);
+  assert.equal(nodes.get('run-total').textContent, '$0.90000');
 
   serve([
     event('usage',{attempt:2,seq:1,provider:'a',model:'b/c',cost:0.15},'p1'),
@@ -575,11 +550,11 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate('navigate()');
   await new Promise(setImmediate); // navigate launches an async tick
   assert.equal(scaffoldCount, 3);
-  assert(costs().includes('$0.50000') && costs().includes('No usage recorded.'), costs());
+  assert(nodes.get('run-total').textContent === '$0.50000' && costs().includes('No usage recorded.'), costs());
   assert(!costs().includes('unknown/') && !costs().includes('Loading usage…'), costs());
   assert.equal(evaluate('usage.size'), 0, 'navigating to another run resets the event cache');
   const liveEmpty = call('renderCosts', {...run, status:'running', cost:0});
-  assert(liveEmpty.includes('$0.00000') && liveEmpty.includes('No usage recorded yet.'), liveEmpty);
+  assert(liveEmpty.includes('No usage recorded yet.'), liveEmpty);
 
   // Runs: the summary says displayed versus total, and says whose numbers those are.
   context.location.hash = '#/runs';
@@ -589,15 +564,15 @@ const costs = () => nodes.get('costs').innerHTML;
   const runsBar = nodes.get('status').innerHTML;
   assert(runsBar.includes('showing 1 of 1,284 runs'), runsBar);
   assert(runsBar.includes('displayed:'), runsBar);
-  assert(nodes.get('app').innerHTML.includes("location.hash='/runs/r1'"));
-  assert(nodes.get('app').innerHTML.includes('>1m05s</td>'), 'the list shows how long a run took');
-  assert(!nodes.get('app').innerHTML.includes('10s queued'), 'the list leaves out the wait');
+  assert(pageHTML().includes("location.hash='/runs/r1'"));
+  assert(pageHTML().includes('>1m05s</td>'), 'the list shows how long a run took');
+  assert(!pageHTML().includes('10s queued'), 'the list leaves out the wait');
 
   // A queued run is a live run, not a failed one.
   evaluate('generation++');
   response = json([{...run, run_id:'r2', status:'queued', started_at:'', ended_at:''}], {'X-Total-Runs': '1'});
   await evaluate('tick()');
-  const queuedRow = nodes.get('app').innerHTML;
+  const queuedRow = pageHTML();
   assert(queuedRow.includes('class="running">queued'), queuedRow);
   assert(!queuedRow.includes('s queued'), 'no wait in the list');
 
@@ -607,7 +582,7 @@ const costs = () => nodes.get('costs').innerHTML;
   response = json([{repo:'/one/alpha',runs:3,tokens:300,cost:3,share:0.75},
                    {repo:'/two/alpha',runs:1,tokens:100,cost:1,share:0.25}]);
   await evaluate('tick()');
-  const projects = nodes.get('app').innerHTML;
+  const projects = pageHTML();
   assert(projects.includes('4 runs') === false, projects);
   assert(projects.includes('2</b><span>projects recorded'), projects);
   assert(projects.includes('#/projects/detail?repo=%2Fone%2Falpha'), projects);
@@ -653,14 +628,14 @@ const costs = () => nodes.get('costs').innerHTML;
     at: '2026-09-20T12:00:00Z',
   });
   await evaluate('tick()');
-  const over = nodes.get('app').innerHTML;
+  const over = pageHTML();
   for (const text of ['1,284','$42.18374','$9.50000','alpha','$38.00000','90.0%','900 runs',
                       'moonshotai/kimi','71.1%','unknown/unknown',
                       '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
     assert(over.includes(text), `overview: ${text}`);
   }
-  assert(over.includes('>' + 'x'.repeat(149) + '😀…</td>'), 'a long request is cut to 150 characters');
-  assert(over.includes('>fix</td>'), 'a short request is not cut');
+  assert(over.includes('>' + 'x'.repeat(149) + '😀…</span></td>'), 'a long request is cut to 150 characters');
+  assert(over.includes('>fix</span></td>'), 'a short request is not cut');
   assert(nodes.get('status').innerHTML.includes('all repositories · all time'));
   const projectsH2 = over.indexOf('top projects by spend');
   const modelsH2 = over.indexOf('top models by spend');
@@ -679,7 +654,7 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate('generation++');
   response = json({runs:0, tokens:0, cost:0, top_projects:[], top_runs:[], top_models:[], top_providers:[], at:''});
   await evaluate('tick()');
-  const empty = nodes.get('app').innerHTML;
+  const empty = pageHTML();
   assert(empty.includes('$0.00000') && empty.includes('No runs recorded yet.')
          && empty.includes('No model spend recorded yet.')
          && empty.includes('No provider spend recorded yet.')
@@ -688,7 +663,7 @@ const costs = () => nodes.get('costs').innerHTML;
   // A failed refresh keeps the last good values and says they are stale.
   failNext = 'database is locked';
   await evaluate('tick()');
-  assert(nodes.get('app').innerHTML.includes('$0.00000'), 'values must survive a failed poll');
+  assert(pageHTML().includes('$0.00000'), 'values must survive a failed poll');
   assert.equal(nodes.get('note').className, 'stale');
   assert(nodes.get('note').textContent.includes('database is locked'));
 
@@ -696,7 +671,7 @@ const costs = () => nodes.get('costs').innerHTML;
   context.location.hash = '#/nope';
   evaluate('view = route(); generation++');
   await evaluate('tick()');
-  assert(nodes.get('app').innerHTML.includes('not found'));
+  assert(pageHTML().includes('not found'));
 
   console.log('dashboard client checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
