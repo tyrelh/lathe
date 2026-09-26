@@ -21,7 +21,7 @@ class Element {
   focus(options) { this.focused = options; }
 }
 for (const id of ['app', 'status', 'note', 'version',
-                  'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label',
+                  'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label',
                   'project-head', 'project-runs', 'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
 // Parse only the scaffold IDs when app is replaced. In particular, do not
 // precreate #log: that would skip the first-render branch in detail().
@@ -53,13 +53,14 @@ const pageHTML = () => appHTML.replace(/(<[^>]+id="([^"]+)"[^>]*>)/g,
 let response, resolveFetch, failNext = null, frames = [];
 let routeResponses = null;
 const observers = [];
+const listeners = new Map();
 const context = vm.createContext({
   document: {
     getElementById: id => nodes.get(id) ?? null, createElement: () => new Element(),
     body: {scrollHeight: 1000}, activeElement: null,
   },
-  location: {hash: '#run'}, addEventListener() {}, setInterval() {}, Date, URLSearchParams,
-  innerHeight: 100, scrollY: 0, scrollTo() { throw Error('must not scroll a reader away'); },
+  location: {hash: '#run'}, addEventListener(type, handler) { listeners.set(type, handler); }, setInterval() {}, setTimeout, clearTimeout, Date, URLSearchParams,
+  innerWidth: 800, innerHeight: 600, scrollY: 0, scrollTo() { throw Error('must not scroll a reader away'); },
   ResizeObserver: class {
     constructor(callback) { this.callback = callback; this.watching = []; observers.push(this); }
     observe(el) { this.watching.push(el); }
@@ -85,6 +86,44 @@ assert(bootstrap > 0, 'bootstrap not found');
 vm.runInContext(script.slice(0, bootstrap), context);
 const evaluate = code => vm.runInContext(code, context);
 const call = (fn, ...args) => { context.args = args; return evaluate(`${fn}(...args)`); };
+
+// Immediate text-only content, viewport clamping, keyboard dismissal, and
+// rebinding when polling replaces the hovered chart block.
+const tip = nodes.get('tooltip');
+tip.getBoundingClientRect = () => ({width: 300, height: 120});
+const trigger = new Element();
+trigger.dataset = {tooltip: '<script>unsafe</script>\nStatus: success', tooltipKey: 'phase-c1'};
+trigger.getBoundingClientRect = () => ({left: 780, top: 550, bottom: 570});
+trigger.closest = () => trigger;
+listeners.get('pointerover')({target: trigger, pointerType: 'mouse'});
+assert.equal(tip.hidden, false);
+assert.equal(tip.textContent, trigger.dataset.tooltip, 'tooltip content stays literal text');
+assert.equal(tip.style.left, '492px', 'tooltip fits the right edge');
+assert.equal(tip.style.top, '424px', 'tooltip flips above a low trigger');
+assert.equal(trigger.attrs.get('aria-describedby'), 'tooltip');
+listeners.get('keydown')({key: 'Escape'});
+assert.equal(tip.hidden, true);
+assert(!trigger.attrs.has('aria-describedby'));
+listeners.get('focusin')({target: trigger});
+assert.equal(tip.hidden, false, 'keyboard focus opens the tooltip');
+const refreshed = new Element();
+refreshed.dataset = {...trigger.dataset, tooltip: 'Status: running\nDuration: 2s'};
+refreshed.getBoundingClientRect = () => ({left: -10, top: 0, bottom: 20});
+const region = new Element();
+region.contains = el => el === trigger;
+region.querySelectorAll = selector => selector === '[data-tooltip-key]' ? [refreshed] : [];
+call('swap', region, '<button>refreshed</button>');
+assert.equal(tip.textContent, refreshed.dataset.tooltip, 'polling updates an open tooltip');
+assert.equal(tip.style.left, '8px');
+assert.equal(tip.style.top, '26px');
+assert(!trigger.attrs.has('aria-describedby'));
+assert.equal(refreshed.attrs.get('aria-describedby'), 'tooltip');
+region.contains = el => el === refreshed;
+region.querySelectorAll = () => [];
+call('swap', region, '');
+assert.equal(tip.hidden, true, 'removing the trigger clears its tooltip');
+listeners.get('pointerover')({target: trigger, pointerType: 'touch'});
+assert.equal(tip.hidden, true, 'touch does not create a hover tooltip');
 
 // Routing: the agreed default, the explicit routes, the legacy deep link, and
 // an unknown hash that must not be mistaken for a run id.
@@ -128,6 +167,8 @@ const noNaN = html => assert(!/NaN|Infinity|-\d/.test(html.match(/style="[^"]*"/
 
 let html = call('gantt', settled, [ph(1,'plan',T(10),T(35))], ms(200));
 assert(html.includes('left:min(10.000%, calc(100% - 2px));width:max(2px, 25.000%)'), html);
+assert(!html.includes(' title='), 'chart uses custom tooltips only');
+assert(html.includes('Duration: 25s'), 'phase tooltip includes duration');
 assert(html.includes('12:00:00 UTC') && html.includes('12:01:40 UTC'), 'axis labels start and end in UTC');
 // Clamped to the axis, and a zero-length block at the very end stays in the track.
 html = call('gantt', settled, [ph(1,'early',T(-20),T(10)), ph(2,'edge',T(100),T(100))], ms(200));
@@ -199,7 +240,7 @@ const revised = {status:'ok', started_at:T(0), ended_at:T(H + 100), iteration:1,
 html = call('gantt', revised, [ph(1,'plan',T(10),T(35),{iteration:0}), ph(2,'plan',T(H+10),T(H+35),{iteration:1})], ms(H+200));
 assert(html.includes('left:min(4.762%, calc(100% - 2px));width:max(2px, 11.905%)'), html);
 assert(html.includes('left:min(57.143%, calc(100% - 2px));width:max(2px, 11.905%)'), html);
-assert(html.includes('⋯ 58m20s') && html.includes('title="idle 58m20s · 2026-09-20T12:01:40.000Z'), 'the break keeps its real span');
+assert(html.includes('⋯ 58m20s') && html.includes('data-tooltip="idle 58m20s · 2026-09-20T12:01:40.000Z'), 'the break keeps its real span');
 assert(html.includes('#1 &lt;louder>') && html.includes('>iterations</div>'), 'iterations are named over their spans');
 noNaN(html);
 assert.equal(call('active', revised), '3m20s', 'active time is the iterations, not the idle between them');
