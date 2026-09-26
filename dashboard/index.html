@@ -298,7 +298,8 @@
     .lo { display: none; }
   }
   @media (max-height: 850px) {
-    .sidebar .cost-panel { display: none; }
+    .sidebar .cost-panel { flex: none; min-height: 0; }
+    .sidebar .cost-panel #costs { display: none; }
   }
   @media (max-height: 740px) {
     .gantt { --phase-row: 18px; row-gap: 1px; }
@@ -1052,6 +1053,7 @@ async function detail(current) {
     stat('tokens', count(r.tokens)),
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),
+    stat('run', esc(r.run_id)),
     ...(r.iterations.length > 1 ? [stat('active', active(r)), stat('iterations', count(r.iterations.length))] : []),
   ].join('');
   bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`

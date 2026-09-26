@@ -345,7 +345,7 @@ const costs = () => nodes.get('costs').innerHTML;
   for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
   const summary = nodes.get('summary').innerHTML;
   for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
-                      '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>'])
+                      '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>', '<dt>run</dt><dd>run</dd>'])
     assert(summary.includes(text), `details card: ${text}`);
   assert(!summary.includes('<dt>cost</dt>'), 'cost is shown once in the run summary');
   assert(!costs().includes('Loading usage…') && costs().includes('pi') && costs().includes('model'),
