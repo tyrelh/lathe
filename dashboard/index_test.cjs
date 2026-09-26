@@ -196,6 +196,20 @@ assert.equal(call('providerColour', 'openai-codex'), '#439F7C', 'provider varian
 assert.equal(call('providerColour', 'unknown'), '#7A9EFB', 'unknown providers take the default hue');
 assert(call('gantt', settled, [ph(1,'x',T(0),T(5),{owner:'"><b>'})], 0).includes('data-owner="&quot;>&lt;b>"'), 'owner is escaped');
 
+// Execution arrows follow send-backs, but never bridge iterations, concurrent
+// work, or an invalid timestamp entry (which would invent a missing handoff).
+const links = phases => JSON.parse(JSON.stringify(call('phaseLinks', phases, settled, ms(200))));
+assert.deepEqual(links([ph(3,'plan',T(50),T(60)), ph(1,'plan',T(0),T(20)), ph(2,'review',T(20),T(50))]), [['c1','c2'],['c2','c3']]);
+assert.deepEqual(links([ph(1,'plan',T(0),T(20)), ph(2,'plan',T(30),T(40),{iteration:1})]), []);
+assert.deepEqual(links([ph(1,'test',T(0),T(40)), ph(2,'review',T(10),T(30))]), []);
+assert.deepEqual(links([ph(1,'plan',T(0),T(20)), ph(2,'broken','invalid',T(30)), ph(3,'review',T(30),T(40))]), []);
+assert.deepEqual(links([ph(1,'plan',T(0),''), ph(2,'review',T(30),T(40))]), []);
+for (const target of [{left:20,right:40,top:28,bottom:46}, {left:20,right:40,top:0,bottom:18}, {left:25,right:40,top:56,bottom:74}]) {
+  const path = call('flowPath', {left:0,right:20,top:56,bottom:74}, target);
+  assert(!/NaN|Infinity/.test(path));
+  assert(path.startsWith('M 20 65'), 'arrow starts at the source end');
+}
+
 // Before the run starts, with no phases, with no length, and with bad times.
 assert(call('gantt', {status:'queued', started_at:'', ended_at:''}, [], ms(0)).includes('Waiting for run to start.'));
 assert(call('gantt', {status:'running', started_at:T(0), ended_at:''}, [], ms(5)).includes('No phases recorded yet.'));
