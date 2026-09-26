@@ -166,7 +166,7 @@
   .phase-output ul, .phase-output ol { margin-top: 0; padding-left: 3ch; }
   .run-project h2, .run-project #head { overflow-wrap: anywhere; }
   .run-project h2 { text-transform: none; letter-spacing: normal; color: var(--fg); font-size: 14px; }
-  .run-cost-total { font-size: 28px; line-height: 1.2; white-space: nowrap; }
+  .run-cost-total { font-size: 16px; line-height: 1.2; white-space: nowrap; margin-left: auto; }
   .model-costs { list-style: none; padding: 0; margin: 0; }
   .model-costs li { display: flex; align-items: baseline; gap: 8px; height: 21px;
                     padding: 0; border-bottom: 1px solid var(--line); }
@@ -211,6 +211,11 @@
   .identity h2 { margin: 0; }
   .one-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .page-summary .stats { margin-top: 8px; }
+  .run-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .run-heading > a, .run-heading .actions { flex: none; }
+  .run-heading h2 { flex: 1; min-width: 0; margin: 0; }
+  .run-project .stats { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 4px; }
+  .run-project .stats > div { display: flex; align-items: baseline; gap: 6px; }
   .ranking-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: var(--gap); }
   .ranking-grid > :nth-child(2) { grid-column: 1; grid-row: 2; }
   .ranking-grid > :nth-child(3) { grid-column: 2; grid-row: 1; }
@@ -259,7 +264,6 @@
   #costs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .cost-list { display: flex; flex-direction: column; flex: 1; }
   .cost-panel > .panel-heading { padding-bottom: 4px; }
-  .cost-panel > .panel-heading button { padding: 1px 6px; }
   #costs > p { margin: 2px 0; }
   .cost-list[data-cost-list="providers"] { flex: 0 0 calc(22px + var(--rows) * 21px); }
   .cost-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 22px; flex: none; }
@@ -282,8 +286,6 @@
   #new-run { min-height: 0; overflow: hidden; }
   #new-run .target { max-height: 3em; overflow: hidden; overflow-wrap: anywhere; }
   #run-status, #revise-status { flex: none; max-height: 5em; overflow: auto; overflow-wrap: anywhere; margin: 4px 0 0; }
-  .metadata { display: flex; align-items: center; gap: 6px; }
-  .metadata .one-line { flex: 1; }
   dialog { width: min(80ch, 90vw); max-height: 85vh; padding: 14px; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
   dialog[open] { display: flex; flex-direction: column; }
   dialog::backdrop { background: #0008; }
@@ -997,11 +999,11 @@ async function detail(current) {
   // is appended, so scrolling through a phase is not undone a second later.
   if (!$('log')) {
     app.innerHTML = `<div class="page">
-      <section class="card page-summary run-project"><div class="summary-row"><div class="identity">
-        <a href="#/runs">&larr; all runs</a><h2 id="project-title" class="one-line"></h2><p id="head"></p>
+      <section class="card page-summary run-project"><div class="run-heading">
+        <a href="#/runs">&larr; all runs</a><h2 id="project-title" class="one-line"></h2>
         <div class="actions"><button type="button" onclick="readRun(this)">Full request &amp; details</button>
           <button class="more" id="run-cancel" type="button" onclick="cancelRun()" hidden>Cancel</button></div>
-        </div><div><div id="run-total" class="run-cost-total cost"></div><div class="dim">total cost</div></div></div>
+        </div><p id="head"></p>
         <dl id="summary" class="stats"></dl></section>
       <div class="workspace"><section class="card tabbed">
         <div class="tabs" role="tablist" aria-label="Run activity" onkeydown="tabKey(event)">
@@ -1014,8 +1016,7 @@ async function detail(current) {
           <div id="event-controls"><span class="dim">Live events</span></div>
           <div id="events-body" class="scroll" tabindex="0" aria-label="Live events" onscroll="eventScrolled()"><table id="log"></table></div></div>
       </section><aside id="run-side" class="sidebar" aria-label="Run details">
-        <div class="card metadata"><span id="run-identity" class="one-line dim"></span><button type="button" onclick="readRun(this)">Details</button></div>
-        <section class="card panel cost-panel"><div class="panel-heading"><h2>costs</h2><button type="button" onclick="readRun(this)">All costs</button></div><div id="costs"></div></section>
+        <section class="card panel cost-panel"><div class="panel-heading"><h2>costs</h2><span id="run-total" class="run-cost-total cost" aria-label="Total cost"></span></div><div id="costs"></div></section>
         <section class="card panel history-panel"><div class="panel-heading"><h2>iterations</h2><button type="button" aria-label="All iterations" onclick="readIterations(this)">All</button></div><div id="iterations" class="paged"></div>
           <form id="revise" onsubmit="reviseRun(event)" hidden>
             <label for="revise-request">Request changes</label><textarea id="revise-request" rows="3" placeholder="What should change in this pull request"></textarea>
@@ -1030,8 +1031,6 @@ async function detail(current) {
   $('project-title').innerHTML = esc(r.repo || 'unknown repo');
   $('head').innerHTML = esc(r.request);
   $('run-total').textContent = money(r.cost);
-  $('run-identity').textContent = r.run_id;
-  $('run-identity').title = r.run_id;
   // The form lives in the scaffold, so a draft survives every poll; only
   // whether it is offered changes. A build whose latest iteration succeeded is
   // the only run that may qualify, and the server checks the rest.
