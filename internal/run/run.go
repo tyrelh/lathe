@@ -576,6 +576,14 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	if err != nil {
 		return pi.Result{}, err
 	}
+	// A fresh directory per invocation prevents a cancelled turn (which may
+	// never emit agent_end) from inheriting an earlier turn's snapshot.
+	contextDir, err := os.MkdirTemp(scopeDir, "context-")
+	if err != nil {
+		return pi.Result{}, err
+	}
+	defer os.RemoveAll(contextDir)
+	contextFile := filepath.Join(contextDir, "snapshot.json")
 
 	ctx, cancel := context.WithCancel(r.ctx)
 	defer cancel()
@@ -597,7 +605,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		SessionID:    h.SessionID(),
 		SessionDir:   r.Work, // the session is thrown away with the attempt that made it
 		Extension:    r.guard,
-		Env:          []string{"LATHE_PERMIT=" + scopeFile},
+		Env:          []string{"LATHE_PERMIT=" + scopeFile, "LATHE_CONTEXT_SNAPSHOT=" + contextFile},
 		Raw:          r.rawW,
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
@@ -662,6 +670,26 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		}
 		return true
 	})
+	// Context fullness is a session estimate, not the sum of billed responses.
+	// Record it even if the invocation's reply fails validation; a missing
+	// snapshot (notably on cancellation) says nothing about context fullness.
+	if data, readErr := os.ReadFile(contextFile); readErr == nil {
+		var snapshot struct {
+			Tokens        *int     `json:"tokens"`
+			ContextWindow *int     `json:"contextWindow"`
+			Percent       *float64 `json:"percent"`
+		}
+		if decodeErr := json.Unmarshal(data, &snapshot); decodeErr != nil {
+			err = errors.Join(err, fmt.Errorf("reading context snapshot: %w", decodeErr))
+		} else if eventErr := r.db.Event(r.ID, h.phase.ID, "context", a.Name, map[string]any{
+			"attempt": attempt, "tokens": snapshot.Tokens,
+			"contextWindow": snapshot.ContextWindow, "percent": snapshot.Percent,
+		}); eventErr != nil {
+			err = errors.Join(err, fmt.Errorf("recording context snapshot: %w", eventErr))
+		}
+	} else if !os.IsNotExist(readErr) {
+		err = errors.Join(err, fmt.Errorf("reading context snapshot: %w", readErr))
+	}
 
 	// The stream's own totals stay the CLI's accounting and a consistency check
 	// against what was persisted; the database was charged response by response

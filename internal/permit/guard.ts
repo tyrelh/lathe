@@ -17,7 +17,7 @@
 // between them leaks. Change one, change both. guard_test.ts is what holds the
 // two to the same table.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -164,6 +164,21 @@ function realCwd(cwd: string): string {
 
 export default function (pi: any) {
 	const permitFile = process.env.LATHE_PERMIT;
+	const contextFile = process.env.LATHE_CONTEXT_SNAPSHOT;
+
+	// agent_end is after the session's last turn (including corrections). Pi's
+	// estimate is not billed usage: after compaction tokens and percent can be
+	// unknown. Preserve that uncertainty rather than converting it to zero.
+	pi.on("agent_end", (_event: any, ctx: any) => {
+		if (!contextFile) return;
+		const usage = ctx.getContextUsage?.();
+		if (usage == null) return;
+		writeFileSync(contextFile, JSON.stringify({
+			tokens: usage.tokens ?? null,
+			contextWindow: usage.contextWindow ?? null,
+			percent: usage.percent ?? null,
+		}));
+	});
 
 	pi.on("tool_call", (event: any, ctx: any) => {
 		// read, grep, find and ls are the agent's whole working day and none of

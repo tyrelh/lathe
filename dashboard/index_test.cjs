@@ -309,7 +309,8 @@ const costs = () => nodes.get('costs').innerHTML;
   context.location.hash = '#run';
   evaluate('view = route()');
 
-  const events = [event('input',{prompt:'first'}), event('usage',{attempt:0,seq:1,tokens:10,cost:0.1,model:'model'}), event('permit',{kept:['a.go'],reverted:['<bad>']})];
+  const events = [event('input',{prompt:'first'}), event('usage',{attempt:0,seq:1,tokens:10,cost:0.1,model:'model'}),
+    event('context',{attempt:0,tokens:1200,contextWindow:8000,percent:15}), event('permit',{kept:['a.go'],reverted:['<bad>']})];
   while (events.length < 500) events.push(event('log','padding'));
   assert.equal(nodes.has('log'), false, 'the run scaffold must not be precreated');
   serve(events, phases, {...run, repo:'/repo/MiXeD <&"\'>', request:'fix <prompt>&'});
@@ -347,6 +348,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(chart().includes('data-phase="p2" data-focus="block-p2" aria-pressed="true"'));
   evaluate(`pick('p1')`);
   assert(panel().includes('first') && panel().includes('#1'), panel());
+  assert(panel().includes('Context (estimated): 1,200 tokens') && panel().includes('8,000 window · 15% full'), panel());
   evaluate(`panels.set('p1-inputs', true)`);
 
   // Keyboard focus comes back to the same control, without scrolling, and
@@ -360,9 +362,11 @@ const costs = () => nodes.get('costs').innerHTML;
   // With follow disabled, being at the bottom must not pull the page down.
   nodes.get('follow-box').checked = false;
   nodes.get('events-body').scrollTop = nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight;
-  serve([event('input',{prompt:'correction'}),event('usage',{attempt:1,seq:1,provider:'pi',tokens:20,cost:0.2}),
+  const nextEvents = [event('input',{prompt:'correction'}),event('usage',{attempt:1,seq:1,provider:'pi',tokens:20,cost:0.2}),
+         event('context',{attempt:1,tokens:null,contextWindow:8000,percent:null}),
          event('log','test command','p2','command'),event('log','  <b>spaced</b>\n  out','p2','output'),
-         event('log','','p2','output')]);
+         event('log','','p2','output')];
+  serve(nextEvents);
   await evaluate('tick()');
   assert.equal(evaluate('done'), true);
   assert.equal(nodes.get('events-body').scrollTop, nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight, 'follow off preserves scroll position');
@@ -377,6 +381,9 @@ const costs = () => nodes.get('costs').innerHTML;
   for (const text of ['first','correction','30 tok','$0.30000','unknown/model','pi/unknown',
                       'data-panel="p1-inputs" open']) assert(panel().includes(text), text);
   assert.equal(panel().split('attempt ').length - 1, 2, 'one usage row per response');
+  assert(panel().includes('Context (estimated): unknown tokens') && panel().includes('8,000 window · unknown full'),
+    'latest snapshot wins, unknown after compaction is not zero');
+  assert(!panel().includes('1,200 tokens'), 'earlier snapshot is replaced on polling');
   assert(chart().includes('$0.30000'));
 
   // Selection still works after polling stops, and disclosure state is per phase.
@@ -385,11 +392,13 @@ const costs = () => nodes.get('costs').innerHTML;
                       'Usage not recorded.']) assert(panel().includes(text), text);
   assert(!panel().includes('Structured output not recorded'), 'a command-only phase has no report to miss');
   assert(!panel().includes('data-panel="p2-inputs" open'));
+  assert(!panel().includes('Context (estimated)'), 'no context snapshot on another phase');
   evaluate(`pick('p1')`);
   assert(panel().includes('data-panel="p1-inputs" open'), 'switching back keeps what was open');
   evaluate(`pick('p1')`);
   assert(panel().includes('Select a phase.'), 'clicking the selected block deselects it');
-  assert.equal(nodes.get('log').children.length, 505);
+  assert.equal(nodes.get('log').children.length, events.length + nextEvents.length,
+    'each event from both polls is appended exactly once, including context snapshots');
   const permitRows = nodes.get('log').children.filter(row => row.innerHTML.includes('>permit<'));
   assert.equal(permitRows.length, 1, 'permit event appears once across paginated polls');
   assert(permitRows[0].innerHTML.includes('&lt;bad>') && !permitRows[0].innerHTML.includes('<bad>'),
@@ -498,19 +507,28 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(select('old').includes('Structured output not recorded'), 'only drained runs say not recorded');
   assert.equal(evaluate('done'),true);
 
+  // A context snapshot is independent of billed usage, including zero and
+  // phases which ended before producing a billed response.
+  evaluate(`contexts.set('old', {tokens:0,contextWindow:8000,percent:0})`);
+  out = select('old');
+  assert(out.includes('Usage not recorded.') && out.includes('Context (estimated): 0 tokens')
+    && out.includes('8,000 window · 0% full'), out);
+  assert(!call('details', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, run, ms(200)).includes('Context (estimated)'),
+    'a non-agent phase does not show context');
+
   // Navigation while a request is in flight cannot contaminate the next run.
   evaluate('done = false'); response = null;
   const pending = evaluate('tick()');
   await evaluate('tick()'); // overlapping interval must not make another request
   evaluate('navigate()');
   assert.equal(observers[0].watching.length, 0, 'navigation stops watching the old chart');
-  for (const name of ['usage', 'tails', 'panels', 'outputs', 'responses', 'spend']) assert.equal(evaluate(name + '.size'), 0, name);
+  for (const name of ['usage', 'tails', 'panels', 'outputs', 'responses', 'spend', 'contexts']) assert.equal(evaluate(name + '.size'), 0, name);
   assert.equal(evaluate('selected'), '');
   resolveFetch(json({run,phases,events:[event('usage',{tokens:999}),event('log','late','p1','output'),
                                         event('output',{report:{summary:'late'}})]}));
   await pending;
   assert.equal(evaluate('after'),0);
-  for (const name of ['usage', 'tails', 'outputs', 'spend']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
+  for (const name of ['usage', 'tails', 'outputs', 'spend', 'contexts']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
   assert.equal(nodes.has('costs'), false, 'navigation removes the old cost panel');
 
   // A different run starts with no usage. Its total is authoritative even

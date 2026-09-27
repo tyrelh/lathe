@@ -6,10 +6,10 @@
 // no build step and nothing that can be stale against the file Pi loads.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide, denied, normalize } from "./guard.ts";
+import guard, { decide, denied, normalize } from "./guard.ts";
 
 const shipped = [".git/", ".env*", "*.pem", "*.key"];
 
@@ -73,5 +73,25 @@ assert.match(block("/etc/passwd")!.reason, /outside the repository/);
 assert.match(decide("bash", { command: "curl https://x" }, repo, scope)!.reason, /deny rule/);
 assert.equal(decide("bash", { command: "go test ./..." }, repo, scope), undefined);
 assert.equal(decide("read", { path: "/etc/passwd" }, repo, scope), undefined, "reading is not this boundary's business");
+
+// The extension writes a snapshot at agent settlement, not for each tool or
+// model response. A post-compaction unknown stays null, including zero being
+// distinct from unknown.
+const snapshot = join(repo, "context.json");
+process.env.LATHE_CONTEXT_SNAPSHOT = snapshot;
+const hooks = new Map<string, Function>();
+guard({ on: (name: string, fn: Function) => hooks.set(name, fn) });
+assert(hooks.has("agent_end"));
+const settled = hooks.get("agent_end")!;
+settled({}, { getContextUsage: () => ({ tokens: 1200, contextWindow: 8000, percent: 15 }) });
+assert.deepEqual(JSON.parse(readFileSync(snapshot, "utf8")), { tokens: 1200, contextWindow: 8000, percent: 15 });
+settled({}, { getContextUsage: () => ({ tokens: null, contextWindow: 8000, percent: null }) });
+assert.deepEqual(JSON.parse(readFileSync(snapshot, "utf8")), { tokens: null, contextWindow: 8000, percent: null });
+settled({}, { getContextUsage: () => ({ tokens: 0, contextWindow: 8000, percent: 0 }) });
+assert.deepEqual(JSON.parse(readFileSync(snapshot, "utf8")), { tokens: 0, contextWindow: 8000, percent: 0 });
+settled({}, { getContextUsage: () => undefined });
+assert.deepEqual(JSON.parse(readFileSync(snapshot, "utf8")), { tokens: 0, contextWindow: 8000, percent: 0 },
+	"unavailable usage does not fabricate a new estimate");
+delete process.env.LATHE_CONTEXT_SNAPSHOT;
 
 console.log("guard.ts: ok");

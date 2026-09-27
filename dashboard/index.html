@@ -429,7 +429,7 @@ const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 10
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
 // the sum of every response in every try — which is the number worth seeing.
-const spend = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map();
+const spend = new Map(), contexts = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map();
 // phase_id -> every usage payload, and every captured command output tail, in
 // event order. A phase in tails ran a command even while its list is empty.
 const usage = new Map(), tails = new Map();
@@ -691,7 +691,7 @@ function navigate() {
   view = route();
   generation++;
   after = 0; done = false; failure = '';
-  spend.clear(); inputs.clear(); outputs.clear(); responses.clear();
+  spend.clear(); contexts.clear(); inputs.clear(); outputs.clear(); responses.clear();
   usage.clear(); tails.clear(); panels.clear();
   draining = false; shown = null; selected = '';
   projectRows = []; projectMore = false; projectLoaded = false; projectLoading = false; projectSummary = null;
@@ -1038,6 +1038,9 @@ async function detail(current) {
     if (isCommand(e)) bucket(tails, e.phase_id);
     if (e.type === 'log' && e.name === 'output') bucket(tails, e.phase_id).push(text(e.payload));
     if (e.type === 'output') outputs.set(e.phase_id, e.payload?.report);
+    // Events arrive in ID order across pages. Replace rather than sum: the
+    // last settled invocation is the phase's current context estimate.
+    if (e.type === 'context' && e.payload) contexts.set(e.phase_id, e.payload);
     if ((e.type === 'output' || e.type === 'envelope' || e.type === 'gate') && typeof e.payload?.text === 'string') {
       responses.set(e.phase_id, (responses.get(e.phase_id) || '') +
         `<p>Response ${(e.payload.attempt ?? 0) + 1}${e.type !== 'output' ? ' · rejected' : ''}</p><pre>${esc(e.payload.text)}</pre>`);
@@ -1614,14 +1617,16 @@ function details(p, r, now) {
     ? outs.map(o => o ? `<pre>${esc(o)}</pre>` : '<p class="dim">The command produced no output.</p>').join('')
     : absent('command output', 'Command output not recorded.'));
 
-  const uses = usage.get(id);
+  const uses = usage.get(id), context = contexts.get(id);
+  const estimate = context ? `<p>Context (estimated): ${context.tokens == null ? 'unknown' : count(context.tokens)} tokens
+    / ${context.contextWindow == null ? 'unknown' : count(context.contextWindow)} window · ${context.percent == null ? 'unknown' : esc(context.percent) + '%'} full</p>` : '';
   const spent = p.owner === 'engineer' ? '' : '<h3>Usage</h3>' + (uses ? `
     <p>${count(s.tokens)} tok · <span class="cost">${money(s.cost)}</span></p>
     <table class="facts">${uses.map(u => `<tr>
       <td class="dim">attempt ${(u.attempt ?? 0) + 1}</td><td class="dim">response ${esc(u.seq ?? '?')}</td>
       <td>${esc((u.provider || 'unknown') + '/' + (u.model || 'unknown'))}</td>
       <td class="num">${count(u.tokens)} tok</td><td class="num cost">${money(u.cost)}</td></tr>`).join('')}</table>`
-    : absent('usage', 'Usage not recorded.'));
+    : absent('usage', 'Usage not recorded.')) + estimate;
 
   // A phase from an earlier request says so, most of all while a newer one is
   // queued or running and this report is not what is happening now.
