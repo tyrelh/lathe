@@ -282,6 +282,97 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	}
 }
 
+// Each Pi process gets a distinct context file. A correction's latest
+// snapshot belongs to the same phase; a missing snapshot cannot reuse the
+// earlier estimate, an unreadable one is logged without failing the phase,
+// and lathe-only phases never invent one.
+func TestContextSnapshotsPerInvocation(t *testing.T) {
+	bin, _ := stubPi(t, reply(t, "no json"), reply(t, envelope("corrected")), reply(t, envelope("no snapshot")), reply(t, envelope("bad snapshot")))
+	// Wrap the stub to simulate Pi's settlement hook. The third invocation
+	// does not settle, and must not reuse either earlier snapshot. The fourth
+	// writes a snapshot that does not parse.
+	wrapper := filepath.Join(t.TempDir(), "pi")
+	counter := filepath.Join(t.TempDir(), "count")
+	if err := os.WriteFile(counter, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+n=$(cat %q)
+echo $((n+1)) > %q
+%q "$@"
+status=$?
+case "$n" in
+  0) printf '{"tokens":1000,"contextWindow":8000,"percent":12.5}' > "$LATHE_CONTEXT_SNAPSHOT" ;;
+  1) printf '{"tokens":null,"contextWindow":8000,"percent":null}' > "$LATHE_CONTEXT_SNAPSHOT" ;;
+  3) printf 'not json' > "$LATHE_CONTEXT_SNAPSHOT" ;;
+esac
+exit "$status"
+`, counter, counter, bin)
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := newRun(t, wrapper)
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"}, func(h *Handle) error {
+		return h.Call(&out, "look")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Phase(Params{Name: "scout-again", Owner: "scout"}, func(h *Handle) error {
+		return h.Call(&out, "again")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Phase(Params{Name: "scout-bad", Owner: "scout"}, func(h *Handle) error {
+		return h.Call(&out, "once more")
+	}); err != nil {
+		t.Fatalf("an unreadable context snapshot failed the phase: %v", err)
+	}
+	if err := r.Phase(Params{Name: "local", Owner: "engineer"}, func(h *Handle) error {
+		return h.Log("done", "without Pi")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db := readDB(t)
+	type contextRow struct {
+		Phase string
+		Attempt int
+		Tokens *int
+		Window *int
+		Percent *float64
+	}
+	var got []contextRow
+	rows, err := db.Query(`SELECT phase_id, json_extract(payload,'$.attempt'), json_extract(payload,'$.tokens'),
+		json_extract(payload,'$.contextWindow'), json_extract(payload,'$.percent')
+		FROM events WHERE run_id = ? AND type = 'context' ORDER BY event_id`, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row contextRow
+		if err := rows.Scan(&row.Phase, &row.Attempt, &row.Tokens, &row.Window, &row.Percent); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Phase != r.ID+"_01_scout" || got[0].Attempt != 0 || got[0].Tokens == nil || *got[0].Tokens != 1000 || got[0].Percent == nil || *got[0].Percent != 12.5 ||
+		got[1].Phase != got[0].Phase || got[1].Attempt != 1 || got[1].Tokens != nil || got[1].Percent != nil ||
+		got[1].Window == nil || *got[1].Window != 8000 {
+		t.Fatalf("context events = %+v; want two snapshots on first phase, latest unknown", got)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'context' AND phase_id != ?`, r.ID, got[0].Phase); n != 0 {
+		t.Fatalf("other phases got %d context events without a snapshot", n)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'log' AND name = 'context_snapshot'`, r.ID); n != 1 {
+		t.Fatalf("unreadable snapshot logs = %d; want 1", n)
+	}
+	r.Finish(true, "")
+}
+
 // An agent that never gets it right fails its phase after maxCorrections, and
 // the run says so rather than exiting 0 on a phase that did not work.
 func TestCallGivesUpAfterMaxCorrections(t *testing.T) {

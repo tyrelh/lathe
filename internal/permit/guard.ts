@@ -12,12 +12,17 @@
 // agent's scope differs; the file is read per call so a rewrite takes effect
 // without a reload.
 //
+// LATHE_CONTEXT_SNAPSHOT, when set, names a file this extension overwrites at
+// agent_end with Pi's context estimate: { tokens, contextWindow, percent }.
+// run.go reads it after the process exits. It is telemetry riding along with
+// the boundary, not part of it; a failed write is dropped.
+//
 // denied() is a port of internal/permit.Denied and the two must not drift: the
 // Go tests and this file's tests each pass on their own while a divergence
 // between them leaks. Change one, change both. guard_test.ts is what holds the
 // two to the same table.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -164,6 +169,26 @@ function realCwd(cwd: string): string {
 
 export default function (pi: any) {
 	const permitFile = process.env.LATHE_PERMIT;
+	const contextFile = process.env.LATHE_CONTEXT_SNAPSHOT;
+
+	// agent_end is after the session's last turn (including corrections). Pi's
+	// estimate is not billed usage: after compaction tokens and percent can be
+	// unknown. Preserve that uncertainty rather than converting it to zero.
+	pi.on("agent_end", (_event: any, ctx: any) => {
+		if (!contextFile) return;
+		const usage = ctx.getContextUsage?.();
+		if (usage == null) return;
+		// Written aside and renamed, so a Pi killed mid-write leaves no torn
+		// file. An estimate is never worth failing the agent's turn over.
+		try {
+			writeFileSync(contextFile + ".tmp", JSON.stringify({
+				tokens: usage.tokens ?? null,
+				contextWindow: usage.contextWindow ?? null,
+				percent: usage.percent ?? null,
+			}));
+			renameSync(contextFile + ".tmp", contextFile);
+		} catch {}
+	});
 
 	pi.on("tool_call", (event: any, ctx: any) => {
 		// read, grep, find and ls are the agent's whole working day and none of

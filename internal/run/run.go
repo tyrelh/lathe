@@ -576,6 +576,13 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	if err != nil {
 		return pi.Result{}, err
 	}
+	// Removed before every spawn so a cancelled turn (which may never emit
+	// agent_end) cannot inherit an earlier turn's snapshot. A phase's
+	// invocations run one after another, so one path per phase is enough.
+	contextFile := filepath.Join(scopeDir, "context.json")
+	if err := os.Remove(contextFile); err != nil && !os.IsNotExist(err) {
+		return pi.Result{}, err
+	}
 
 	ctx, cancel := context.WithCancel(r.ctx)
 	defer cancel()
@@ -597,7 +604,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		SessionID:    h.SessionID(),
 		SessionDir:   r.Work, // the session is thrown away with the attempt that made it
 		Extension:    r.guard,
-		Env:          []string{"LATHE_PERMIT=" + scopeFile},
+		Env:          []string{"LATHE_PERMIT=" + scopeFile, "LATHE_CONTEXT_SNAPSHOT=" + contextFile},
 		Raw:          r.rawW,
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
@@ -662,6 +669,27 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		}
 		return true
 	})
+	// Context fullness is a session estimate, not the sum of billed responses.
+	// Record it even if the invocation's reply fails validation; a missing
+	// snapshot (notably on cancellation) says nothing about context fullness.
+	// It is only an estimate, so an unreadable one is logged, never a failed
+	// phase, and its fields pass through as whatever numbers Pi wrote.
+	var snapshot map[string]any
+	data, snapErr := os.ReadFile(contextFile)
+	if snapErr == nil {
+		snapErr = json.Unmarshal(data, &snapshot)
+	}
+	if snapErr == nil && snapshot == nil {
+		snapErr = errors.New("snapshot is not an object")
+	}
+	switch {
+	case snapErr == nil:
+		snapshot["attempt"] = attempt
+		r.db.Event(r.ID, h.phase.ID, "context", a.Name, snapshot)
+	case !os.IsNotExist(snapErr):
+		r.db.Event(r.ID, h.phase.ID, "log", "context_snapshot",
+			map[string]any{"attempt": attempt, "error": snapErr.Error()})
+	}
 
 	// The stream's own totals stay the CLI's accounting and a consistency check
 	// against what was persisted; the database was charged response by response
