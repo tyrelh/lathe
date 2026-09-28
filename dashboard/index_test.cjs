@@ -310,7 +310,7 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate('view = route()');
 
   const events = [event('input',{prompt:'first'}), event('usage',{attempt:0,seq:1,tokens:10,cost:0.1,model:'model'}),
-    event('context',{attempt:0,tokens:1200,contextWindow:8000,percent:15}), event('permit',{kept:['a.go'],reverted:['<bad>']})];
+    event('context',{attempt:0,tokens:1200,contextWindow:8000,percent:15.26}), event('permit',{kept:['a.go'],reverted:['<bad>']})];
   while (events.length < 500) events.push(event('log','padding'));
   assert.equal(nodes.has('log'), false, 'the run scaffold must not be precreated');
   serve(events, phases, {...run, repo:'/repo/MiXeD <&"\'>', request:'fix <prompt>&'});
@@ -331,6 +331,10 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate('providerCosts()'))), [{provider:'unknown', cost:0.1}],
     'missing provider becomes unknown in providerCosts');
   assert(chart().includes('fix · model · success · $0.10000'), chart());
+  assert(chart().includes('Context (estimated): 1,200 tokens / 8,000 window · 15.3% full'),
+    'block tooltip rounds the snapshot to one decimal');
+  assert(!chart().match(/data-phase="p2"[^>]*data-tooltip="[^"]*Context \(estimated\)/),
+    'a phase without a snapshot has no context in its tooltip');
   assert(chart().includes('<span class="piece" aria-hidden="true">✅</span></button>'),
     'only the status is visible; model and cost remain in the tooltip');
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
@@ -348,15 +352,25 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(chart().includes('data-phase="p2" data-focus="block-p2" aria-pressed="true"'));
   evaluate(`pick('p1')`);
   assert(panel().includes('first') && panel().includes('#1'), panel());
-  assert(panel().includes('Context (estimated): 1,200 tokens') && panel().includes('8,000 window · 15% full'), panel());
+  assert(panel().includes('Context (estimated): 1,200 tokens / 8,000 window · 15.3% full'), panel());
+  assert.equal(call('contextEstimate', {tokens:0,contextWindow:100,percent:15}),
+    'Context (estimated): 0 tokens / 100 window · 15.0% full', 'whole percentages keep a decimal');
   evaluate(`panels.set('p1-inputs', true)`);
 
   // Keyboard focus comes back to the same control, without scrolling, and
   // only when it was inside the replaced region.
   const focused = new Element(), twin = new Element();
   focused.dataset.focus = twin.dataset.focus = 'block-p1';
-  nodes.get('phases').contains = el => el === focused;
-  nodes.get('phases').querySelectorAll = sel => sel === '[data-focus]' ? [twin] : [];
+  const hovered = new Element(), polled = new Element();
+  hovered.dataset = {tooltipKey:'phase-p1', tooltip:'old context'};
+  polled.dataset.tooltipKey = 'phase-p1';
+  polled.getBoundingClientRect = hovered.getBoundingClientRect = () => ({left:10, top:10, bottom:30});
+  nodes.get('phases').contains = el => el === focused || el === hovered;
+  nodes.get('phases').querySelectorAll = sel => sel === '[data-focus]' ? [twin]
+    : sel === '[data-tooltip-key]' ? [polled] : [];
+  call('tooltip.show', hovered);
+  // Mimic the browser parsing the refreshed button's data-tooltip attribute.
+  Object.defineProperty(polled.dataset, 'tooltip', {get: () => chart().match(/data-phase="p1"[^>]*data-tooltip="([^"]*)"/)[1]});
   context.document.activeElement = focused;
 
   // With follow disabled, being at the bottom must not pull the page down.
@@ -369,11 +383,15 @@ const costs = () => nodes.get('costs').innerHTML;
   serve(nextEvents);
   await evaluate('tick()');
   assert.equal(evaluate('done'), true);
+  assert(tip.textContent.includes('Context (estimated): unknown tokens / 8,000 window · unknown full'),
+    'polling refreshes the open block tooltip with the latest snapshot');
+  assert.equal(tip.textContent, polled.dataset.tooltip);
   assert.equal(nodes.get('events-body').scrollTop, nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight, 'follow off preserves scroll position');
   assert.deepEqual({...twin.focused}, {preventScroll: true}, 'focus restored without scrolling');
   twin.focused = null; context.document.activeElement = new Element();
   evaluate('draw()');
   assert.equal(twin.focused, null, 'focus elsewhere is left alone');
+  call('tooltip.hide');
   nodes.get('phases').contains = () => false; nodes.get('phases').querySelectorAll = () => [];
 
   // The selection and its open disclosures survived the poll; spend summed
@@ -512,7 +530,9 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate(`contexts.set('old', {tokens:0,contextWindow:8000,percent:0})`);
   out = select('old');
   assert(out.includes('Usage not recorded.') && out.includes('Context (estimated): 0 tokens')
-    && out.includes('8,000 window · 0% full'), out);
+    && out.includes('8,000 window · 0.0% full'), out);
+  assert(chart().includes('Context (estimated): 0 tokens / 8,000 window · 0.0% full'),
+    'a block shows a zero snapshot even without billed usage');
   assert(!call('details', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, run, ms(200)).includes('Context (estimated)'),
     'a non-agent phase does not show context');
 
