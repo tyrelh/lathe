@@ -12,12 +12,17 @@
 // agent's scope differs; the file is read per call so a rewrite takes effect
 // without a reload.
 //
+// LATHE_CONTEXT_SNAPSHOT, when set, names a file this extension overwrites at
+// agent_end with Pi's context estimate: { tokens, contextWindow, percent }.
+// run.go reads it after the process exits. It is telemetry riding along with
+// the boundary, not part of it; a failed write is dropped.
+//
 // denied() is a port of internal/permit.Denied and the two must not drift: the
 // Go tests and this file's tests each pass on their own while a divergence
 // between them leaks. Change one, change both. guard_test.ts is what holds the
 // two to the same table.
 
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -173,11 +178,16 @@ export default function (pi: any) {
 		if (!contextFile) return;
 		const usage = ctx.getContextUsage?.();
 		if (usage == null) return;
-		writeFileSync(contextFile, JSON.stringify({
-			tokens: usage.tokens ?? null,
-			contextWindow: usage.contextWindow ?? null,
-			percent: usage.percent ?? null,
-		}));
+		// Written aside and renamed, so a Pi killed mid-write leaves no torn
+		// file. An estimate is never worth failing the agent's turn over.
+		try {
+			writeFileSync(contextFile + ".tmp", JSON.stringify({
+				tokens: usage.tokens ?? null,
+				contextWindow: usage.contextWindow ?? null,
+				percent: usage.percent ?? null,
+			}));
+			renameSync(contextFile + ".tmp", contextFile);
+		} catch {}
 	});
 
 	pi.on("tool_call", (event: any, ctx: any) => {

@@ -284,11 +284,13 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 
 // Each Pi process gets a distinct context file. A correction's latest
 // snapshot belongs to the same phase; a missing snapshot cannot reuse the
-// earlier estimate, and lathe-only phases never invent one.
+// earlier estimate, an unreadable one is logged without failing the phase,
+// and lathe-only phases never invent one.
 func TestContextSnapshotsPerInvocation(t *testing.T) {
-	bin, _ := stubPi(t, reply(t, "no json"), reply(t, envelope("corrected")), reply(t, envelope("no snapshot")))
+	bin, _ := stubPi(t, reply(t, "no json"), reply(t, envelope("corrected")), reply(t, envelope("no snapshot")), reply(t, envelope("bad snapshot")))
 	// Wrap the stub to simulate Pi's settlement hook. The third invocation
-	// does not settle, and must not reuse either earlier snapshot.
+	// does not settle, and must not reuse either earlier snapshot. The fourth
+	// writes a snapshot that does not parse.
 	wrapper := filepath.Join(t.TempDir(), "pi")
 	counter := filepath.Join(t.TempDir(), "count")
 	if err := os.WriteFile(counter, []byte("0\n"), 0o644); err != nil {
@@ -302,6 +304,7 @@ status=$?
 case "$n" in
   0) printf '{"tokens":1000,"contextWindow":8000,"percent":12.5}' > "$LATHE_CONTEXT_SNAPSHOT" ;;
   1) printf '{"tokens":null,"contextWindow":8000,"percent":null}' > "$LATHE_CONTEXT_SNAPSHOT" ;;
+  3) printf 'not json' > "$LATHE_CONTEXT_SNAPSHOT" ;;
 esac
 exit "$status"
 `, counter, counter, bin)
@@ -319,6 +322,11 @@ exit "$status"
 		return h.Call(&out, "again")
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if err := r.Phase(Params{Name: "scout-bad", Owner: "scout"}, func(h *Handle) error {
+		return h.Call(&out, "once more")
+	}); err != nil {
+		t.Fatalf("an unreadable context snapshot failed the phase: %v", err)
 	}
 	if err := r.Phase(Params{Name: "local", Owner: "engineer"}, func(h *Handle) error {
 		return h.Log("done", "without Pi")
@@ -358,6 +366,9 @@ exit "$status"
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'context' AND phase_id != ?`, r.ID, got[0].Phase); n != 0 {
 		t.Fatalf("other phases got %d context events without a snapshot", n)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE run_id = ? AND type = 'log' AND name = 'context_snapshot'`, r.ID); n != 1 {
+		t.Fatalf("unreadable snapshot logs = %d; want 1", n)
 	}
 	r.Finish(true, "")
 }

@@ -92,6 +92,10 @@ assert.deepEqual(JSON.parse(readFileSync(snapshot, "utf8")), { tokens: 0, contex
 settled({}, { getContextUsage: () => undefined });
 assert.deepEqual(JSON.parse(readFileSync(snapshot, "utf8")), { tokens: 0, contextWindow: 8000, percent: 0 },
 	"unavailable usage does not fabricate a new estimate");
+process.env.LATHE_CONTEXT_SNAPSHOT = join(repo, "missing", "context.json");
+const unwritable = new Map<string, Function>();
+guard({ on: (name: string, fn: Function) => unwritable.set(name, fn) });
+unwritable.get("agent_end")!({}, { getContextUsage: () => ({ tokens: 1, contextWindow: 8000, percent: 0 }) });
 delete process.env.LATHE_CONTEXT_SNAPSHOT;
 
 console.log("guard.ts: ok");

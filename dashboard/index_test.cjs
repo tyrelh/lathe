@@ -535,6 +535,8 @@ const costs = () => nodes.get('costs').innerHTML;
     'a block shows a zero snapshot even without billed usage');
   assert(!call('details', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, run, ms(200)).includes('Context (estimated)'),
     'a non-agent phase does not show context');
+  assert(!call('block', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, {status:'success', start:0, end:1}).includes('Context (estimated)'),
+    'a non-agent block tooltip agrees with its details');
 
   // Navigation while a request is in flight cannot contaminate the next run.
   evaluate('done = false'); response = null;
