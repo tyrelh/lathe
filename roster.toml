@@ -1,7 +1,8 @@
 # The agent roster. Embedded into the binary at build time, so editing this
 # file means rebuilding — `go run .` during development, `make build` to deploy.
-# A target repository's own lathe.toml can override provider, model and
-# thinking on top of it; nothing else here is settable from the target.
+# A target repository's own lathe.toml can override provider, model, thinking
+# and repo_instructions on top of it; nothing else here is settable from the
+# target.
 
 # Paths no agent may write and no plan may name. An entry ending in "/" is a
 # directory name, matched at any depth; anything else is a glob matched against
@@ -131,6 +132,8 @@ model = "kimi-k2.6"
 system = "prompts/brancher/system.md"
 user = "prompts/brancher/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]
+# Reads AGENTS.md itself with the rest of its convention sources.
+repo_instructions = false
 
 # Write the commit message for the implemented change. lathe stages the exact
 # paths and runs the commit, so the message is the whole of this agent's work.
@@ -140,6 +143,8 @@ model = "kimi-k2.6"
 system = "prompts/committer/system.md"
 user = "prompts/committer/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]
+# Reads AGENTS.md itself with the rest of its convention sources.
+repo_instructions = false
 
 # Write the pull request title and body from the repository's template and its
 # recently merged pull requests. lathe pushes and runs gh pr create.
@@ -149,3 +154,5 @@ model = "kimi-k2.6"
 system = "prompts/pr-author/system.md"
 user = "prompts/pr-author/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]
+# Reads AGENTS.md itself with the rest of its convention sources.
+repo_instructions = false

@@ -28,6 +28,15 @@ type Agent struct {
 	Tools    []string `toml:"tools"`
 	System   string   `toml:"system"` // key into the embedded FS, not a filesystem path
 	User     string   `toml:"user"`
+	// RepoInstructions is the one key that defaults to on, so it is the one
+	// pointer: false has to be able to override an unset default.
+	RepoInstructions *bool `toml:"repo_instructions"`
+}
+
+// WantsRepoInstructions reports whether the agent's first turn carries the
+// target repo's AGENTS.md; unset means yes.
+func (a Agent) WantsRepoInstructions() bool {
+	return a.RepoInstructions == nil || *a.RepoInstructions
 }
 
 // Config is the decoded roster plus the filesystem the prompts came from.
@@ -58,6 +67,9 @@ type Overrides struct {
 	Provider string `toml:"provider"`
 	Model    string `toml:"model"`
 	Thinking string `toml:"thinking"`
+	// RepoInstructions is a pointer for the same reason as Agent's: a project
+	// has to be able to turn off what the roster leaves on.
+	RepoInstructions *bool `toml:"repo_instructions"`
 }
 
 // Or fills each empty field from fallback, field by field.
@@ -66,6 +78,8 @@ func (o Overrides) Or(fallback Overrides) Overrides {
 		Provider: pick(o.Provider, fallback.Provider),
 		Model:    pick(o.Model, fallback.Model),
 		Thinking: pick(o.Thinking, fallback.Thinking),
+
+		RepoInstructions: firstSet(o.RepoInstructions, fallback.RepoInstructions),
 	}
 }
 
@@ -107,12 +121,10 @@ func Load(fsys fs.FS) (Config, error) {
 }
 
 // LoadProject reads <root>/lathe.toml, the target repository's overrides. A
-// missing file is the normal case and returns (false, nil). Anything wrong
-// with the file — invalid TOML, a wrong type, an unknown key, an agent the
-// roster does not have — rejects the whole of it, so a typo cannot quietly do
-// nothing; the error says why and the roster applies unchanged. The file can
-// only set provider, model and thinking: it comes from the repository being
-// worked on, so nothing that loosens a guard belongs in it.
+// missing file returns (false, nil). Invalid TOML, a wrong type, an unknown
+// key, or an agent the roster does not have rejects the whole file; the error
+// says why and the roster applies unchanged. The file can only set provider,
+// model, thinking and repo_instructions.
 func (c *Config) LoadProject(root string) (loaded bool, err error) {
 	b, err := os.ReadFile(filepath.Join(root, "lathe.toml"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -179,6 +191,7 @@ func (c Config) Resolve(name string, ov Overrides) (Resolved, error) {
 	if len(r.Tools) == 0 {
 		r.Tools = c.Defaults.Tools
 	}
+	r.RepoInstructions = firstSet(ov.RepoInstructions, a.RepoInstructions, c.Defaults.RepoInstructions)
 
 	var err error
 	if d := pick(a.Timeout, c.Defaults.Timeout); d != "" {
@@ -235,6 +248,16 @@ func pick(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// firstSet is pick for the pointer keys, where nil is unset and false is not.
+func firstSet[T any](vals ...*T) *T {
+	for _, v := range vals {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
 }
 
 // Snapshot is the effective roster captured at submission: every agent the

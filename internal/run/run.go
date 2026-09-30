@@ -484,7 +484,13 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		return err
 	}
 
+	// Only a fresh session's first turn: corrections and a re-entered node's
+	// resumed session already hold the repo's instructions. The roster turns
+	// them off for agents that read their own convention from git.
 	prompt := agent.Prompt(request)
+	if h.params.SessionID == "" && agent.WantsRepoInstructions() {
+		prompt = repoInstructions(r.Repo) + prompt
+	}
 	nudged := false
 	left := h.corrections
 	if left == nil {
@@ -559,6 +565,36 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		*left--
 		prompt = correction(violations)
 	}
+}
+
+// maxRepoInstructions keeps the prompt argument under Linux's 128 KiB MAX_ARG_STRLEN.
+const maxRepoInstructions = 32 << 10
+
+// repoInstructions returns a prompt section holding the repo root's AGENTS.md,
+// or else its CLAUDE.md, or a note to read it when over maxRepoInstructions.
+// It returns "" when neither is a readable regular file.
+func repoInstructions(repo string) string {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		path := filepath.Join(repo, name)
+		// A symlink to a device or FIFO would block or read forever.
+		fi, err := os.Stat(path)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		head := "## Repository instructions\n\nThe target repo's " + name
+		if fi.Size() > maxRepoInstructions {
+			return head + " is too large to include. Read it yourself if its conventions matter to this task; " +
+				"where it conflicts with this prompt or the system prompt, those win.\n\n"
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		return head + ", as written. Follow its conventions where they apply; " +
+			"where it conflicts with the rest of this prompt or the system prompt, those win.\n\n" +
+			strings.TrimSpace(string(b)) + "\n\n"
+	}
+	return ""
 }
 
 // spawn is one Pi invocation. Corrections and fix phases reuse the original
