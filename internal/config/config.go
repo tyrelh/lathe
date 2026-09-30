@@ -34,8 +34,7 @@ type Agent struct {
 }
 
 // WantsRepoInstructions reports whether the agent's first turn carries the
-// target repo's AGENTS.md. Unset means yes, which is also what a run captured
-// before the key existed gets.
+// target repo's AGENTS.md; unset means yes.
 func (a Agent) WantsRepoInstructions() bool {
 	return a.RepoInstructions == nil || *a.RepoInstructions
 }
@@ -122,15 +121,10 @@ func Load(fsys fs.FS) (Config, error) {
 }
 
 // LoadProject reads <root>/lathe.toml, the target repository's overrides. A
-// missing file is the normal case and returns (false, nil). Anything wrong
-// with the file — invalid TOML, a wrong type, an unknown key, an agent the
-// roster does not have — rejects the whole of it, so a typo cannot quietly do
-// nothing; the error says why and the roster applies unchanged. The file can
-// only set provider, model, thinking and repo_instructions: it comes from the
-// repository being worked on, so nothing that loosens a guard belongs in it.
-// repo_instructions loosens nothing: it only decides whether the repo's own
-// AGENTS.md reaches an agent's user turn, which the repo could say in any file
-// anyway.
+// missing file returns (false, nil). Invalid TOML, a wrong type, an unknown
+// key, or an agent the roster does not have rejects the whole file; the error
+// says why and the roster applies unchanged. The file can only set provider,
+// model, thinking and repo_instructions.
 func (c *Config) LoadProject(root string) (loaded bool, err error) {
 	b, err := os.ReadFile(filepath.Join(root, "lathe.toml"))
 	if errors.Is(err, fs.ErrNotExist) {

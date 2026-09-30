@@ -570,11 +570,9 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 // maxRepoInstructions keeps the prompt argument under Linux's 128 KiB MAX_ARG_STRLEN.
 const maxRepoInstructions = 32 << 10
 
-// repoInstructions is the target repo's AGENTS.md, or its CLAUDE.md, the file
-// Pi would have loaded into the system prompt. It leads the user turn instead,
-// so the repo can state its conventions without outranking lathe's prompts.
-// Only the repo root is read: Pi also walks ancestors and its global agent
-// directory, which are neither the repo's to set nor lathe's to pass on.
+// repoInstructions returns a prompt section holding the repo root's AGENTS.md,
+// or else its CLAUDE.md, or a note to read it when over maxRepoInstructions.
+// It returns "" when neither is a readable regular file.
 func repoInstructions(repo string) string {
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 		path := filepath.Join(repo, name)
@@ -583,19 +581,18 @@ func repoInstructions(repo string) string {
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
+		head := "## Repository instructions\n\nThe target repo's " + name
 		if fi.Size() > maxRepoInstructions {
-			return fmt.Sprintf("## Repository instructions\n\n"+
-				"The target repo's %s is too large to include. Read it yourself if its conventions matter to this task; "+
-				"where it conflicts with this prompt or the system prompt, those win.\n\n", name)
+			return head + " is too large to include. Read it yourself if its conventions matter to this task; " +
+				"where it conflicts with this prompt or the system prompt, those win.\n\n"
 		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		return fmt.Sprintf("## Repository instructions\n\n"+
-			"The target repo's %s, as written. Follow its conventions where they apply; "+
-			"where it conflicts with the rest of this prompt or the system prompt, those win.\n\n%s\n\n",
-			name, strings.TrimSpace(string(b)))
+		return head + ", as written. Follow its conventions where they apply; " +
+			"where it conflicts with the rest of this prompt or the system prompt, those win.\n\n" +
+			strings.TrimSpace(string(b)) + "\n\n"
 	}
 	return ""
 }
