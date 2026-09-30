@@ -567,6 +567,9 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 	}
 }
 
+// maxRepoInstructions keeps the prompt argument under Linux's 128 KiB MAX_ARG_STRLEN.
+const maxRepoInstructions = 32 << 10
+
 // repoInstructions is the target repo's AGENTS.md, or its CLAUDE.md, the file
 // Pi would have loaded into the system prompt. It leads the user turn instead,
 // so the repo can state its conventions without outranking lathe's prompts.
@@ -574,7 +577,18 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 // directory, which are neither the repo's to set nor lathe's to pass on.
 func repoInstructions(repo string) string {
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		b, err := os.ReadFile(filepath.Join(repo, name))
+		path := filepath.Join(repo, name)
+		// A symlink to a device or FIFO would block or read forever.
+		fi, err := os.Stat(path)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if fi.Size() > maxRepoInstructions {
+			return fmt.Sprintf("## Repository instructions\n\n"+
+				"The target repo's %s is too large to include. Read it yourself if its conventions matter to this task; "+
+				"where it conflicts with this prompt or the system prompt, those win.\n\n", name)
+		}
+		b, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
