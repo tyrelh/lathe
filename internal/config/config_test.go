@@ -75,6 +75,26 @@ func TestPromptSubstitutesTheRequest(t *testing.T) {
 	}
 }
 
+// repo_instructions is on when nobody sets it, an agent's own false wins, and
+// [defaults] reaches every agent that sets nothing.
+func TestRepoInstructionsDefaultOn(t *testing.T) {
+	c := assets(t)
+	for name, want := range map[string]bool{"builder": true, "tester": true, "adjudicator": true, "code-review-security": true, "brancher": false, "pr-author": false} {
+		a, err := c.Resolve(name, Overrides{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := a.WantsRepoInstructions(); got != want {
+			t.Errorf("%s: repo instructions = %v; want %v", name, got, want)
+		}
+	}
+	off := false
+	c.Defaults.RepoInstructions = &off
+	if a, err := c.Resolve("builder", Overrides{}); err != nil || a.WantsRepoInstructions() {
+		t.Fatalf("builder under [defaults] false: repo instructions on (err %v)", err)
+	}
+}
+
 // The target root is discovered, and a directory outside a repo is an error
 // rather than a silent fallback that would point an agent at $HOME.
 func TestTargetRoot(t *testing.T) {
@@ -212,6 +232,25 @@ model = "claude-opus-5-5"
 	// A flag beats both.
 	if a := resolve(t, c, "planner", Overrides{Model: "kimi-k3"}); a.Model != "kimi-k3" || a.Provider != "anthropic" {
 		t.Fatalf("flagged planner: %+v", a)
+	}
+}
+
+// repo_instructions follows the same precedence, and false from the project
+// is a value rather than "unset": it turns off what the roster leaves on.
+func TestLoadProjectRepoInstructions(t *testing.T) {
+	c, loaded, err := project(t, `
+repo_instructions = false
+
+[agents.brancher]
+repo_instructions = true
+`)
+	if !loaded || err != nil {
+		t.Fatalf("valid file: loaded = %v, err = %v", loaded, err)
+	}
+	for name, want := range map[string]bool{"builder": false, "tester": false, "brancher": true} {
+		if got := resolve(t, c, name, Overrides{}).WantsRepoInstructions(); got != want {
+			t.Errorf("%s: repo instructions = %v; want %v", name, got, want)
+		}
 	}
 }
 

@@ -56,6 +56,8 @@ Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `i
 
 ## Project config
 
+A `lathe.toml` at the repo root overrides the built-in roster. The top level applies to every agent, and an `[agents.<name>]` block applies to one:
+
 ```toml
 # lathe.toml at the repo root
 provider = "anthropic"
@@ -63,6 +65,28 @@ model    = "claude-sonnet-5"
 
 [agents.planner]
 model = "claude-opus-5-5"
+
+[agents.tester]
+provider = "openai-codex"
+model    = "gpt-6-luna"
+thinking = "low"
 ```
 
-Keys: `provider`, `model`, `thinking`. Flags win, then `[agents.<name>]`, then the top level, then the built-in roster. Lathe ignores a malformed file and prints a warning. Commit it before `implement` or `build`.
+Keys: `provider`, `model`, `thinking`, `repo_instructions`. Flags win, then `[agents.<name>]`, then the top level, then the built-in roster. Lathe ignores a malformed file, an unknown key or an unknown agent name, and prints a warning. Commit it before `implement` or `build`.
+
+The agents a block can name:
+
+- `scout`: finds and reports where things live
+- `planner`: reads the repo and writes the plan the builder implements
+- `plan-reviewer`: reviews the plan before the builder gets its write scope
+- `builder`: implements the plan, and is the only agent that writes files
+- `tester`: finds and runs the test command every validation round
+- `code-review-general`: reviews correctness, the request and plan, conventions and tests
+- `code-review-security`: reviews what crosses the application's trust boundaries
+- `code-review-slop`: reviews for unneeded complexity
+- `adjudicator`: decides every review finding and whether the builder goes round again
+- `brancher`: names the branch for `build`
+- `committer`: writes the commit message
+- `pr-author`: writes the pull request title and body
+
+Most agents also get the repo's AGENTS.md, or its CLAUDE.md, at the start of their first message. Lathe keeps it out of the system prompt so the repo can't outrank lathe's own instructions. The brancher, committer and pr-author read it themselves as one of their convention sources instead. Set `repo_instructions = false` at the top level to keep it from every agent, or in an `[agents.<name>]` block to change one agent either way.

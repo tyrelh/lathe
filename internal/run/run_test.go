@@ -707,8 +707,11 @@ func TestEnforceStaysOutOfATreeCleanDidNotPass(t *testing.T) {
 // --no-extensions is what stops the repo under investigation loading its own
 // extension into the agent reading it.
 func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
-	bin, argsFile := stubPi(t, reply(t, envelope("nothing here")))
+	bin, argsFile := stubPi(t, reply(t, envelope("nothing here")), reply(t, envelope("nothing else")))
 	r := newRun(t, bin)
+	if err := os.WriteFile(filepath.Join(r.Repo, "AGENTS.md"), []byte("Use tabs.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var out scoutOutput
 	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
@@ -722,6 +725,26 @@ func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
 	guard := filepath.Join(r.Work, permit.GuardFile)
 	if want := "--no-extensions\n-e\n" + guard + "\n"; !strings.Contains(string(args), want) {
 		t.Fatalf("args missing %q:\n%s", want, args)
+	}
+	// The repo's AGENTS.md reaches the agent in the user turn, never Pi's
+	// system prompt, and ahead of the request so the report contract stays last.
+	if !strings.Contains(string(args), "--no-context-files\n") {
+		t.Fatalf("args missing --no-context-files:\n%s", args)
+	}
+	prompt := string(args[strings.LastIndex(string(args), "--\n")+3:])
+	if !strings.HasPrefix(prompt, repoInstructions(r.Repo)) || !strings.Contains(prompt, "Use tabs.") {
+		t.Fatalf("repo instructions not leading the user prompt:\n%s", prompt)
+	}
+	// A re-entered node resumes its session, which already holds them.
+	if err := r.Phase(Params{Name: "scout", Owner: "scout", SessionID: r.ID + "_01_scout"},
+		func(h *Handle) error { return h.Call(&out, "what else") }); err != nil {
+		t.Fatal(err)
+	}
+	if args, err = os.ReadFile(argsFile); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(args), "## Repository instructions"); n != 1 {
+		t.Fatalf("repo instructions sent %d times; want once per session:\n%s", n, args)
 	}
 	// An empty allow list, and the roster's deny lists rather than the caller's.
 	// One scope file per phase, so concurrent workers never share one.

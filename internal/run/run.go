@@ -484,7 +484,13 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		return err
 	}
 
+	// Only a fresh session's first turn: corrections and a re-entered node's
+	// resumed session already hold the repo's instructions. The roster turns
+	// them off for agents that read their own convention from git.
 	prompt := agent.Prompt(request)
+	if h.params.SessionID == "" && agent.WantsRepoInstructions() {
+		prompt = repoInstructions(r.Repo) + prompt
+	}
 	nudged := false
 	left := h.corrections
 	if left == nil {
@@ -559,6 +565,25 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		*left--
 		prompt = correction(violations)
 	}
+}
+
+// repoInstructions is the target repo's AGENTS.md, or its CLAUDE.md, the file
+// Pi would have loaded into the system prompt. It leads the user turn instead,
+// so the repo can state its conventions without outranking lathe's prompts.
+// Only the repo root is read: Pi also walks ancestors and its global agent
+// directory, which are neither the repo's to set nor lathe's to pass on.
+func repoInstructions(repo string) string {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		b, err := os.ReadFile(filepath.Join(repo, name))
+		if err != nil {
+			continue
+		}
+		return fmt.Sprintf("## Repository instructions\n\n"+
+			"The target repo's %s, as written. Follow its conventions where they apply; "+
+			"where it conflicts with the rest of this prompt or the system prompt, those win.\n\n%s\n\n",
+			name, strings.TrimSpace(string(b)))
+	}
+	return ""
 }
 
 // spawn is one Pi invocation. Corrections and fix phases reuse the original

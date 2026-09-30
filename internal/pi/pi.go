@@ -152,7 +152,10 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 		}
 	}
 
-	args := []string{"-p", "--mode", "json"}
+	// --no-context-files: Pi would otherwise load the target repo's AGENTS.md
+	// into the system prompt, giving the repo under investigation the authority
+	// of lathe's own instructions. The caller carries it in the user turn.
+	args := []string{"-p", "--mode", "json", "--no-context-files"}
 	for _, kv := range [][2]string{
 		{"--provider", o.Provider},
 		{"--model", o.Model},
