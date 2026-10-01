@@ -188,7 +188,8 @@ func TestRunBuildsCommandAndStreams(t *testing.T) {
 	var pid int
 	res, err := Run(context.Background(), Options{
 		Bin: stub, Dir: dir, Provider: "moonshotai", Model: "kimi-k2.7-code",
-		Tools: []string{"read", "grep"}, OnStart: func(p int) { pid = p },
+		Tools: []string{"read", "grep"}, Extensions: []string{"/run/guard.ts", "/run/read.ts"},
+		OnStart: func(p int) { pid = p },
 	}, "-not-a-flag", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +207,8 @@ func TestRunBuildsCommandAndStreams(t *testing.T) {
 	}
 	for _, want := range []string{
 		"-p\n--mode\njson\n", "--provider\nmoonshotai\n", "--tools\nread,grep\n", "--\n-not-a-flag\n",
+		// The guard first, so it sees a tool call before anything else does.
+		"--no-extensions\n-e\n/run/guard.ts\n-e\n/run/read.ts\n--\n",
 	} {
 		if !strings.Contains(string(got), want) {
 			t.Fatalf("args missing %q:\n%s", want, got)

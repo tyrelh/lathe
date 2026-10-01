@@ -67,7 +67,7 @@ func TestEmbeddedPlanReviewer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Model != "kimi-k3" || strings.Join(a.Tools, ",") != "read,grep,find,ls" {
+	if a.Model != "kimi-k3" || strings.Join(a.Tools, ",") != "read,grep,find,ls,web_read" {
 		t.Fatalf("reviewer configuration: %+v", a)
 	}
 	if !strings.Contains(a.SystemPrompt, "You are the plan-reviewer") || !strings.Contains(a.UserPrompt, `"feedback"`) {

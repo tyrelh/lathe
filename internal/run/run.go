@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/web"
 )
 
 // maxCorrections is how many times a bad envelope is handed back to the same
@@ -108,14 +111,16 @@ type Run struct {
 	// Out is where the closing banner goes.
 	Out io.Writer
 
-	cfg     config.Snapshot
-	attempt string // binds phase and publication writes to this worker's claim
-	ctx     context.Context
-	db      *trace.DB
-	raw     *os.File
-	rawW    io.Writer // raw behind a lock: a validation group's workers stream into it at once
-	guard   string    // the extension, written once and passed to every spawn
-	clean   bool      // EnsureClean passed, which is what licenses a revert
+	cfg       config.Snapshot
+	attempt   string // binds phase and publication writes to this worker's claim
+	ctx       context.Context
+	db        *trace.DB
+	raw       *os.File
+	rawW      io.Writer // raw behind a lock: a validation group's workers stream into it at once
+	guard     string    // passed to every spawn
+	read      string    // the web_read extension, passed only to agents with the tool
+	readRoots []string  // what a web_read agent may read
+	clean     bool      // EnsureClean passed, which is what licenses a revert
 
 	// mu guards everything below it. A validation group runs phases in
 	// goroutines, and each of them numbers a phase, charges spend, settles
@@ -239,7 +244,23 @@ func Open(o Options) (*Run, error) {
 		r.raw.Close()
 		return nil, err
 	}
+	if r.read, err = web.Write(r.Work); err != nil {
+		r.raw.Close()
+		return nil, err
+	}
+	r.readRoots = readRoots(r.Repo)
 	return r, nil
+}
+
+// readRoots is repo and the Go module cache when go is installed.
+func readRoots(repo string) []string {
+	roots := []string{repo}
+	if out, err := exec.Command("go", "env", "GOMODCACHE").Output(); err == nil {
+		if dir := strings.TrimSpace(string(out)); dir != "" {
+			roots = append(roots, dir)
+		}
+	}
+	return roots
 }
 
 // Phase runs fn as a traced phase. The phase exists at status 'fail' from the
@@ -604,6 +625,11 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// list differs, and the guard re-reads the file per tool call. One file per
 	// phase, because a validation group's workers are spawned at once.
 	scope := h.permit()
+	extensions := []string{r.guard}
+	if slices.Contains(a.Tools, "web_read") {
+		scope.ReadRoots = r.readRoots
+		extensions = append(extensions, r.read)
+	}
 	scopeDir := filepath.Join(r.Work, h.phase.ID)
 	if err := os.MkdirAll(scopeDir, 0o755); err != nil {
 		return pi.Result{}, err
@@ -639,7 +665,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		SystemPrompt: a.SystemPrompt,
 		SessionID:    h.SessionID(),
 		SessionDir:   r.Work, // the session is thrown away with the attempt that made it
-		Extension:    r.guard,
+		Extensions:   extensions,
 		Env:          []string{"LATHE_PERMIT=" + scopeFile, "LATHE_CONTEXT_SNAPSHOT=" + contextFile},
 		Raw:          r.rawW,
 		OnStart: func(pid int) {

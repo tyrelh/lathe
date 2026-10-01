@@ -69,11 +69,14 @@ func Escapes(path string) bool {
 // Scope is what one agent turn is allowed to leave behind, and the whole of
 // what the guard extension is told. Allow is exact repo-relative paths — the
 // plan's file list — so matching it is string equality rather than a glob
-// engine. Deny and BashDeny are patterns. Deny always wins.
+// engine. Deny and BashDeny are patterns. Deny always wins. ReadRoots are the
+// only folders the agent may read, with Deny applied inside them; empty leaves
+// reads unchecked.
 type Scope struct {
-	Allow    []string `json:"allow"`
-	Deny     []string `json:"deny"`
-	BashDeny []string `json:"bashDeny"`
+	Allow     []string `json:"allow"`
+	Deny      []string `json:"deny"`
+	BashDeny  []string `json:"bashDeny"`
+	ReadRoots []string `json:"readRoots"`
 }
 
 // ScopeFile is the name Write gives the scope inside the run directory, and
@@ -109,7 +112,7 @@ func Write(dir string, s Scope) (string, error) {
 	s.Allow = allow
 	// Marshalling a nil slice gives null, which would crash the guard on
 	// `scope.allow.includes`. Empty is the honest encoding of "permits nothing".
-	for _, list := range []*[]string{&s.Deny, &s.BashDeny} {
+	for _, list := range []*[]string{&s.Deny, &s.BashDeny, &s.ReadRoots} {
 		if *list == nil {
 			*list = []string{}
 		}

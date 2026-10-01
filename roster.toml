@@ -42,6 +42,13 @@ thinking = "medium"
 # No `bash`, no `write`, no `edit`: with no write-capable tool and no shell
 # read-only agents cannot modify the repo they were pointed at.
 # Granting bash would reintroduce the whole risk surface on its own.
+#
+# `web_read` fetches one public https URL as markdown, and an agent can put
+# anything it has read into that URL. The guard holds a web_read agent's reads
+# to the repo and the Go module cache, which keeps secrets elsewhere on the
+# machine, the run's own traces included, out of reach. It does not hold for an agent that
+# also has `bash`: a shell reads anything and has its own network tools. No
+# agent has both; the first one that does needs an OS sandbox around Pi.
 tools    = ["read", "grep", "find", "ls"]
 # A model that stalls otherwise hangs lathe until someone notices.
 timeout  = "10m"
@@ -60,6 +67,7 @@ name   = "planner"
 model  = "kimi-k3"
 system = "prompts/planner/system.md"
 user   = "prompts/planner/user.md"
+tools  = ["read", "grep", "find", "ls", "web_read"]
 
 # Review the plan against the repository before the builder gets its write scope.
 # Match the planner's context budget so omissions can be checked in the code.
@@ -68,6 +76,7 @@ name   = "plan-reviewer"
 model  = "kimi-k3"
 system = "prompts/plan-reviewer/system.md"
 user   = "prompts/plan-reviewer/user.md"
+tools  = ["read", "grep", "find", "ls", "web_read"]
 
 # Implement the accepted plan, with no shell. Pinned rather than inherited: the
 # builder is the agent that writes, so which model does that is not a thing a
@@ -100,6 +109,7 @@ name   = "code-review-general"
 model  = "kimi-k3"
 system = "prompts/code-review-general/system.md"
 user   = "prompts/code-review/user.md"
+tools  = ["read", "grep", "find", "ls", "web_read"]
 
 # OWASP Top 10 and whatever else crosses this application's trust boundaries.
 [[agents]]
@@ -107,6 +117,7 @@ name   = "code-review-security"
 model  = "kimi-k3"
 system = "prompts/code-review-security/system.md"
 user   = "prompts/code-review/user.md"
+tools  = ["read", "grep", "find", "ls", "web_read"]
 
 # Unneeded complexity, with the same authority as the other two.
 [[agents]]
@@ -114,6 +125,7 @@ name   = "code-review-slop"
 model  = "kimi-k3"
 system = "prompts/code-review-slop/system.md"
 user   = "prompts/code-review/user.md"
+tools  = ["read", "grep", "find", "ls", "web_read"]
 
 # Weighs every report and the measured suite, and alone decides whether the
 # builder goes round again. Read-only: it instructs the builder, it does not

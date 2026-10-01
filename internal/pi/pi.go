@@ -129,11 +129,12 @@ type Options struct {
 	SessionDir   string
 	SystemPrompt string
 	Tools        []string
-	// Extension is lathe's guard, loaded with -e. It brings --no-extensions
-	// with it: the target repo auto-discovers .pi/extensions/*.ts otherwise,
-	// which would let the repo under investigation load code into the agent
-	// investigating it. Pi honours an explicit -e through --no-extensions.
-	Extension string
+	// Extensions are lathe's own, one -e each, guard first. They bring
+	// --no-extensions with them: the target repo auto-discovers
+	// .pi/extensions/*.ts otherwise, which would let the repo under
+	// investigation load code into the agent investigating it. Pi honours an
+	// explicit -e through --no-extensions.
+	Extensions []string
 	// Env is added to the inherited environment. The child's environment is
 	// inherited rather than scrubbed, deliberately — a test suite needs it.
 	Env     []string
@@ -169,8 +170,11 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 			args = append(args, kv[0], kv[1])
 		}
 	}
-	if o.Extension != "" {
-		args = append(args, "--no-extensions", "-e", o.Extension)
+	if len(o.Extensions) > 0 {
+		args = append(args, "--no-extensions")
+		for _, e := range o.Extensions {
+			args = append(args, "-e", e)
+		}
 	}
 	args = append(args, "--", prompt) // -- so a prompt starting with - stays a prompt
 

@@ -1,16 +1,19 @@
-// guard.ts — the write boundary, in front of the tool rather than behind it.
+// guard.ts — the write boundary, and for web_read agents the read boundary,
+// in front of the tool rather than behind it.
 //
 // Pi's tool_call hook fires before a tool runs and can refuse it, which is the
 // only place a rule about writing can be true rather than merely checked
-// afterwards. lathe writes this file into the run directory and loads it with
+// afterwards. Its tool_result hook is where a grep's output is filtered. lathe
+// writes this file into the run directory and loads it with
 // `--no-extensions -e`, so the target repo's own .pi/extensions never load.
 //
-// LATHE_PERMIT names a JSON file: { allow, deny, bashDeny }. allow is exact
-// repo-relative paths — the plan's file list, already cleaned by permit.Write
-// so both halves of the boundary compare the same spelling. deny and bashDeny
-// are patterns. The three are rewritten before every spawn, because each
-// agent's scope differs; the file is read per call so a rewrite takes effect
-// without a reload.
+// LATHE_PERMIT names a JSON file: { allow, deny, bashDeny, readRoots }. allow
+// is exact repo-relative paths — the plan's file list, already cleaned by
+// permit.Write so both halves of the boundary compare the same spelling. deny
+// and bashDeny are patterns. readRoots, when not empty, are the only folders
+// read, grep, find and ls may touch, and deny applies to reads inside them. The
+// four are rewritten before every spawn, because each agent's scope differs;
+// the file is read per call so a rewrite takes effect without a reload.
 //
 // LATHE_CONTEXT_SNAPSHOT, when set, names a file this extension overwrites at
 // agent_end with Pi's context estimate: { tokens, contextWindow, percent }.
@@ -22,7 +25,7 @@
 // between them leaks. Change one, change both. guard_test.ts is what holds the
 // two to the same table.
 
-import { readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +34,7 @@ export interface Scope {
 	allow: string[];
 	deny: string[];
 	bashDeny: string[];
+	readRoots: string[];
 }
 
 export interface Block {
@@ -131,7 +135,7 @@ export function decide(toolName: string, input: any, cwd: string, scope: Scope):
 		const hit = denied(abs, scope.deny);
 		if (hit) return { block: true, reason: `${abs} is protected (it matches ${hit}) and may never be written` };
 
-		const rel = relative(realCwd(cwd), abs).split(sep).join("/");
+		const rel = relative(real(cwd), abs).split(sep).join("/");
 		// An absolute path or a climb out of the repo arrives here as
 		// "../../..", which is true and unreadable; the agent gets told what it
 		// actually did instead.
@@ -147,6 +151,12 @@ export function decide(toolName: string, input: any, cwd: string, scope: Scope):
 		}
 	}
 
+	if (READS.includes(toolName) && scope.readRoots?.length) {
+		const path = String(input?.path ?? ".");
+		const reason = unreadable(toolName === "read" ? readTarget(path, cwd) : path, cwd, scope.readRoots, scope.deny);
+		if (reason) return { block: true, reason };
+	}
+
 	if (toolName === "bash" || toolName === "powershell") {
 		const command = String(input?.command ?? "");
 		const hit = scope.bashDeny.find((rule) => new RegExp(rule).test(command));
@@ -156,14 +166,57 @@ export function decide(toolName: string, input: any, cwd: string, scope: Scope):
 	return undefined;
 }
 
-// realCwd keeps both sides of the relative() comparison in the same world:
+const READS = ["read", "grep", "find", "ls"];
+
+// readTarget is the file Pi's read tool opens for input: input itself when it
+// exists, else the first existing spelling of Pi's resolveReadPath fallbacks.
+export function readTarget(input: string, cwd: string): string {
+	const norm = normalize(input);
+	const p = isAbsolute(norm) ? resolve(norm) : resolve(cwd, norm);
+	const nfd = p.normalize("NFD");
+	const curly = (s: string) => s.replace(/'/g, "\u2019");
+	return [p, p.replace(/ (AM|PM)\./gi, "\u202F$1."), nfd, curly(p), curly(nfd)].find((v) => existsSync(v)) ?? p;
+}
+
+// unreadable is why an agent held to roots may not read path, or undefined if
+// it may. deny is matched against path relative to the root that holds it.
+export function unreadable(path: string, cwd: string, roots: string[], deny: string[]): string | undefined {
+	const abs = resolveReal(path, cwd);
+	for (const root of roots) {
+		const rel = relative(real(root), abs);
+		if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+		const hit = rel ? denied(rel, deny) : undefined;
+		return hit ? `${abs} is protected (it matches ${hit}) and may never be read` : undefined;
+	}
+	return `${abs} is outside the folders this agent may read: ${roots.join(", ")}`;
+}
+
+// withhold drops grep output lines whose path matches deny and appends how
+// many it dropped. A line is "path:N: text" or "path-N- text"; every prefix
+// ending at such a marker is tried, so a path with a colon cannot hide.
+export function withhold(output: string, deny: string[]): string {
+	let withheld = 0;
+	const kept = output.split("\n").filter((line) => {
+		for (const marker of line.matchAll(/[:-]\d+[:-] /g)) {
+			if (denied(line.slice(0, marker.index), deny)) {
+				withheld++;
+				return false;
+			}
+		}
+		return true;
+	});
+	if (withheld === 0) return output;
+	return [...kept, `[${withheld} lines from protected paths withheld]`].join("\n");
+}
+
+// real keeps both sides of a relative() comparison in the same world:
 // resolveReal has already followed symlinks, and on macOS cwd is routinely
 // /var/... where the realpath is /private/var/....
-function realCwd(cwd: string): string {
+function real(dir: string): string {
 	try {
-		return realpathSync(cwd);
+		return realpathSync(dir);
 	} catch {
-		return cwd;
+		return dir;
 	}
 }
 
@@ -190,22 +243,44 @@ export default function (pi: any) {
 		} catch {}
 	});
 
-	pi.on("tool_call", (event: any, ctx: any) => {
-		// read, grep, find and ls are the agent's whole working day and none of
-		// them is this boundary's business, so they never touch the disk here.
-		const governed = ["write", "edit", "bash", "powershell"].includes(event.toolName);
-		if (!governed) return undefined;
-
-		// No scope file is a lathe bug, and the safe reading of a missing
-		// boundary is that nothing is permitted.
+	// No scope file is a lathe bug, and the safe reading of a missing boundary
+	// is that nothing is permitted.
+	const readScope = (): Scope | Block => {
 		if (!permitFile) return { block: true, reason: "lathe: LATHE_PERMIT is not set" };
-		let scope: Scope;
 		try {
-			scope = JSON.parse(readFileSync(permitFile, "utf8"));
+			return JSON.parse(readFileSync(permitFile, "utf8"));
 		} catch (err) {
 			return { block: true, reason: `lathe: cannot read the permit file: ${err}` };
 		}
+	};
 
+	pi.on("tool_call", (event: any, ctx: any) => {
+		// Reads are governed because an agent with web_read can carry anything
+		// it reads out in a URL; the scope's readRoots decide whether they are
+		// checked at all.
+		const governed = ["write", "edit", "bash", "powershell", ...READS].includes(event.toolName);
+		if (!governed) return undefined;
+		const scope = readScope();
+		if ("block" in scope) return scope;
 		return decide(event.toolName, event.input, ctx.cwd, scope);
+	});
+
+	pi.on("tool_result", (event: any) => {
+		if (event.toolName !== "grep" || event.isError) return undefined;
+		// ripgrep searches hidden files, .git/ included, and a model's own glob
+		// outranks any exclude, so a search is held to deny only here.
+		const scope = readScope();
+		// A missing scope already blocked the call, so there is no result here
+		// to withhold from.
+		if ("block" in scope || !scope.readRoots?.length) return undefined;
+		// Pi keeps the unfiltered text of a truncated search in details, which
+		// reaches the trace even though the model never sees it.
+		const truncation = event.details?.truncation;
+		return {
+			content: event.content.map((b: any) => b.type === "text" ? { ...b, text: withhold(b.text, scope.deny) } : b),
+			...(typeof truncation?.content === "string" && {
+				details: { ...event.details, truncation: { ...truncation, content: withhold(truncation.content, scope.deny) } },
+			}),
+		};
 	});
 }

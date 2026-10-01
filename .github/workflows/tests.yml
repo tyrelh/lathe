@@ -26,5 +26,12 @@ jobs:
         with:
           node-version: 24
 
+      - name: Check the defuddle bundle is current
+        working-directory: internal/web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node build.mjs
+          git diff --exit-code -- defuddle.mjs
+
       - name: Run tests
         run: make test
