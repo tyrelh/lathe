@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/web"
 
 	_ "modernc.org/sqlite"
 )
@@ -723,7 +725,7 @@ func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	guard := filepath.Join(r.Work, permit.GuardFile)
-	if want := "--no-extensions\n-e\n" + guard + "\n"; !strings.Contains(string(args), want) {
+	if want := "--no-extensions\n-e\n" + guard + "\n--\n"; !strings.Contains(string(args), want) {
 		t.Fatalf("args missing %q:\n%s", want, args)
 	}
 	// The repo's AGENTS.md reaches the agent in the user turn, never Pi's
@@ -755,6 +757,42 @@ func TestEveryAgentRunsBehindTheGuard(t *testing.T) {
 	if !strings.Contains(string(scope), `"allow":[]`) || !strings.Contains(string(scope), `.git/`) ||
 		!strings.Contains(string(scope), `sudo`) {
 		t.Fatalf("scope file = %s", scope)
+	}
+	// The scout has no web_read, so its reads stay unchecked.
+	if !strings.Contains(string(scope), `"readRoots":[]`) {
+		t.Fatalf("scout scope carries read roots: %s", scope)
+	}
+	r.Finish(true, "")
+}
+
+// An agent with web_read can carry what it reads out in a URL, so its reads
+// are held to the repo.
+func TestWebReadAgentsAreHeldToReadRoots(t *testing.T) {
+	bin, argsFile := stubPi(t, reply(t, envelope("planned")))
+	r := newRun(t, bin)
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "plan", Owner: "planner"},
+		func(h *Handle) error { return h.Call(&out, "plan it") }); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "\n-e\n" + filepath.Join(r.Work, web.ExtensionFile) + "\n"; !strings.Contains(string(args), want) {
+		t.Fatalf("a web_read agent did not load the extension:\n%s", args)
+	}
+	b, err := os.ReadFile(filepath.Join(r.Work, r.ID+"_01_plan", permit.ScopeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope permit.Scope
+	if err := json.Unmarshal(b, &scope); err != nil {
+		t.Fatal(err)
+	}
+	// The run's own directories hold every agent's tool output, so they are not roots.
+	if !slices.Contains(scope.ReadRoots, r.Repo) || slices.Contains(scope.ReadRoots, r.Dir) || slices.Contains(scope.ReadRoots, r.Work) {
+		t.Fatalf("read roots = %v", scope.ReadRoots)
 	}
 	r.Finish(true, "")
 }

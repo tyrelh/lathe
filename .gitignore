@@ -3,3 +3,6 @@
 
 # Per-machine model overrides; see README "Project config".
 /lathe.toml
+
+# The bundle's build inputs; defuddle.mjs is what gets committed.
+/internal/web/node_modules/

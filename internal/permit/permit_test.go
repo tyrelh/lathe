@@ -183,7 +183,7 @@ func TestWriteEncodesEmptyListsAsArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := read(t, dir, ScopeFile); got != `{"allow":[],"deny":[],"bashDeny":[]}` {
+	if got := read(t, dir, ScopeFile); got != `{"allow":[],"deny":[],"bashDeny":[],"readRoots":[]}` {
 		t.Fatalf("scope file = %s; want empty arrays, never null", got)
 	}
 	if path != filepath.Join(dir, ScopeFile) {

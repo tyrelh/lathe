@@ -231,7 +231,7 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 			t.Fatalf("%s scope = %s", agent, scope)
 		}
 	}
-	if args := stubFile(t, stub, "args.code-review-slop.0"); !strings.Contains(args, "read,grep,find,ls\n") ||
+	if args := stubFile(t, stub, "args.code-review-slop.0"); !strings.Contains(args, "read,grep,find,ls,web_read\n") ||
 		!strings.Contains(args, "Inspect the code as it is now") {
 		t.Fatalf("slop reviewer arguments: %s", args)
 	}

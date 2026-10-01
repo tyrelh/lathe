@@ -28,10 +28,7 @@ automatically if none is running.
 - `scout "<request>"` — investigate and report. Read-only: the scout has
   `read`, `grep`, `find` and `ls`, no shell and no write tool, so it cannot
   change the repo it is pointed at.
-- `plan "<request>"` — plan a change: a summary, ordered steps, the files the
-  change touches, and the risks. Read-only on the same terms as the scout. The
-  file list is the write scope the builder is held to, so a plan that
-  names `.git`, `.env*` or key material is rejected before it is printed.
+- `plan "<request>"` — plan a change: a summary, ordered steps, the files the change touches, and the risks. Read-only on the same terms as the scout, plus `web_read` for public docs, with reads held to the repo. The file list is the write scope the builder is held to, so a plan that names `.git`, `.env*` or key material is rejected before it is printed.
 
 - `implement "<request>"` — plan, implement and validate a change in a clean Git repository. The builder gets write and edit tools, no shell, and may write only the plan's files. Changes remain uncommitted. A missed file ends the run as a failure naming the needed path. Each implementation round is validated by four workers at once: the tester reassesses the test command and lathe runs it under the command timeout and shell deny list with your inherited environment, while three read-only reviewers check correctness, security and unnecessary complexity. An adjudicator then weighs every report and either accepts or sends the builder back with one set of changes, up to four times. Acceptance needs a measured green suite and a usable report from every worker. Work still unaccepted after the fourth repair, or whose validation could not complete, stays in the tree and the run fails saying why. Test dirt outside the accumulated plan scope is reverted once every worker has finished; a source file changed while the workers ran invalidates the round and stops the run. Review with `git diff`, including after failure: planned changes remain in the tree.
 
