@@ -35,14 +35,14 @@ var Agents = map[string][]string{
 	"scout": {"scout"},
 	"plan":  {"planner", "plan-reviewer"},
 	"implement": {"planner", "plan-reviewer", "builder", "tester",
-		"code-review-general", "code-review-security", "code-review-slop", "adjudicator"},
+		"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial", "adjudicator"},
 	"build": {"planner", "plan-reviewer", "brancher", "builder", "tester",
-		"code-review-general", "code-review-security", "code-review-slop", "adjudicator",
+		"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial", "adjudicator",
 		"committer", "pr-author"},
 	// A revision extends a build's branch and pull request, so it names and
 	// opens neither.
 	"revise": {"planner", "plan-reviewer", "builder", "tester",
-		"code-review-general", "code-review-security", "code-review-slop", "adjudicator",
+		"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial", "adjudicator",
 		"committer"},
 }
 

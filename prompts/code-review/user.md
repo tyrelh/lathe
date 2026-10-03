@@ -2,9 +2,11 @@
 
 ## How to work
 
-Use read, grep, find and ls. You have roughly 25 tool calls; spend them on evidence that could change your assessment. Start from the changed files and read enough around them to judge the change in context.
+Use read, grep, find, ls and web_read. You have roughly 50 tool calls; spend them on evidence that could change your assessment. Start from the changed files and read enough around them to judge the change in context.
 
 Inspect the code as it is now, every round. Earlier rounds, including your own conclusions, may be stale: the implementer may have changed the code since, or not changed it at all.
+
+You may raise a finding the adjudicator dismissed again. If you do, cite its earlier reference in the explanation and answer the reason it gave; repeating the finding unchanged will not persuade it.
 
 ## Report
 

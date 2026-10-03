@@ -107,10 +107,10 @@ func implementRequest(request string, plan *PlanOutput, amendments []Amendment) 
 }
 
 // maxRepairs is how many times the adjudicator may send an implementation back.
-// Four repairs after the initial implementation bound the cost of work that
-// will not converge; the fourth repair still gets a complete validation round.
-// The planning loop keeps its own budget.
-const maxRepairs = 4
+// Ten repairs after the initial implementation bound the cost of work that will
+// not converge; the last repair still gets a complete validation round. The
+// planning loop keeps its own budget.
+const maxRepairs = 10
 
 // code is what the implement, validate and adjudicate nodes accumulate. Build's
 // git phases read it after those nodes forward: the handoff and the

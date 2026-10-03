@@ -1145,7 +1145,7 @@ async function detail(current) {
 
 // active is the time iterations spent executing, summed over iterations and
 // never over phases: validation workers run at once, and adding up their
-// phases would count the same minutes four times.
+// phases would count the same minutes once per worker.
 function active(r) {
   let ms = 0;
   for (const i of r.iterations || []) {

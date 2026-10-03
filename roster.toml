@@ -89,7 +89,7 @@ user   = "prompts/builder/user.md"
 tools  = ["read", "grep", "find", "ls", "write", "edit"]
 
 # Reassess and exercise the test command every validation round; lathe
-# independently verifies its exit. Runs alongside the three code reviewers.
+# independently verifies its exit. Runs alongside the four code reviewers.
 [[agents]]
 name = "tester"
 model = "kimi-k2.6"
@@ -97,7 +97,7 @@ system = "prompts/tester/system.md"
 user = "prompts/tester/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]
 
-# The three code reviewers run alongside the tester on every implementation
+# The four code reviewers run alongside the tester on every implementation
 # round, read-only, and report findings for the adjudicator. Each is its own
 # row so its model can be set on its own, and its system prompt carries its
 # angle; the report contract is one shared user prompt. None of them is the
@@ -119,11 +119,22 @@ system = "prompts/code-review-security/system.md"
 user   = "prompts/code-review/user.md"
 tools  = ["read", "grep", "find", "ls", "web_read"]
 
-# Unneeded complexity, with the same authority as the other two.
+# Unneeded complexity, with the same authority as the other three.
 [[agents]]
 name   = "code-review-slop"
 model  = "kimi-k3"
 system = "prompts/code-review-slop/system.md"
+user   = "prompts/code-review/user.md"
+tools  = ["read", "grep", "find", "ls", "web_read"]
+
+# Tries to break the change: failure paths, partial failure, races, stale state
+# and degraded dependencies, overlapping the other three on purpose. Its system
+# prompt is adapted from OpenAI's adversarial-review.md in openai/codex-plugin-cc
+# (Apache-2.0).
+[[agents]]
+name   = "code-review-adversarial"
+model  = "kimi-k3"
+system = "prompts/code-review-adversarial/system.md"
 user   = "prompts/code-review/user.md"
 tools  = ["read", "grep", "find", "ls", "web_read"]
 

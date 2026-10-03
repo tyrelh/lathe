@@ -9,14 +9,14 @@ import (
 	"github.com/tyrelh/lathe/internal/run"
 )
 
-// The validation group runs the tester and three code reviewers against the
+// The validation group runs the tester and four code reviewers against the
 // same implementation at once, and the adjudicator judges what they found. The
 // types below are that contract: what a reviewer returns, what the adjudicator
 // decides, and the record of every round that validation.json keeps.
 
 // The code reviewers, in the order their reports are shown. Their agent names
 // are also their finding sources.
-var reviewers = []string{"code-review-general", "code-review-security", "code-review-slop"}
+var reviewers = []string{"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial"}
 
 // Finding is one reviewer's objection. Ref and Source are lathe's, assigned once
 // the report is accepted, so a reference is unique across reviewers and never
@@ -356,12 +356,40 @@ func previousDecision(w io.Writer, c *code) {
 	fmt.Fprintf(w, "\nThe implementer's response to it is the implementation summary above.\n")
 }
 
+// dismissedFindings renders in full every finding the last adjudication
+// dismissed, so a reviewer can argue one again whoever raised it.
+func dismissedFindings(w io.Writer, c *code) {
+	if len(c.v.Rounds) < 2 {
+		return
+	}
+	prev := c.v.Rounds[len(c.v.Rounds)-2]
+	if prev.Adjudication == nil {
+		return
+	}
+	dismissed := map[string]bool{}
+	for _, d := range *prev.Adjudication.Decisions {
+		dismissed[d.Ref] = d.Action == actionDismiss
+	}
+	header := false
+	for _, f := range prev.findings() {
+		if !dismissed[f.Ref] {
+			continue
+		}
+		if !header {
+			fmt.Fprintf(w, "\n### Dismissed findings\n")
+			header = true
+		}
+		writeFinding(w, f)
+	}
+}
+
 // reviewRequest is one reviewer's brief for one round.
 func reviewRequest(c *code) string {
 	var b strings.Builder
 	b.WriteString(c.handoff)
 	evidence(&b, c)
 	previousDecision(&b, c)
+	dismissedFindings(&b, c)
 	b.WriteString("\nInspect the code as it is now. Anything you concluded in an earlier round may be stale.\n")
 	return b.String()
 }
