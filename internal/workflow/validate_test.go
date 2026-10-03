@@ -17,12 +17,12 @@ import (
 // prompt and serves dir/<agent>, or dir/<agent>.<k> on that agent's kth spawn
 // counting from zero when the file exists. dir/<agent>.sh, when present, runs
 // first in the target repository. Counters, arguments and scope copies are per
-// agent, because the validation group spawns four agents at once and one shared
+// agent, because the validation group spawns its workers at once and one shared
 // counter would race.
 //
 // With dir/barrier present, each validation worker waits on its first spawn
-// until all four have started, and records dir/serial if they never do; the
-// adjudicator records dir/early if it starts before all four have finished.
+// until every worker has started, and records dir/serial if they never do; the
+// adjudicator records dir/early if it starts before every worker has finished.
 //
 // Every agent's default reply is the happy path, and a `gh` beside it records
 // its arguments and prints a URL.
@@ -77,7 +77,7 @@ echo %[2]q
 	onPath(t, dir, fmt.Sprintf(`#!/bin/sh
 d=%[1]q
 a=pr-author
-for name in planner plan-reviewer brancher builder tester code-review-general code-review-security code-review-slop adjudicator committer; do
+for name in planner plan-reviewer brancher builder tester code-review-general code-review-security code-review-slop code-review-adversarial adjudicator committer; do
   case "$*" in *"You are the $name "*|*"You are the $name."*|*"You are the $name,"*) a=$name; break ;; esac
 done
 n=0
@@ -88,15 +88,15 @@ cp "$LATHE_PERMIT" "$d/scope.$a.$n"
 if [ -f "$d/barrier" ] && [ "$n" = 0 ]; then
   case $a in tester|code-review-*)
     touch "$d/in.$a"; i=0
-    while [ "$(ls "$d" | grep -c '^in\.')" -lt 4 ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+    while [ "$(ls "$d" | grep -c '^in\.')" -lt %[2]d ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
     [ $i -lt 200 ] || touch "$d/serial" ;;
   esac
 fi
-if [ "$a" = adjudicator ] && [ "$(ls "$d" | grep -c '^done\.')" -lt 4 ]; then touch "$d/early"; fi
+if [ "$a" = adjudicator ] && [ "$(ls "$d" | grep -c '^done\.')" -lt %[2]d ]; then touch "$d/early"; fi
 [ ! -f "$d/$a.sh" ] || . "$d/$a.sh"
 if [ -f "$d/$a.$n" ]; then cat "$d/$a.$n"; else cat "$d/$a"; fi
 case $a in tester|code-review-*) touch "$d/done.$a" ;; esac
-`, dir))
+`, dir, len(validators)))
 	return dir
 }
 
@@ -201,8 +201,8 @@ func session(t *testing.T, args string) string {
 
 var validators = append([]string{"tester"}, reviewers...)
 
-// The four workers overlap, each in its own session and read-only scope, and
-// the adjudicator starts only once all four have finished.
+// The workers overlap, each in its own session and read-only scope, and the
+// adjudicator starts only once all of them have finished.
 func TestValidationRunsWorkersInParallel(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
@@ -223,7 +223,7 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 		}
 		sessions[session(t, stubFile(t, stub, "args."+agent+".0"))] = true
 	}
-	if len(sessions) != 6 {
+	if len(sessions) != len(validators)+2 {
 		t.Fatalf("sessions shared between agents: %v", sessions)
 	}
 	for _, agent := range validators {
@@ -237,7 +237,7 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 	}
 
 	v := readValidation(t)
-	if v.Outcome != outcomeAccepted || len(v.Rounds) != 1 || !v.Rounds[0].Measured.Green || len(v.Rounds[0].Reports) != 3 {
+	if v.Outcome != outcomeAccepted || len(v.Rounds) != 1 || !v.Rounds[0].Measured.Green || len(v.Rounds[0].Reports) != len(reviewers) {
 		t.Fatalf("validation: %+v", v)
 	}
 	if row := latestRun(t); row.Status != "ok" {
@@ -264,10 +264,12 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
 	write(t, filepath.Join(stub, "code-review-general.0"), reviewerReply(t, "GREETING-TOO-LOUD"))
+	write(t, filepath.Join(stub, "code-review-slop.0"), reviewerReply(t, "GREETING-OVERWROUGHT"))
+	decisions := []map[string]string{decide("general-1.1", "fix"), decide("slop-1.1", "dismiss")}
 	write(t, filepath.Join(stub, "adjudicator.0"), adjudicatorReply(t, "revise", "SOFTEN-THE-GREETING",
-		[]map[string]string{decide("general-1.1", "fix")}, []map[string]string{{"path": ".env", "reason": "config"}}))
+		decisions, []map[string]string{{"path": ".env", "reason": "config"}}))
 	write(t, filepath.Join(stub, "adjudicator.1"), adjudicatorReply(t, "revise", "SOFTEN-THE-GREETING",
-		[]map[string]string{decide("general-1.1", "fix")}, []map[string]string{{"path": "extra.txt", "reason": "the fix needs it"}}))
+		decisions, []map[string]string{{"path": "extra.txt", "reason": "the fix needs it"}}))
 
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d", code)
@@ -279,7 +281,7 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 		t.Fatalf("builder spawns = %d", n)
 	}
 	repair := stubFile(t, stub, "args.builder.1")
-	for _, want := range []string{"SOFTEN-THE-GREETING", "general-1.1", "GREETING-TOO-LOUD", "extra.txt", "send-back 1 of 4"} {
+	for _, want := range []string{"SOFTEN-THE-GREETING", "general-1.1", "GREETING-TOO-LOUD", "extra.txt", fmt.Sprintf("send-back 1 of %d", maxRepairs)} {
 		if !strings.Contains(repair, want) {
 			t.Fatalf("repair request missing %q: %s", want, repair)
 		}
@@ -302,6 +304,11 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 	if got := stubFile(t, stub, "args.tester.1"); !strings.Contains(got, "Previous measurement") {
 		t.Fatalf("tester was not asked to reassess: %s", got)
 	}
+	// Every reviewer sees a dismissed finding in full, not only its own.
+	if got := stubFile(t, stub, "args.code-review-adversarial.1"); !strings.Contains(got, "Dismissed findings") ||
+		!strings.Contains(got, "GREETING-OVERWROUGHT") || strings.Contains(got[strings.Index(got, "Dismissed findings"):], "GREETING-TOO-LOUD") {
+		t.Fatalf("dismissed finding not shown in full: %s", got)
+	}
 	v := readValidation(t)
 	if v.Outcome != outcomeAccepted || len(v.Rounds) != 2 || len(v.Scope) != 1 || v.Scope[0].Path != "extra.txt" {
 		t.Fatalf("validation: %+v", v)
@@ -312,8 +319,8 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 }
 
 // A red suite cannot be accepted however the adjudicator words it, and work
-// still unaccepted after four repairs is handed off with its findings — after
-// the fourth repair got a full round of its own. Implement keeps it local.
+// still unaccepted after the last repair is handed off with its findings — after
+// that repair got a full round of its own. Implement keeps it local.
 func TestSendBacksAreBoundedAndRedIsNeverAccepted(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
@@ -328,16 +335,16 @@ func TestSendBacksAreBoundedAndRedIsNeverAccepted(t *testing.T) {
 	if got := stubFile(t, stub, "args.adjudicator.1"); !strings.Contains(got, "cannot accept while the measured test suite is red") {
 		t.Fatalf("red acceptance was not refused: %s", got)
 	}
-	if n := spawnsOf(t, stub, "builder"); n != 5 {
-		t.Fatalf("builder spawns = %d; want the initial implementation and four repairs", n)
+	if n := spawnsOf(t, stub, "builder"); n != maxRepairs+1 {
+		t.Fatalf("builder spawns = %d; want the initial implementation and %d repairs", n, maxRepairs)
 	}
 	for _, agent := range validators {
-		if n := spawnsOf(t, stub, agent); n != 5 {
-			t.Fatalf("%s spawned %d times; the fourth repair still gets a full round", agent, n)
+		if n := spawnsOf(t, stub, agent); n != maxRepairs+1 {
+			t.Fatalf("%s spawned %d times; the last repair still gets a full round", agent, n)
 		}
 	}
 	v := readValidation(t)
-	if v.Outcome != outcomeUnresolved || len(v.Rounds) != 5 || !strings.Contains(v.Reason, "exited 1") {
+	if v.Outcome != outcomeUnresolved || len(v.Rounds) != maxRepairs+1 || !strings.Contains(v.Reason, "exited 1") {
 		t.Fatalf("validation: %+v", v)
 	}
 	row := latestRun(t)
@@ -380,7 +387,7 @@ func TestWorkerRetries(t *testing.T) {
 			if n := spawnsOf(t, stub, "code-review-security"); n != 5 {
 				t.Fatalf("security spawns = %d; want 1 + 2 corrections + 2 retries", n)
 			}
-			for _, agent := range []string{"tester", "code-review-general", "code-review-slop", "builder"} {
+			for _, agent := range []string{"tester", "code-review-general", "code-review-slop", "code-review-adversarial", "builder"} {
 				if n := spawnsOf(t, stub, agent); n != 1 {
 					t.Fatalf("%s spawned %d times", agent, n)
 				}
@@ -473,7 +480,7 @@ func TestBuildDraftsUnacceptedWork(t *testing.T) {
 		{"unresolved", outcomeUnresolved, func(t *testing.T, stub string) {
 			write(t, filepath.Join(stub, "tester"), testerReply(t, "echo RED-TAIL; false"))
 			write(t, filepath.Join(stub, "code-review-slop"), reviewerReply(t, "TOO-CLEVER"))
-			for round := 1; round <= 5; round++ {
+			for round := 1; round <= maxRepairs+1; round++ {
 				write(t, filepath.Join(stub, fmt.Sprintf("adjudicator.%d", round-1)), adjudicatorReply(t, "revise", "simplify it",
 					[]map[string]string{decide(fmt.Sprintf("slop-%d.1", round), "fix")}, nil))
 			}

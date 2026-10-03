@@ -528,22 +528,33 @@ In your report, deliberately omit the "summary" key so the correction loop is ex
 
 // TestBudgetEndsTheTurnAndAsksForTheReport is the loop that cost ten minutes in
 // a real run: an agent that keeps calling tools and never writes its report.
-// The budget ends the turn and re-prompts the same session, so the phase
-// produces an answer rather than dying on the deadline.
+// The budget, or the deadline for an agent too slow to reach it, ends the turn
+// and re-prompts the same session, so the phase produces an answer rather than
+// dying.
 func TestBudgetEndsTheTurnAndAsksForTheReport(t *testing.T) {
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "args")
-	count := filepath.Join(dir, "count")
-	if err := os.WriteFile(count, []byte("0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "reply.jsonl"), []byte(reply(t, envelope("the tui registry lives in scripts.go"))), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// The first turn spirals: more tool calls than the budget, then a sleep
-	// long enough that only the cancel can end it.
-	bin := filepath.Join(dir, "fake-pi")
-	script := fmt.Sprintf(`#!/bin/sh
+	for _, tc := range []struct {
+		name     string
+		calls    int
+		deadline time.Duration
+		event    string
+	}{
+		{"tool calls", toolBudget + 5, 0, "budget_spent"},
+		{"deadline", 3, 500 * time.Millisecond, "deadline_spent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "args")
+			count := filepath.Join(dir, "count")
+			if err := os.WriteFile(count, []byte("0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "reply.jsonl"), []byte(reply(t, envelope("the tui registry lives in scripts.go"))), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The first turn spirals: tool calls, then a sleep long enough that
+			// only the cancel can end it.
+			bin := filepath.Join(dir, "fake-pi")
+			script := fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$@" >> %q
 n=$(cat %q)
 echo $((n+1)) > %q
@@ -557,41 +568,48 @@ if [ "$n" = "0" ]; then
 else
   cat %q
 fi
-`, argsFile, count, count, toolBudget+5, filepath.Join(dir, "reply.jsonl"))
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+`, argsFile, count, count, tc.calls, filepath.Join(dir, "reply.jsonl"))
+			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
 
-	r := newRun(t, bin)
-	var out scoutOutput
-	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
-		func(ph *Handle) error { return ph.Call(&out, "how do I extend the tui") }); err != nil {
-		t.Fatalf("the phase should have produced a report: %v", err)
-	}
-	r.Finish(true, "")
+			r := newRun(t, bin)
+			if tc.deadline > 0 {
+				a := r.cfg.Agents["scout"]
+				a.Deadline = tc.deadline
+				r.cfg.Agents["scout"] = a
+			}
+			var out scoutOutput
+			if err := r.Phase(Params{Name: "scout", Owner: "scout"},
+				func(ph *Handle) error { return ph.Call(&out, "how do I extend the tui") }); err != nil {
+				t.Fatalf("the phase should have produced a report: %v", err)
+			}
+			r.Finish(true, "")
 
-	if out.Summary == nil || *out.Summary == "" {
-		t.Fatal("no summary: the second turn's envelope was not accepted")
-	}
+			if out.Summary == nil || *out.Summary == "" {
+				t.Fatal("no summary: the second turn's envelope was not accepted")
+			}
 
-	// The second turn has to ask for the report, in the same session.
-	args, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "Do not call any more tools") {
-		t.Error("the second turn did not carry the budget prompt")
-	}
-	if n := strings.Count(string(args), "--session-id"); n != 2 {
-		t.Errorf("want 2 turns against the same session, got %d", n)
-	}
+			// The second turn has to ask for the report, in the same session.
+			args, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(args), "Do not call any more tools") {
+				t.Error("the second turn did not carry the budget prompt")
+			}
+			if n := strings.Count(string(args), "--session-id"); n != 2 {
+				t.Errorf("want 2 turns against the same session, got %d", n)
+			}
 
-	db := readDB(t)
-	if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE type='log' AND name='budget_spent'`); n != 1 {
-		t.Errorf("want one budget_spent event, got %d", n)
-	}
-	if s := scalar[string](t, db, `SELECT status FROM phases LIMIT 1`); s != "success" {
-		t.Errorf("phase status = %q, want success", s)
+			db := readDB(t)
+			if n := scalar[int](t, db, `SELECT count(*) FROM events WHERE type='log' AND name=?`, tc.event); n != 1 {
+				t.Errorf("want one %s event, got %d", tc.event, n)
+			}
+			if s := scalar[string](t, db, `SELECT status FROM phases LIMIT 1`); s != "success" {
+				t.Errorf("phase status = %q, want success", s)
+			}
+		})
 	}
 }
 

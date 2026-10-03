@@ -62,7 +62,7 @@ func TestImplement(t *testing.T) {
 		name, action, changed, needed string
 		want, builds, calls           int
 	}{
-		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, 1, 8},
+		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, 1, len(Agents["implement"])},
 		{"needed is terminal", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, 1, 3},
 		{"unplanned write reverted", "printf 'hello world\\n' > hello.txt; echo bad > outside.txt", `["hello.txt"]`, `[]`, 1, 1, 3},
 		{"false claim", ":", `["hello.txt"]`, `[]`, 1, 3, 5},

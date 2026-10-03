@@ -70,8 +70,8 @@ func TestBuildShipsTheChange(t *testing.T) {
 	if code := execute(t, cfg, "build", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
-	if got := totalSpawns(t, stub); got != 11 {
-		t.Fatalf("spawn count = %d; want 11", got)
+	if got, want := totalSpawns(t, stub), len(Agents["build"]); got != want {
+		t.Fatalf("spawn count = %d; want %d", got, want)
 	}
 	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != "feat/greet-the-world" {
 		t.Fatalf("checked out %q", got)
@@ -175,8 +175,8 @@ func TestBuildKeepsTheCommitWhenGhFails(t *testing.T) {
 	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
-	if got := totalSpawns(t, stub); got != 11 {
-		t.Fatalf("spawn count = %d; want 11", got)
+	if got, want := totalSpawns(t, stub), len(Agents["build"]); got != want {
+		t.Fatalf("spawn count = %d; want %d", got, want)
 	}
 	if got := gitBuild(t, repo, "status", "--porcelain"); got != "" {
 		t.Fatalf("tree left dirty: %q", got)

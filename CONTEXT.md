@@ -9,7 +9,7 @@ for the engineer to inspect.
 One execution of a workflow for an engineer's request against a repository.
 
 **Iteration**:
-One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteration 0; each revision adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
+One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteratifon 0; each revision adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
 
 **Revision**:
 A further change requested against a build whose latest iteration succeeded and whose pull request is still open. It is the next iteration of the same run, not a new run: planned, validated and published to the same pull request, and published only if accepted.
@@ -40,10 +40,14 @@ its own budget intact. What happens once the budget is spent is the node's own
 decision: plan review forwards its remaining objections as risks, and adjudication hands the implementation off unaccepted with its remaining findings.
 
 **Validation group**:
-The `validate` node: the tester and the three code reviewers run at once against the same uncommitted implementation, each as its own traced phase. The tree is frozen while they run, cleanup waits for all of them, and a source file changed meanwhile invalidates the round.
+The `validate` node: the tester and the code reviewers run at once against the same uncommitted implementation, each as its own traced phase. The tree is frozen while they run, cleanup waits for all of them, and a source file changed meanwhile invalidates the round.
 
 **Worker**:
 One member of a validation group. A worker that fails to produce a usable result is retried up to twice against the same code; a report with findings, or a red suite, is a result and is not retried.
+
+**Code reviewer**:
+A read-only worker that reports findings on an implementation from its own angle: correctness, security, unnecessary complexity, or an adversarial attempt to break the change. Angles overlap on purpose; the adjudicator weighs them.
+_Avoid_: reviewer (ambiguous with the plan-reviewer)
 
 **Finding**:
 One code reviewer's objection: a stable reference lathe assigns, its source, a location where one applies, evidence, an explanation and the requested outcome.

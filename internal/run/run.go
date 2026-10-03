@@ -33,20 +33,21 @@ const maxCorrections = 2
 
 // toolBudget is how many tool calls one agent turn may make before lathe ends
 // the turn and asks for the report. It is the backstop, deliberately above the
-// number prompts/scout/user.md asks the agent to keep to, so a well-behaved
-// agent lands on its own and only a spiralling one ever meets this. A run that
-// hit it once loops forever without it: the deadline is the only other bound,
-// and the deadline produces a failure rather than an answer.
-const toolBudget = 40
+// largest number a prompt asks an agent to keep to (50, in prompts/planner and
+// prompts/code-review), so a well-behaved agent lands on its own and only a
+// spiralling one ever meets this. A slow agent may meet its deadline first,
+// which ends the turn the same way.
+const toolBudget = 80
 
-// errBudget means the turn was cut short by toolBudget rather than by anything
-// going wrong, so the caller asks for the report instead of failing the phase.
-var errBudget = errors.New("tool call budget spent")
+// errBudget means the turn was cut short by toolBudget or the agent's deadline
+// rather than by anything going wrong, so the caller asks for the report
+// instead of failing the phase.
+var errBudget = errors.New("tool call or time budget spent")
 
 // budgetSpent is what the agent is told when that happens. It goes to the same
 // Pi session, so everything it has read is still in its context — it has to
 // write the report, not repeat the investigation.
-const budgetSpent = "You have used your tool call budget for this phase. " +
+const budgetSpent = "You have used your tool call or time budget for this phase. " +
 	"Do not call any more tools.\n\nReply now with the fenced json block, " +
 	"built from what you have already read. Anything you could not determine " +
 	"belongs in \"findings\" as an honest gap, phrased as what is still unknown."
@@ -530,7 +531,7 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 			nudged, prompt = true, budgetSpent
 			continue
 		case errors.Is(err, errBudget):
-			return &EnvelopeError{fmt.Sprintf("%s kept calling tools after its budget was spent", agent.Name)}
+			return &EnvelopeError{fmt.Sprintf("%s did not report after its budget was spent", agent.Name)}
 		case err != nil:
 			return err
 		}
@@ -782,6 +783,12 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// A killed Pi reports as a failed command, so the budget has to claim its
 	// own cancellation before the error is read as one.
 	if err != nil && calls >= toolBudget {
+		return res, errBudget
+	}
+	// Checked on this turn's own context: a cancelled run is not a spent budget.
+	if err != nil && r.ctx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		r.db.Event(r.ID, h.phase.ID, "log", "deadline_spent",
+			map[string]int{"attempt": attempt, "calls": calls})
 		return res, errBudget
 	}
 	// Returned as an error rather than an empty reply, so Call stops here

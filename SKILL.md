@@ -30,7 +30,7 @@ automatically if none is running.
   change the repo it is pointed at.
 - `plan "<request>"` — plan a change: a summary, ordered steps, the files the change touches, and the risks. Read-only on the same terms as the scout, plus `web_read` for public docs, with reads held to the repo. The file list is the write scope the builder is held to, so a plan that names `.git`, `.env*` or key material is rejected before it is printed.
 
-- `implement "<request>"` — plan, implement and validate a change in a clean Git repository. The builder gets write and edit tools, no shell, and may write only the plan's files. Changes remain uncommitted. A missed file ends the run as a failure naming the needed path. Each implementation round is validated by four workers at once: the tester reassesses the test command and lathe runs it under the command timeout and shell deny list with your inherited environment, while three read-only reviewers check correctness, security and unnecessary complexity. An adjudicator then weighs every report and either accepts or sends the builder back with one set of changes, up to four times. Acceptance needs a measured green suite and a usable report from every worker. Work still unaccepted after the fourth repair, or whose validation could not complete, stays in the tree and the run fails saying why. Test dirt outside the accumulated plan scope is reverted once every worker has finished; a source file changed while the workers ran invalidates the round and stops the run. Review with `git diff`, including after failure: planned changes remain in the tree.
+- `implement "<request>"` — plan, implement and validate a change in a clean Git repository. The builder gets write and edit tools, no shell, and may write only the plan's files. Changes remain uncommitted. A missed file ends the run as a failure naming the needed path. Each implementation round is validated by five workers at once: the tester reassesses the test command and lathe runs it under the command timeout and shell deny list with your inherited environment, while four read-only reviewers check correctness, security and unnecessary complexity, and try to break the change. An adjudicator then weighs every report and either accepts or sends the builder back with one set of changes, up to ten times. Acceptance needs a measured green suite and a usable report from every worker. Work still unaccepted after the tenth repair, or whose validation could not complete, stays in the tree and the run fails saying why. Test dirt outside the accumulated plan scope is reverted once every worker has finished; a source file changed while the workers ran invalidates the round and stops the run. Review with `git diff`, including after failure: planned changes remain in the tree.
 
 - `build "<request>"` — the same run, then branch, commit and open a pull
   request. It needs `git` and `gh` on `PATH` and `gh` already authenticated.
@@ -48,12 +48,12 @@ The plan, implement, build and revise workflows share a read-only review loop:
 ```
 request → plan → review → [plan → review, up to four send-backs]
 plan:      → print the reviewed plan
-implement: → implement → validate → adjudicate → [implement → validate → adjudicate, up to four repairs]
+implement: → implement → validate → adjudicate → [implement → validate → adjudicate, up to ten repairs]
 build:     → branch → implement → validate → adjudicate → [...] → commit → pr (draft when unaccepted)
 revise:    → implement → validate → adjudicate → [...] → commit → publish (accepted only)
 ```
 
-`validate` runs `test`, `code-review-general`, `code-review-security` and `code-review-slop` at once, each traced as its own phase. A worker that fails outright is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete.
+`validate` runs `test`, `code-review-general`, `code-review-security`, `code-review-slop` and `code-review-adversarial` at once, each traced as its own phase. A worker that fails outright is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete.
 
 The reviewer checks the plan against the repository, including the builder's file list. Empty feedback accepts it. The fifth review ends the loop; remaining objections or a failed final review become risks in the saved plan and builder handoff. An objection the reviewer marks blocking, because the plan cannot succeed as written, is the exception: if it survives the fifth review the run fails before the builder starts, with the plan saved for diagnosis. Failed reviews consume a send-back and remain visible as failed phases
 even when the run succeeds. Planner failures and cancellation stop the run.

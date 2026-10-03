@@ -37,7 +37,7 @@ lathe manager                            # queue and dashboard at http://127.0.0
 
 ```
 plan:      request → plan → review   (up to 4 send-backs)
-implement: … → implement → validate → adjudicate   (up to 4 repairs)
+implement: … → implement → validate → adjudicate   (up to 10 repairs)
 build:     … → branch → implement → validate → adjudicate → commit → pr
 revise:    request → plan → review → implement → validate → adjudicate → commit → push to the same pr
 ```
@@ -50,7 +50,7 @@ revise:    request → plan → review → implement → validate → adjudicate
 - `build` needs `gh` logged in. A failed build keeps its commit.
 - `revise` extends a build whose latest iteration succeeded and whose pull request is still open. The checkout must be clean, on the pull request's branch, and at the commit lathe last pushed, with origin at that commit too; lathe does not switch branches, merge or rebase to get there, and says what to restore. Every revision is planned and validated from scratch, and only an accepted change is committed and pushed, with the push refused if origin moved. The run keeps its ID, pull request and totals; `show` lists each iteration and `wait --iteration n` waits for one.
 - The builder can only write files its plan named. The shell deny list is a rough filter, not a sandbox.
-- The planner, plan-reviewer and the three code reviewers have `web_read`, which fetches one public https page as markdown for docs and references. It refuses this machine, private networks and cloud metadata addresses. An agent can put anything it reads into a URL, so these agents can only read the repo and the Go module cache, and never `.env*`, key files or `.git/`. Repo source can still leave that way, which matters for a private repo. No agent has both `web_read` and a shell. Every URL is in the run's `raw.jsonl`.
+- The planner, plan-reviewer and the four code reviewers have `web_read`, which fetches one public https page as markdown for docs and references. It refuses this machine, private networks and cloud metadata addresses. An agent can put anything it reads into a URL, so these agents can only read the repo and the Go module cache, and never `.env*`, key files or `.git/`. Repo source can still leave that way, which matters for a private repo. No agent has both `web_read` and a shell. Every URL is in the run's `raw.jsonl`.
 - Traces go to `~/.local/share/lathe/lathe.db`, or under `$XDG_DATA_HOME`.
 
 Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `implement`, or `build`. A bare number uses the target checkout’s GitHub remote (`--repo` still selects the local checkout). The worker needs `gh` on `PATH` and authenticated. An `issue` code phase fetches the title and body when the run starts, saves `issue.json`, and passes that task to the planner and subsequent agents. A failed lookup stops the run before planning. Issue comments are not included.
@@ -85,6 +85,7 @@ The agents a block can name:
 - `code-review-general`: reviews correctness, the request and plan, conventions and tests
 - `code-review-security`: reviews what crosses the application's trust boundaries
 - `code-review-slop`: reviews for unneeded complexity
+- `code-review-adversarial`: tries to break the change through failure paths, retries, races and stale state
 - `adjudicator`: decides every review finding and whether the builder goes round again
 - `brancher`: names the branch for `build`
 - `committer`: writes the commit message
