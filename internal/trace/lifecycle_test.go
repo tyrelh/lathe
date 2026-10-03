@@ -247,3 +247,45 @@ func TestQueuedAndActive(t *testing.T) {
 		t.Fatalf("queue after one dispatch = %+v", queued)
 	}
 }
+
+// A transaction that reads and then writes, as RequestCancel does, must not
+// fail because another process wrote in between. This is how `lathe cancel`
+// lost to a run's own event writes.
+func TestReadThenWriteSurvivesAnotherWriter(t *testing.T) {
+	dir := t.TempDir()
+	a, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	tx, err := a.sql.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM runs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	other := make(chan error, 1)
+	go func() {
+		_, err := b.Submit(Request{Workflow: "scout", Repo: "/repo", Request: "meanwhile"})
+		other <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if _, err := tx.Exec(`UPDATE runs SET reason = reason`); err != nil {
+		t.Fatalf("write after read: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-other; err != nil {
+		t.Fatalf("the other writer: %v", err)
+	}
+}

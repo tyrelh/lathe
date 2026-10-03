@@ -118,7 +118,10 @@ func Open(dataRoot string) (*DB, error) {
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dataRoot, dbFile))
+	// Transactions take the write lock when they begin. A deferred one that
+	// reads and then writes fails at once with SQLITE_BUSY if another process
+	// wrote in between, and busy_timeout cannot wait that out.
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, dbFile)+"?_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
