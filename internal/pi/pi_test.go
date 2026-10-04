@@ -5,14 +5,111 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyrelh/lathe/internal/trace"
 )
+
+func authStub(t *testing.T, body string) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func TestCheckAuth(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		exit         int
+		ok           bool
+	}{
+		{"ready", `{"provider":"test","status":"ready","authType":"api_key"}`, 0, true},
+		{"missing", `{"provider":"test","status":"not_ready","reason":"credentials_not_configured"}`, 1, false},
+		{"invalid", `{"provider":"test","status":"invalid","reason":"invalid_state"}`, 2, false},
+		{"nonzero ready", `{"provider":"test","status":"ready"}`, 1, false},
+		{"zero not ready", `{"provider":"test","status":"not_ready","reason":"credential_not_available"}`, 0, false},
+		{"unsupported", "help text SECRET", 0, false},
+		{"unknown status", `{"provider":"test","status":"SECRET"}`, 0, false},
+		{"unknown reason", `{"provider":"test","status":"not_ready","reason":"SECRET"}`, 1, false},
+		{"wrong provider", `{"provider":"SECRET","status":"ready"}`, 0, false},
+		{"missing status", `{"provider":"test"}`, 0, false},
+		{"trailing output", `{"provider":"test","status":"ready"} SECRET`, 0, false},
+		{"extra secret", `{"provider":"test","status":"ready","credentials":"SECRET"}`, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := authStub(t, fmt.Sprintf("echo 'SECRET' >&2\ncat <<'JSON'\n%s\nJSON\nexit %d\n", tc.output, tc.exit))
+			err := CheckAuth(context.Background(), Options{Bin: bin, Provider: "test"})
+			if (err == nil) != tc.ok {
+				t.Fatalf("error = %v; success = %v", err, tc.ok)
+			}
+			if err != nil && strings.Contains(err.Error(), "SECRET") {
+				t.Fatalf("leaked output: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckAuthInvocation(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LATHE_AUTH_TEST", "inherited")
+	bin := authStub(t, `printf '%s\n' "$@" > args
+pwd > cwd
+printf '%s' "$LATHE_AUTH_TEST" > env
+printf '{"provider":"test","status":"ready","authType":"oauth"}\n'
+`)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := CheckAuth(context.Background(), Options{Dir: dir, Provider: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"args": "auth\ncheck\n--provider\ntest\n--json\n", "cwd": real + "\n", "env": "inherited",
+	} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if name == "cwd" && err == nil {
+			resolved, resolveErr := filepath.EvalSymlinks(strings.TrimSpace(string(got)))
+			if resolveErr != nil {
+				t.Fatal(resolveErr)
+			}
+			got = []byte(resolved + "\n")
+		}
+		if err != nil || string(got) != want {
+			t.Fatalf("%s: %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
+func TestCheckAuthCancellationKillsDescendants(t *testing.T) {
+	dir := t.TempDir()
+	bin := authStub(t, "(sleep 0.4; echo late > late) &\nwait\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := CheckAuth(ctx, Options{Bin: bin, Dir: dir, Provider: "test"})
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
+		t.Fatalf("cancellation: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, "late")); !os.IsNotExist(err) {
+		t.Fatalf("descendant survived: %v", err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if err := CheckAuth(ctx, Options{Bin: bin, Provider: "test"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context: %v", err)
+	}
+}
 
 func openSample(t *testing.T, name string) *os.File {
 	t.Helper()

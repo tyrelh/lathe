@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
@@ -493,6 +494,46 @@ func (h *Handle) permit() permit.Scope {
 // Log records something lathe itself did, with no agent involved.
 func (h *Handle) Log(name, payload string) error {
 	return h.run.db.Event(h.run.ID, h.phase.ID, "log", name, payload)
+}
+
+// AuthPreflight checks each captured provider once and logs only safe readiness results.
+func (h *Handle) AuthPreflight() error {
+	return h.authPreflight(pi.CheckAuth)
+}
+
+func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) error {
+	r := h.run
+	providers := make([]string, 0, len(r.cfg.Agents))
+	for _, agent := range r.cfg.Agents {
+		providers = append(providers, agent.Provider)
+	}
+	slices.Sort(providers)
+	providers = slices.Compact(providers)
+	for _, provider := range providers {
+		if strings.ContainsFunc(provider, unicode.IsControl) {
+			return errors.New("auth preflight: provider identifiers must not contain control characters; correct the provider configuration and resubmit")
+		}
+	}
+	ctx, cancel := r.commandContext()
+	defer cancel()
+	var failures []error
+	for _, provider := range providers {
+		if ctx.Err() != nil {
+			break
+		}
+		err := check(ctx, pi.Options{Bin: r.PiBin, Dir: r.Repo, Provider: provider})
+		result := fmt.Sprintf("provider %q: ready", provider)
+		if err != nil {
+			result = fmt.Sprintf("provider %q: %s", provider, err)
+		}
+		if logErr := h.Log("auth", result); logErr != nil {
+			return logErr
+		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("provider %q auth preflight: %w; configure credentials in the worker environment (workers inherit the manager environment; restart the manager after changing it), or log in with Pi as the worker user; rerun in that environment: pi auth check --provider %s --json", provider, err, "'"+strings.ReplaceAll(provider, "'", "'\\''")+"'"))
+		}
+	}
+	return errors.Join(append(failures, ctx.Err())...)
 }
 
 // Call runs the phase's agent, decodes its envelope into out, and checks it

@@ -150,14 +150,12 @@ func Plan(r *run.Run) int {
 // review hands any remaining objections to the builder as risks.
 const maxSendBacks = 4
 
-// addPlanNodes appends the plan and review nodes both workflows start with.
-// They are shared rather than repeated because the graph, not the helper, is
-// what decides where review forwards to — so nothing here has to know whether
-// a builder comes next.
-//
-// A nonempty revision is a revision's planner brief: the planner's first
-// request instead of the run's, and a plan that may permit no files.
+// addPlanNodes appends auth, optional issue lookup, planning and review.
+// A nonempty revision supplies the planner brief and permits an empty file list.
 func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
+	g.Add(run.Node{Name: "auth", Owner: "engineer"}, func(e *run.Entry) (string, error) {
+		return "", e.AuthPreflight()
+	})
 	if r.Issue != "" {
 		g.Add(run.Node{Name: "issue", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 			request, err := e.IssueRequest()

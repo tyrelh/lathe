@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,9 +61,63 @@ func TestGroupOverlapsWorkersAndJoinsBeforeDone(t *testing.T) {
 	}
 }
 
-// A failed attempt is retried against the same entry without touching its
-// peers, stays in the trace as a failed phase, and does not fail the run once
-// a retry recovers it. A worker that never recovers stops at its bound.
+func TestGroupEnvironmentFailureJoinsWithoutRetry(t *testing.T) {
+	for _, code := range []int{126, 127} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			r := newRun(t, "")
+			defer r.Finish(false, "")
+			r.Repo = gitRepo(t)
+			if err := r.EnsureClean(); err != nil {
+				t.Fatal(err)
+			}
+			failed := fmt.Errorf("tester: %w", &EnvironmentError{ExitCode: code})
+			var attempts atomic.Int32
+			var joined atomic.Bool
+			started := make(chan struct{})
+			g := NewGraph(r)
+			g.AddGroup(Node{Name: "validate", Owner: "engineer"}, []Worker{
+				{Name: "test", Owner: "engineer", Run: func(e *Entry) error {
+					attempts.Add(1)
+					select {
+					case <-started:
+						return failed
+					case <-time.After(5 * time.Second):
+						return errors.New("peer did not start")
+					}
+				}},
+				{Name: "peer", Owner: "engineer", Run: func(e *Entry) error {
+					close(started)
+					if err := os.WriteFile(filepath.Join(r.Repo, "tracked.txt"), []byte("mutated"), 0o644); err != nil {
+						return err
+					}
+					joined.Store(true)
+					return nil
+				}},
+			}, func(e *Entry, res GroupResult) (string, error) {
+				if !joined.Load() || attempts.Load() != 1 || res.Failed["test"] != failed || len(res.Failed) != 1 {
+					t.Fatalf("join: attempts=%d joined=%v failures=%v", attempts.Load(), joined.Load(), res.Failed)
+				}
+				var environment *EnvironmentError
+				if !errors.As(res.Failed["test"], &environment) || environment.ExitCode != code {
+					t.Fatalf("lost typed failure: %v", res.Failed)
+				}
+				if strings.Join(res.Mutated, ",") != "tracked.txt" {
+					t.Fatalf("lost mutation evidence: %v", res.Mutated)
+				}
+				b, err := os.ReadFile(filepath.Join(r.Repo, "tracked.txt"))
+				if err != nil || string(b) != "original\n" {
+					t.Fatalf("cleanup: %q, %v", b, err)
+				}
+				return "", res.Failed["test"]
+			})
+			if err := g.Run(); err != failed {
+				t.Fatalf("failure changed: %v", err)
+			}
+		})
+	}
+}
+
+// Ordinary worker failures retry independently and retain failed attempts in the trace.
 func TestGroupRetriesAFailedWorker(t *testing.T) {
 	r := newRun(t, "")
 	var flaky, broken, steady atomic.Int32

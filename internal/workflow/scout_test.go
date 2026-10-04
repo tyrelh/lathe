@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,17 @@ func stubPi(t *testing.T, replies ...string) {
 // in the script, so only the script belongs in one.
 func onPath(t *testing.T, dir, script string) {
 	t.Helper()
+	auth := fmt.Sprintf(`if [ "$1 $2" = "auth check" ]; then
+  echo "$4" >> %q
+  if [ "$4" = "$LATHE_TEST_AUTH_FAIL" ]; then
+    printf '{"provider":"%%s","status":"not_ready","reason":"credentials_not_configured"}\n' "$4"
+    exit 1
+  fi
+  printf '{"provider":"%%s","status":"ready","authType":"api_key"}\n' "$4"
+  exit 0
+fi
+`, filepath.Join(dir, "auth-providers"))
+	script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\n"+auth, 1)
 	write(t, filepath.Join(dir, "pi"), script)
 	if err := os.Chmod(filepath.Join(dir, "pi"), 0o755); err != nil {
 		t.Fatal(err)

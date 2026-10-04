@@ -177,9 +177,53 @@ func rev(t *testing.T, repo, ref string) string {
 	return strings.TrimSpace(gitBuild(t, repo, "rev-parse", ref))
 }
 
-// A build and two revisions: one run and one pull request, three preserved
-// iterations, phases numbered straight through, every report kept, and the
-// run's spend cumulative in the row, the completion banner and the usage.
+func TestReviseAuthPreflight(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			cfg, repo, _, stub := revisable(t)
+			preflightProviders(&cfg, "committer")
+			before := totalSpawns(t, stub)
+			write(t, filepath.Join(stub, "auth-providers"), "")
+			write(t, filepath.Join(stub, "builder.sh"), "printf 'hello again\\n' > hello.txt\n")
+			want := 0
+			if fail {
+				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				want = 1
+			}
+			if got := revise(t, cfg, repo, "say hello again"); got != want {
+				t.Fatalf("exit = %d, want %d: %s", got, want, latestRun(t).Reason)
+			}
+			assertPreflight(t, stub, 1, fail)
+			if fail && totalSpawns(t, stub) != before {
+				t.Fatal("auth failure consumed agent turns")
+			}
+		})
+	}
+}
+
+func TestReviseEnvironmentFailurePublishesNothing(t *testing.T) {
+	for _, exit := range []int{126, 127} {
+		t.Run(fmt.Sprint(exit), func(t *testing.T) {
+			cfg, repo, origin, stub := revisable(t)
+			head := rev(t, repo, "HEAD")
+			write(t, filepath.Join(stub, "builder.sh"), "printf 'hello again\\n' > hello.txt\n")
+			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			if got := revise(t, cfg, repo, "say hello again"); got != 1 {
+				t.Fatalf("exit = %d", got)
+			}
+			assertEnvironmentFailure(t, stub, filepath.Join(latestRunDir(t), "iteration-1"), command, exit, 1)
+			if rev(t, repo, "HEAD") != head || rev(t, origin, prBranch) != head {
+				t.Fatal("environment failure committed or pushed")
+			}
+			if _, err := os.Stat(filepath.Join(stub, "pushed")); !os.IsNotExist(err) {
+				t.Fatal("environment failure attempted a push")
+			}
+		})
+	}
+}
+
+// Revisions preserve reports and extend one run's phases, publication and spend.
 func TestRevisionsExtendTheRun(t *testing.T) {
 	cfg, repo, origin, stub := revisable(t)
 	built := rev(t, repo, "HEAD")

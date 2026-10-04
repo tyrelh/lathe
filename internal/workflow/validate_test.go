@@ -187,6 +187,111 @@ func runPhases(t *testing.T) []trace.PhaseRow {
 	return phases
 }
 
+func assertEnvironmentFailure(t *testing.T, stub, dir, command string, exit, iteration int) Validation {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "validation.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v Validation
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.Outcome != outcomeEnvironmentFailed || v.Accepted() || len(v.Rounds) != 1 || !strings.Contains(v.Reason, fmt.Sprintf("exited %d", exit)) {
+		t.Fatalf("validation = %+v", v)
+	}
+	round := v.Rounds[0]
+	if round.Tests == nil || round.Tests.Command == nil || *round.Tests.Command != command || round.Measured == nil ||
+		round.Measured.Command != command || round.Measured.Green || round.Measured.Tail != "ENV-TAIL\n" ||
+		!strings.Contains(round.Measured.Result, fmt.Sprintf("exited %d", exit)) || round.Adjudication != nil {
+		t.Fatalf("lost failed measurement or adjudicated it: %+v", round)
+	}
+	found := false
+	for _, failure := range round.Failures {
+		if failure.Worker == "test" && strings.Contains(failure.Error, fmt.Sprintf("exited %d", exit)) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing tester failure: %+v", round.Failures)
+	}
+	for _, name := range []string{"tester", "builder"} {
+		if got := spawnsOf(t, stub, name); got != iteration+1 {
+			t.Fatalf("%s attempts = %d; wanted one this iteration", name, got)
+		}
+	}
+	for _, name := range []string{"adjudicator", "committer", "pr-author"} {
+		if got := spawnsOf(t, stub, name); got != iteration {
+			t.Fatalf("environment failure reached %s: %d turns", name, got)
+		}
+	}
+	if got := strings.Count(stubFile(t, stub, "gh-creates"), "created"); got != iteration {
+		t.Fatalf("environment failure opened a PR: %d creates", got)
+	}
+	tests := 0
+	for _, ph := range runPhases(t) {
+		if ph.Iteration != iteration {
+			continue
+		}
+		switch ph.Name {
+		case "test":
+			tests++
+			if ph.Status != "fail" {
+				t.Fatalf("tester status = %s", ph.Status)
+			}
+		case "adjudicate", "commit", "pr", "publish":
+			t.Fatalf("terminal failure forwarded to %s", ph.Name)
+		}
+	}
+	if tests != 1 || latestRun(t).Status != "fail" {
+		t.Fatalf("tester phases = %d, run = %+v", tests, latestRun(t))
+	}
+	return v
+}
+
+func TestEnvironmentFailureRetainsJoinedEvidence(t *testing.T) {
+	for _, exit := range []int{126, 127} {
+		t.Run(fmt.Sprint(exit), func(t *testing.T) {
+			cfg, repo := buildRepo(t)
+			stub := codeStub(t)
+			command := fmt.Sprintf("echo mutated > hello.txt; echo ENV-TAIL; exit %d", exit)
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			write(t, filepath.Join(stub, "code-review-security"), piReply(t, "no report"))
+			if got := execute(t, cfg, "implement", repo, "greet the world"); got != 1 {
+				t.Fatalf("exit = %d", got)
+			}
+			v := assertEnvironmentFailure(t, stub, latestRunDir(t), command, exit, 0)
+			round := v.Rounds[0]
+			if strings.Join(round.Mutated, ",") != "hello.txt" || len(round.Failures) != 2 || len(round.Reports) != len(reviewers)-1 {
+				t.Fatalf("lost joined evidence: %+v", round)
+			}
+			if spawnsOf(t, stub, "code-review-security") != 5 {
+				t.Fatal("ordinary failed peer was not joined through its retries")
+			}
+		})
+	}
+}
+
+func TestOrdinaryRedSuiteStillAdjudicatesAndRepairs(t *testing.T) {
+	cfg, repo := buildRepo(t)
+	stub := codeStub(t)
+	write(t, filepath.Join(stub, "tester.0"), testerReply(t, "echo RED-TAIL; exit 7"))
+	write(t, filepath.Join(stub, "adjudicator.0"), adjudicatorReply(t, "revise", "fix the suite", nil, nil))
+	if got := execute(t, cfg, "implement", repo, "greet the world"); got != 0 {
+		t.Fatalf("exit = %d", got)
+	}
+	v := readValidation(t)
+	if v.Outcome != outcomeAccepted || len(v.Rounds) != 2 || v.Rounds[0].Measured.Green || !v.Rounds[1].Measured.Green ||
+		!strings.Contains(v.Rounds[0].Measured.Result, "exited 7") || v.Rounds[0].Measured.Tail != "RED-TAIL\n" || len(v.Rounds[0].Failures) != 0 {
+		t.Fatalf("ordinary red suite = %+v", v)
+	}
+	for _, name := range []string{"tester", "builder", "adjudicator"} {
+		if spawnsOf(t, stub, name) != 2 {
+			t.Fatalf("ordinary red suite did not pass through %s twice", name)
+		}
+	}
+}
+
 func session(t *testing.T, args string) string {
 	t.Helper()
 	lines := strings.Split(args, "\n")

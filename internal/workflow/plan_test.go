@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/trace"
 )
 
 // planReply is one Pi stream carrying a planner's whole answer. files is raw
@@ -15,6 +18,80 @@ func planReply(t *testing.T, files string) string {
 	return piReply(t, "Read the client.\n\n```json\n"+
 		`{"summary": "wrap fetch in a retry", "steps": ["edit fetch.go"], "files": [`+files+
 		`], "risks": [], "artifacts": []}`+"\n```\n")
+}
+
+func preflightProviders(cfg *config.Config, later string) {
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		a.Provider = "base-auth"
+		if a.Name == later {
+			a.Provider = "later-auth"
+		}
+		if a.Name == "scout" {
+			a.Provider = "unused-auth"
+		}
+	}
+}
+
+func assertPreflight(t *testing.T, stub string, iteration int, failed bool) {
+	t.Helper()
+	var phases []trace.PhaseRow
+	for _, ph := range runPhases(t) {
+		if ph.Iteration == iteration {
+			phases = append(phases, ph)
+		}
+	}
+	if len(phases) < 2 || phases[0].Name != "request" || phases[1].Name != "auth" || phases[1].Owner != "engineer" {
+		t.Fatalf("request/auth ordering: %+v", phases)
+	}
+	count := 0
+	for _, ph := range phases {
+		if ph.Name == "auth" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("auth repeated: %+v", phases)
+	}
+	if got := stubFile(t, stub, "auth-providers"); got != "base-auth\nlater-auth\n" {
+		t.Fatalf("captured providers, once each: %q", got)
+	}
+	if failed {
+		if len(phases) != 2 || phases[1].Status != "fail" {
+			t.Fatalf("continued after auth failure: %+v", phases)
+		}
+		if !strings.Contains(latestRun(t).Reason, `provider "later-auth"`) {
+			t.Fatalf("missing provider diagnostic: %s", latestRun(t).Reason)
+		}
+	} else if phases[1].Status != "success" || len(phases) < 3 || phases[2].Name != "plan" {
+		t.Fatalf("auth did not precede planning: %+v", phases)
+	}
+}
+
+func TestPlanAuthPreflight(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ready", true: "missing"}[fail], func(t *testing.T) {
+			cfg, repo := load(t)
+			preflightProviders(&cfg, "plan-reviewer")
+			stub := codeStub(t)
+			write(t, filepath.Join(stub, "plan-reviewer.0"), reviewReply(t, "clarify the steps"))
+			want := 0
+			if fail {
+				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				want = 1
+			}
+			if got := execute(t, cfg, "plan", repo, "greet the world"); got != want {
+				t.Fatalf("exit = %d, want %d", got, want)
+			}
+			assertPreflight(t, stub, 0, fail)
+			if fail && totalSpawns(t, stub) != 0 {
+				t.Fatal("auth failure consumed agent turns")
+			}
+			if !fail && spawnsOf(t, stub, "planner") != 2 {
+				t.Fatal("send-back did not exercise auth-once behavior")
+			}
+		})
+	}
 }
 
 // Phase 1's done-when: plan.json lands in the run directory with the file list

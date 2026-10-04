@@ -127,17 +127,17 @@ func TestPlanReviewLoop(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(phases) != 1+2*tc.reviews {
+			if len(phases) != 2+2*tc.reviews {
 				t.Fatalf("unexpected phase count: %v", phases)
 			}
 			failed := 0
-			for i, ph := range phases[2:] {
+			for i, ph := range phases[3:] {
 				want := "review"
 				if i%2 == 1 {
 					want = "plan"
 				}
 				if ph.Name != want {
-					t.Fatalf("phase %d: %s, want %s", i+2, ph.Name, want)
+					t.Fatalf("phase %d: %s, want %s", i+3, ph.Name, want)
 				}
 				if ph.Status == "fail" {
 					failed++
@@ -267,7 +267,7 @@ fi
 	}
 	defer db.Close()
 	phases, err := db.Phases(filepath.Base(latestRunDir(t)))
-	if err != nil || len(phases) != 3 || phases[2].Name != "review" || phases[2].Status != "fail" {
+	if err != nil || len(phases) != 4 || phases[3].Name != "review" || phases[3].Status != "fail" {
 		t.Fatalf("continued after cancellation: %v, %v", phases, err)
 	}
 }

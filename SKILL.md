@@ -23,6 +23,12 @@ being interrupted; that detaches rather than cancels. `--detach` returns the
 run ID immediately instead. A manager process drains the queue and is started
 automatically if none is running.
 
+## Worker credentials
+
+Configure credentials for every provider in the captured agent roster, including those used only by later agents. Workers inherit the manager's environment: export provider keys before starting it (for example `MOONSHOT_API_KEY`), or log in with Pi as the worker user. Restart the manager after changing its environment. From the repository in that same environment, rerun readiness with `pi auth check --provider <provider> --json`.
+
+`plan`, `implement`, `build` and `revise` trace an engineer-owned `auth` phase immediately after `request`, before optional issue lookup or any agent turn. Each distinct captured provider is checked once, with safe status/reason logging, under the command timeout and run cancellation. Missing credentials, unsupported Pi or malformed readiness output stop the run before planning. Auth is not repeated on planning send-backs; scout is unchanged. Readiness means credential availability, not a live API-key validity guarantee. Pi may refresh expired OAuth credentials and update its credential store.
+
 ## Workflows
 
 - `scout "<request>"` — investigate and report. Read-only: the scout has
@@ -39,21 +45,21 @@ automatically if none is running.
   and the pr-author writes the title and body, while lathe runs `git checkout
   -b`, stages exactly the accepted scope and commits it, pushes, and runs
   `gh pr create`. No agent can commit or push: the guard denies both. None of
-  the three sends work back, so a failure in any of them ends the run. An accepted change opens a normal pull request. Unresolved findings at the send-back limit, or incomplete validation, still commit and open a draft pull request that carries the validation report, and the run fails: the draft is unfinished work, not an accepted change. Cancellation and a source change during validation publish nothing.
+  the three sends work back, so a failure in any of them ends the run. An accepted change opens a normal pull request. Unresolved findings at the send-back limit, or incomplete validation, still commit and open a draft pull request that carries the validation report, and the run fails: the draft is unfinished work, not an accepted change. Cancellation, a source change during validation, and terminal environment failures publish nothing.
 
-- `revise <run-id> "<change>"` — another change to a build's open pull request, as the next iteration of the same run. It needs the build's latest iteration to have succeeded, the pull request still open, and the checkout clean, on the pull request's branch and at the commit lathe last pushed, with origin at that commit too. Lathe refuses rather than switching branches, merging or rebasing, and says what to restore; a manual commit or an accepted GitHub suggestion makes the run ineligible until the branch is back where lathe left it. The request must spell out the change: review comments are not collected. Every revision enters at the planner, which is shown the original request, earlier revisions, the previous plan and validation, and the branch diff. A request that needs no code change is validated as the branch stands and succeeds without a commit. Only an accepted change is committed and pushed — the push is refused if origin moved since the last check — and the pull request's title and description are left alone. Anything unaccepted, and cancellation, keep the work uncommitted in the checkout and publish nothing; that also ends the run's revisions. `revise` waits for the iteration it submitted; `--detach` returns straight away. There are no idempotency keys: if a submission's acknowledgement is lost, check `lathe show <id>` before resubmitting.
+- `revise <run-id> "<change>"` — another change to a build's open pull request, as the next iteration of the same run. It needs the build's latest iteration to have succeeded, the pull request still open, and the checkout clean, on the pull request's branch and at the commit lathe last pushed, with origin at that commit too. Lathe refuses rather than switching branches, merging or rebasing, and says what to restore; a manual commit or an accepted GitHub suggestion makes the run ineligible until the branch is back where lathe left it. The request must spell out the change: review comments are not collected. After request and auth preflight, every revision enters the planner, which is shown the original request, earlier revisions, the previous plan and validation, and the branch diff. A request that needs no code change is validated as the branch stands and succeeds without a commit. Only an accepted change is committed and pushed — the push is refused if origin moved since the last check — and the pull request's title and description are left alone. Anything unaccepted, and cancellation, keep the work uncommitted in the checkout and publish nothing; that also ends the run's revisions. `revise` waits for the iteration it submitted; `--detach` returns straight away. There are no idempotency keys: if a submission's acknowledgement is lost, check `lathe show <id>` before resubmitting.
 
 The plan, implement, build and revise workflows share a read-only review loop:
 
 ```
-request → plan → review → [plan → review, up to four send-backs]
+request → auth → [issue] → plan → review → [plan → review, up to four send-backs]
 plan:      → print the reviewed plan
 implement: → implement → validate → adjudicate → [implement → validate → adjudicate, up to ten repairs]
 build:     → branch → implement → validate → adjudicate → [...] → commit → pr (draft when unaccepted)
 revise:    → implement → validate → adjudicate → [...] → commit → publish (accepted only)
 ```
 
-`validate` runs `test`, `code-review-general`, `code-review-security`, `code-review-slop` and `code-review-adversarial` at once, each traced as its own phase. A worker that fails outright is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete.
+`validate` runs `test`, `code-review-general`, `code-review-security`, `code-review-slop` and `code-review-adversarial` at once, each traced as its own phase. An ordinary worker failure is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete. Measured test exits 126/127 are the exception: they produce terminal `environment_failed`, with one tester attempt, no adjudication or repairs, and no commit, push or PR, including drafts. Already-running reviewers finish before cleanup. The tester report and measured command, result and output tail remain in `validation.json`. Install the required executable, check the worker's `PATH` and executable permissions, then rerun. This policy applies even if the suite uses those statuses for another purpose. Other nonzero test results remain red suites for adjudication, not worker failures. `environment_failed` is not retryable and must not be treated as publishable `incomplete` validation.
 
 The reviewer checks the plan against the repository, including the builder's file list. Empty feedback accepts it. The fifth review ends the loop; remaining objections or a failed final review become risks in the saved plan and builder handoff. An objection the reviewer marks blocking, because the plan cannot succeed as written, is the exception: if it survives the fifth review the run fails before the builder starts, with the plan saved for diagnosis. Failed reviews consume a send-back and remain visible as failed phases
 even when the run succeeds. Planner failures and cancellation stop the run.
@@ -70,7 +76,7 @@ error handling" gets a vague one.
 
 Before the request, not after:
 
-- `--issue <number|URL|owner/repo#number>` use a GitHub issue instead of a prompt for `plan`, `implement`, or `build`; bare numbers resolve against the target checkout. The worker fetches the title and body with authenticated `gh` in a traced `issue` phase before planning and saves `issue.json`. Comments are not included.
+- `--issue <number|URL|owner/repo#number>` use a GitHub issue instead of a prompt for `plan`, `implement`, or `build`; bare numbers resolve against the target checkout. The worker fetches the title and body with authenticated `gh` in a traced `issue` phase after auth preflight and before planning and saves `issue.json`. Comments are not included.
 - `--repo <dir>` act on another repository
 - `--detach` record the request, print the run ID, exit 0
 - `--model`, `--provider`, `--thinking` override the roster for one run
@@ -90,7 +96,7 @@ a failed build produced nothing.
 The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
 prints; `<dir>/implement.json` is the builder's report (also saved when it
-reports needed files); `<dir>/validation.json` holds every validation round — the tester's report, lathe's measurement, each reviewer's findings, the adjudicator's decisions, any scope or plan amendments — and how validation ended (`accepted`, `unresolved`, `incomplete` or `invalidated`); `<dir>/pr.json` holds the pull request a build opened, including its URL and whether it is a draft of unaccepted work. Runs from before parallel validation have `test.json` instead. Runs from before the rename have `build.json` where `implement.json`
+reports needed files); `<dir>/validation.json` holds every validation round — the tester's report, lathe's measurement, each reviewer's findings, the adjudicator's decisions, any scope or plan amendments — and how validation ended (`accepted`, `unresolved`, `incomplete`, `invalidated` or `environment_failed`); `<dir>/pr.json` holds the pull request a build opened, including its URL and whether it is a draft of unaccepted work. Runs from before parallel validation have `test.json` instead. Runs from before the rename have `build.json` where `implement.json`
 now is. There is no `branch.json` or `commit.json`: the branch name and the
 commit sha are both in git and in the trace. `<dir>/<attempt>/raw.jsonl` is the
 full event stream. `lathe runs` lists recent runs from every repo, queued and
