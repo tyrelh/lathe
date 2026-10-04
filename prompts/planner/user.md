@@ -8,6 +8,8 @@ Read enough of the repository to plan the change and stop there. Prefer `grep` a
 
 You have roughly 50 tool calls. Spend them, then write the plan from what you have. A plan that names its unknowns in `risks` is the result this phase wants; running the same search again is never what closes one.
 
+If the request above looks like a well-formed plan already just review it for correctness and don't modify it too much.
+
 ## The file list
 
 `files` is the load-bearing key. **Every path you list is a path the builder is allowed to write, and a path you omit is one it cannot.** A write outside the list is blocked and the run fails. The builder has no way to ask for more.
