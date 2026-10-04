@@ -514,16 +514,12 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 			return errors.New("auth preflight: provider identifiers must not contain control characters; correct the provider configuration and resubmit")
 		}
 	}
-	ctx := r.ctx
-	cancel := func() {}
-	if d := r.cfg.CommandDeadline; d > 0 {
-		ctx, cancel = context.WithTimeout(ctx, d)
-	}
+	ctx, cancel := r.commandContext()
 	defer cancel()
 	var failures []error
 	for _, provider := range providers {
-		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+		if ctx.Err() != nil {
+			break
 		}
 		err := check(ctx, pi.Options{Bin: r.PiBin, Dir: r.Repo, Provider: provider})
 		result := fmt.Sprintf("provider %q: ready", provider)
@@ -535,9 +531,6 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 		}
 		if err != nil {
 			failures = append(failures, fmt.Errorf("provider %q auth preflight: %w; configure credentials in the worker environment (workers inherit the manager environment; restart the manager after changing it), or log in with Pi as the worker user; rerun in that environment: pi auth check --provider %s --json", provider, err, "'"+strings.ReplaceAll(provider, "'", "'\\''")+"'"))
-		}
-		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
 		}
 	}
 	return errors.Join(append(failures, ctx.Err())...)

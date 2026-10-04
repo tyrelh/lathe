@@ -24,6 +24,19 @@ func (e *EnvironmentError) Error() string {
 	return fmt.Sprintf("test command exited %d: environment failure; install the required executable, check the worker PATH and executable permissions, then rerun", e.ExitCode)
 }
 
+// commandContext returns the run's context, bounded by command_timeout when set.
+func (r *Run) commandContext() (context.Context, context.CancelFunc) {
+	// Derived from the run's context, so a cancelled run kills the command and
+	// its whole process group rather than waiting for it. The bound is the
+	// roster's command_timeout: a code phase is lathe's own work, so borrowing
+	// the tester's deadline would both tie every code phase to that one agent
+	// and break any workflow whose captured roster does not include it.
+	if d := r.cfg.CommandDeadline; d > 0 {
+		return context.WithTimeout(r.ctx, d)
+	}
+	return context.WithCancel(r.ctx)
+}
+
 // tailBytes is how much of a suite's output the fix round is shown.
 const tailBytes = 4096
 
@@ -67,16 +80,7 @@ func (h *Handle) Command(command string) (string, error) {
 			return "", fmt.Errorf("the command matches the deny rule %s and will not be run", rule)
 		}
 	}
-	// Derived from the run's context, so a cancelled run kills the suite and
-	// its whole process group rather than waiting for it. The bound is the
-	// roster's command_timeout: a code phase is lathe's own work, so borrowing
-	// the tester's deadline would both tie every code phase to that one agent
-	// and break any workflow whose captured roster does not include it.
-	ctx := r.ctx
-	cancel := func() {}
-	if d := r.cfg.CommandDeadline; d > 0 {
-		ctx, cancel = context.WithTimeout(ctx, d)
-	}
+	ctx, cancel := r.commandContext()
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = r.Repo

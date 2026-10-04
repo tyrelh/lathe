@@ -145,18 +145,14 @@ type Options struct {
 // CheckAuth checks one provider's credential readiness without an agent turn.
 // OAuth checks may refresh the inherited Pi credential store. Output is never exposed.
 func CheckAuth(ctx context.Context, o Options) error {
+	if o.Provider == "" {
+		return errors.New("Pi auth check: no provider configured")
+	}
 	bin := o.Bin
 	if bin == "" {
 		bin = "pi"
 	}
-	cmd := exec.CommandContext(ctx, bin, "auth", "check", "--provider", o.Provider, "--json")
-	cmd.Dir = o.Dir
-	if len(o.Env) > 0 {
-		cmd.Env = append(os.Environ(), o.Env...)
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
+	cmd := command(ctx, o, bin, "auth", "check", "--provider", o.Provider, "--json")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.Discard
@@ -174,7 +170,7 @@ func CheckAuth(ctx context.Context, o Options) error {
 		Reason   string `json:"reason"`
 	}
 	invalid := errors.New("Pi auth check unavailable or invalid response; check Pi on the worker PATH and install a version supporting auth check --provider <provider> --json")
-	if json.Unmarshal(stdout.Bytes(), &response) != nil || response.Provider != o.Provider || o.Provider == "" {
+	if json.Unmarshal(stdout.Bytes(), &response) != nil || response.Provider != o.Provider {
 		return invalid
 	}
 	// Only validated status and reason codes may leave this function.
@@ -198,6 +194,27 @@ func CheckAuth(ctx context.Context, o Options) error {
 		}
 	}
 	return invalid
+}
+
+// command returns a Pi invocation in o.Dir with o.Env whose cancellation kills
+// its whole process group.
+func command(ctx context.Context, o Options, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = o.Dir
+	if len(o.Env) > 0 {
+		cmd.Env = append(os.Environ(), o.Env...)
+	}
+	// Pi's own tool calls are children of Pi, so cancellation has to reach a
+	// process group: killing Pi alone leaves them running, holding the pipe
+	// and the repository open after the run has stopped.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// A buffered stdout or stderr is copied through a pipe that Pi's own tool
+	// children inherit. Without a delay, Wait blocks on that copy until the
+	// last grandchild exits — which is exactly the case a cancellation is
+	// trying to escape.
+	cmd.WaitDelay = time.Second
+	return cmd
 }
 
 // Run spawns Pi, streams its events to onEvent, and returns the run's totals.
@@ -236,26 +253,12 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 	}
 	args = append(args, "--", prompt) // -- so a prompt starting with - stays a prompt
 
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = o.Dir
-	// Pi's own tool calls are children of Pi, so cancellation has to reach a
-	// process group: killing Pi alone leaves them running, holding the pipe
-	// and the repository open after the run has stopped.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	if len(o.Env) > 0 {
-		cmd.Env = append(os.Environ(), o.Env...)
-	}
+	cmd := command(ctx, o, bin, args...)
 	// Explicit: an inherited stdin makes Pi wait forever for input that never
 	// comes — no request, no output, 0% CPU. nil gets /dev/null.
 	cmd.Stdin = nil
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	// Stderr is a buffer rather than a file, so os/exec copies it through a
-	// pipe that Pi's own tool children inherit. Without a delay, Wait blocks on
-	// that copy until the last grandchild exits — which is exactly the case a
-	// cancelled turn is trying to escape.
-	cmd.WaitDelay = time.Second
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
