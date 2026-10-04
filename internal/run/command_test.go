@@ -3,6 +3,7 @@ package run
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +55,53 @@ func TestCommand(t *testing.T) {
 				t.Fatal("output not traced")
 			}
 		})
+	}
+}
+
+func TestCommandEnvironmentFailure(t *testing.T) {
+	for _, code := range []int{126, 127} {
+		for _, dirt := range []bool{false, true} {
+			t.Run(fmt.Sprintf("exit%d/dirt%t", code, dirt), func(t *testing.T) {
+				r := newRun(t, "")
+				defer r.Finish(false, "")
+				r.Repo = gitRepo(t)
+				if err := r.EnsureClean(); err != nil {
+					t.Fatal(err)
+				}
+				command := fmt.Sprintf("echo ENV-TAIL; exit %d", code)
+				if dirt {
+					command = "echo artifact > test-output.tmp; " + command
+				}
+				var tail string
+				err := r.Phase(Params{Name: "verify", Owner: "engineer"}, func(h *Handle) error {
+					var err error
+					tail, err = h.Command(command)
+					return err
+				})
+				var environment *EnvironmentError
+				var red *CommandFailure
+				if !errors.As(err, &environment) || environment.ExitCode != code || errors.As(err, &red) {
+					t.Fatalf("classification: %v", err)
+				}
+				for _, want := range []string{"executable", "PATH", "permissions"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("missing remediation %q: %v", want, err)
+					}
+				}
+				if tail != "ENV-TAIL\n" {
+					t.Fatalf("tail = %q", tail)
+				}
+				if _, err := os.Stat(filepath.Join(r.Repo, "test-output.tmp")); !os.IsNotExist(err) {
+					t.Fatalf("test artifact survived: %v", err)
+				}
+				db := readDB(t)
+				for name, want := range map[string]string{"command": command, "output": tail} {
+					if got := scalar[string](t, db, "SELECT json_extract(payload,'$') FROM events WHERE type='log' AND name=?", name); got != want {
+						t.Fatalf("%s trace = %q, want %q", name, got, want)
+					}
+				}
+			})
+		}
 	}
 }
 

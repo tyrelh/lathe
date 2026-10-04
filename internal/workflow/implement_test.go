@@ -57,6 +57,47 @@ func totalSpawns(t *testing.T, dir string) int {
 	return n
 }
 
+func TestImplementAuthPreflight(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			cfg, repo := buildRepo(t)
+			preflightProviders(&cfg, "adjudicator")
+			stub := codeStub(t)
+			want := 0
+			if fail {
+				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				want = 1
+			}
+			if got := execute(t, cfg, "implement", repo, "greet the world"); got != want {
+				t.Fatalf("exit = %d, want %d", got, want)
+			}
+			assertPreflight(t, stub, 0, fail)
+			if fail && totalSpawns(t, stub) != 0 {
+				t.Fatal("auth failure consumed agent turns")
+			}
+		})
+	}
+}
+
+func TestImplementEnvironmentFailure(t *testing.T) {
+	for _, exit := range []int{126, 127} {
+		t.Run(fmt.Sprint(exit), func(t *testing.T) {
+			cfg, repo := buildRepo(t)
+			stub := codeStub(t)
+			head := rev(t, repo, "HEAD")
+			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			if got := execute(t, cfg, "implement", repo, "greet the world"); got != 1 {
+				t.Fatalf("exit = %d", got)
+			}
+			assertEnvironmentFailure(t, stub, latestRunDir(t), command, exit, 0)
+			if rev(t, repo, "HEAD") != head || gitBuild(t, repo, "status", "--porcelain") != " M hello.txt\n" {
+				t.Fatal("implementation was not left uncommitted")
+			}
+		})
+	}
+}
+
 func TestImplement(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, changed, needed string

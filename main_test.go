@@ -112,7 +112,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// Issue input survives submission, the manager and worker, then reaches
-	// both planning agents. A lookup failure must never invoke pi.
+	// both planning agents. A lookup failure must never invoke an agent.
 	for _, args := range [][]string{
 		{"plan", "--issue", ""}, {"plan", "--issue", "--web"},
 		{"plan", "--issue", "41", "also a prompt"}, {"scout", "--issue", "41"},
@@ -131,7 +131,7 @@ func TestEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stub, "reply.jsonl"), append(stream, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	piScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + filepath.Join(stub, "pi-args") + "\ncat " + filepath.Join(stub, "reply.jsonl") + "\n"
+	piScript := "#!/bin/sh\nif [ \"$1 $2\" = 'auth check' ]; then printf '{\"provider\":\"%s\",\"status\":\"ready\",\"authType\":\"api_key\"}\\n' \"$4\"; exit 0; fi\nprintf '%s\\n' \"$@\" >> " + filepath.Join(stub, "pi-args") + "\ncat " + filepath.Join(stub, "reply.jsonl") + "\n"
 	if err := os.WriteFile(filepath.Join(stub, "pi"), []byte(piScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	if len(phases) != 4 || phases[1].Name != "issue" || phases[1].Status != "success" {
+	if len(phases) != 5 || phases[1].Name != "auth" || phases[2].Name != "issue" || phases[2].Status != "success" {
 		t.Fatalf("phases: %+v", phases)
 	}
 	if _, err := os.Stat(filepath.Join(home, "data", "lathe", "runs", issueRunID, "issue.json")); err != nil {

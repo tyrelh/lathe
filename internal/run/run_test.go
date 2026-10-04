@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
+	"github.com/tyrelh/lathe/internal/pi"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/web"
 
@@ -149,6 +151,209 @@ func newRun(t *testing.T, bin string) *Run {
 		t.Fatal(err)
 	}
 	return r
+}
+
+func TestAuthPreflightCapturedProviders(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failure%t", fail), func(t *testing.T) {
+			dir := t.TempDir()
+			bin, calls := filepath.Join(dir, "pi"), filepath.Join(dir, "calls")
+			script := fmt.Sprintf(`#!/bin/sh
+[ "$1 $2 $3 $5" = "auth check --provider --json" ] || exit 9
+echo "$4" >> %q
+echo SECRET >&2
+if [ %t = true ] && [ "$4" != beta ]; then
+  printf '{"provider":"%%s","status":"not_ready","reason":"credentials_not_configured","credentials":"SECRET"}\n' "$4"
+  exit 1
+fi
+printf '{"provider":"%%s","status":"ready","authType":"api_key","credentials":"SECRET"}\n' "$4"
+`, calls, fail)
+			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			r := newRun(t, bin)
+			defer r.Finish(!fail, "")
+			r.cfg.Agents = map[string]config.Resolved{}
+			for name, provider := range map[string]string{"planner": "beta", "builder": "alpha", "tester": "beta", "later-only": "omega"} {
+				r.cfg.Agents[name] = config.Resolved{Agent: config.Agent{Name: name, Provider: provider}}
+			}
+			err := r.Phase(Params{Name: "auth", Owner: "engineer"}, func(h *Handle) error { return h.AuthPreflight() })
+			if (err != nil) != fail {
+				t.Fatalf("auth: %v", err)
+			}
+			b, readErr := os.ReadFile(calls)
+			if readErr != nil || string(b) != "alpha\nbeta\nomega\n" {
+				t.Fatalf("captured provider checks: %q, %v", b, readErr)
+			}
+			if fail {
+				for _, want := range []string{`provider "alpha"`, `provider "omega"`, "worker environment", "manager environment", "pi auth check --provider 'omega' --json"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("missing diagnostic %q: %v", want, err)
+					}
+				}
+				if strings.Contains(err.Error(), "SECRET") {
+					t.Fatal("secret in error")
+				}
+			}
+			db := readDB(t)
+			if n := scalar[int](t, db, "SELECT count(*) FROM events WHERE type='log' AND name='auth'"); n != 3 {
+				t.Fatalf("safe results = %d", n)
+			}
+			if n := scalar[int](t, db, "SELECT count(*) FROM events WHERE payload LIKE '%SECRET%'"); n != 0 {
+				t.Fatal("secret in trace")
+			}
+			if b, err := os.ReadFile(filepath.Join(r.Work, "raw.jsonl")); err != nil || len(b) != 0 {
+				t.Fatalf("auth wrote raw output: %q, %v", b, err)
+			}
+		})
+	}
+}
+
+func TestAuthPreflightRejectsControlCharactersBeforeInvocation(t *testing.T) {
+	for _, control := range []rune{'\x00', '\n', '\r', '\t', '\x1b', '\x7f', '\u0085', '\u009b'} {
+		t.Run(fmt.Sprintf("U+%04X", control), func(t *testing.T) {
+			dir := t.TempDir()
+			bin, calls := filepath.Join(dir, "pi"), filepath.Join(dir, "calls")
+			if err := os.WriteFile(bin, []byte(fmt.Sprintf("#!/bin/sh\necho called > %q\n", calls)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			r := newRun(t, bin)
+			var output strings.Builder
+			r.Out = &output
+			r.cfg.Agents = map[string]config.Resolved{
+				"first": {Agent: config.Agent{Provider: "alpha"}},
+				"later": {Agent: config.Agent{Provider: "zbad" + string(control) + "FORGED-DIAGNOSTIC"}},
+			}
+			err := r.Phase(Params{Name: "auth", Owner: "engineer"}, func(h *Handle) error { return h.AuthPreflight() })
+			if err == nil || !strings.Contains(err.Error(), "control characters") {
+				t.Fatalf("invalid provider accepted: %v", err)
+			}
+			if strings.ContainsAny(err.Error(), "\x00\n\r\t\x1b\x7f\u0085\u009b") || strings.Contains(err.Error(), "FORGED-DIAGNOSTIC") {
+				t.Fatalf("unsafe diagnostic: %q", err.Error())
+			}
+			if _, err := os.Stat(calls); !os.IsNotExist(err) {
+				t.Fatalf("invoked Pi before validating the captured providers: %v", err)
+			}
+			if code := r.Finish(true, ""); code != 1 || strings.Contains(output.String(), "FORGED-DIAGNOSTIC") {
+				t.Fatalf("terminal output: code=%d %q", code, output.String())
+			}
+			if n := scalar[int](t, readDB(t), "SELECT count(*) FROM events WHERE payload LIKE '%FORGED-DIAGNOSTIC%'"); n != 0 {
+				t.Fatal("invalid provider copied into trace")
+			}
+		})
+	}
+}
+
+func TestAuthPreflightExpirationAfterReadyResult(t *testing.T) {
+	for _, parent := range []bool{false, true} {
+		for _, priorFailure := range []bool{false, true} {
+			t.Run(fmt.Sprintf("parent%t/priorFailure%t", parent, priorFailure), func(t *testing.T) {
+				r := newRun(t, "")
+				r.cfg.Agents = map[string]config.Resolved{
+					"first":  {Agent: config.Agent{Provider: "alpha"}},
+					"second": {Agent: config.Agent{Provider: "beta"}},
+					"later":  {Agent: config.Agent{Provider: "omega"}},
+				}
+				r.cfg.CommandDeadline = time.Second
+				cancel := func() {}
+				want := context.DeadlineExceeded
+				if parent {
+					r.cfg.CommandDeadline = 0
+					r.ctx, cancel = context.WithCancel(context.Background())
+					want = context.Canceled
+				}
+				defer cancel()
+				var checked []string
+				prior := errors.New("earlier provider readiness failure")
+				check := func(ctx context.Context, o pi.Options) error {
+					checked = append(checked, o.Provider)
+					if priorFailure && o.Provider == "alpha" {
+						return prior
+					}
+					// Model expiration immediately after Pi determines readiness,
+					// but before the caller processes its successful result.
+					if parent {
+						cancel()
+					} else {
+						<-ctx.Done()
+					}
+					return nil
+				}
+				g := NewGraph(r)
+				g.Add(Node{Name: "auth", Owner: "engineer"}, func(e *Entry) (string, error) {
+					return "", e.Handle.authPreflight(check)
+				})
+				planned := false
+				g.Add(Node{Name: "plan", Owner: "engineer"}, func(e *Entry) (string, error) {
+					planned = true
+					return "", nil
+				})
+				err := g.Run()
+				if !errors.Is(err, want) || errors.Is(err, prior) != priorFailure || planned {
+					t.Fatalf("expiration lost: err=%v planned=%t", err, planned)
+				}
+				wantChecked, ready := "alpha", "alpha"
+				if priorFailure {
+					wantChecked, ready = "alpha,beta", "beta"
+				}
+				if strings.Join(checked, ",") != wantChecked {
+					t.Fatalf("continued provider checks: %v", checked)
+				}
+				if n := scalar[int](t, readDB(t), "SELECT count(*) FROM events WHERE type='log' AND name='auth' AND json_extract(payload,'$')=?", fmt.Sprintf("provider %q: ready", ready)); n != 1 {
+					t.Fatalf("expected a ready result before expiration, got %d", n)
+				}
+				if code := r.Finish(true, ""); code != 1 {
+					t.Fatalf("expiration did not fail the run: %d", code)
+				}
+			})
+		}
+	}
+}
+
+func TestAuthPreflightDeadlineAndCancellation(t *testing.T) {
+	for _, parent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent%t", parent), func(t *testing.T) {
+			dir := t.TempDir()
+			bin, calls := filepath.Join(dir, "pi"), filepath.Join(dir, "calls")
+			if err := os.WriteFile(bin, []byte(fmt.Sprintf("#!/bin/sh\necho \"$4\" >> %q\nsleep 30\n", calls)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			r := newRun(t, bin)
+			defer r.Finish(false, "")
+			r.cfg.Agents = map[string]config.Resolved{
+				"first": {Agent: config.Agent{Provider: "alpha"}},
+				"later": {Agent: config.Agent{Provider: "omega"}},
+			}
+			r.cfg.CommandDeadline = time.Second
+			want := context.DeadlineExceeded
+			if parent {
+				r.cfg.CommandDeadline = 0
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				r.ctx = ctx
+				want = context.Canceled
+				go func() {
+					defer cancel()
+					until := time.Now().Add(5 * time.Second)
+					for time.Now().Before(until) {
+						if _, err := os.Stat(calls); err == nil {
+							return
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}()
+			}
+			start := time.Now()
+			err := r.Phase(Params{Name: "auth", Owner: "engineer"}, func(h *Handle) error { return h.AuthPreflight() })
+			if !errors.Is(err, want) || time.Since(start) > 10*time.Second {
+				t.Fatalf("deadline/cancellation: %v", err)
+			}
+			b, readErr := os.ReadFile(calls)
+			if readErr != nil || string(b) != "alpha\n" {
+				t.Fatalf("continued after cancellation: %q, %v", b, readErr)
+			}
+		})
+	}
 }
 
 // readDB opens whichever database the run wrote to, read-only, the way the
@@ -539,7 +744,9 @@ func TestBudgetEndsTheTurnAndAsksForTheReport(t *testing.T) {
 		event    string
 	}{
 		{"tool calls", toolBudget + 5, 0, "budget_spent"},
-		{"deadline", 3, 500 * time.Millisecond, "deadline_spent"},
+		// Leave time for the report subprocess under test-suite contention;
+		// the first turn still blocks for 30 seconds and must be cancelled.
+		{"deadline", 3, 5 * time.Second, "deadline_spent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

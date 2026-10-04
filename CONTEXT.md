@@ -56,7 +56,7 @@ One code reviewer's objection: a stable reference lathe assigns, its source, a l
 The adjudicator's decision on one validation round: every finding fixed or dismissed with a reason, and either acceptance or one set of changes for the builder. Only the adjudicator sends an implementation back.
 
 **Validation outcome**:
-How validation ended. Accepted needs a usable report from every worker and a measured green suite. Unresolved is findings still to fix after the last send-back; incomplete is a worker that exhausted its retries; invalidated is source that changed while the workers ran. `build` publishes unresolved and incomplete work as a draft pull request and still fails the run.
+How validation ended. Accepted needs a usable report from every worker and a measured green suite. Unresolved is findings still to fix after the last send-back; incomplete is a worker that exhausted its retries; invalidated is source that changed while the workers ran. `environment_failed` is a measured test exit of 126 or 127: terminal after one tester attempt, with command/result/output evidence retained and already-running reviewers joined before cleanup. Unlike retryable worker failures and publishable incomplete validation, environment failures receive no adjudication, repairs, commit, push or pull request. `build` publishes unresolved and incomplete work as a draft pull request and still fails the run.
 
 **Agent**:
 A role assigned part of a workflow, with tools and instructions appropriate to

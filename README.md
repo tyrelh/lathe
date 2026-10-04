@@ -36,24 +36,28 @@ lathe manager                            # queue and dashboard at http://127.0.0
 ```
 
 ```
-plan:      request → plan → review   (up to 4 send-backs)
+plan:      request → auth → [issue] → plan → review   (up to 4 send-backs)
 implement: … → implement → validate → adjudicate   (up to 10 repairs)
 build:     … → branch → implement → validate → adjudicate → commit → pr
-revise:    request → plan → review → implement → validate → adjudicate → commit → push to the same pr
+revise:    request → auth → plan → review → implement → validate → adjudicate → commit → push to the same pr
 ```
 
 ## Running
 
 - Ctrl-C detaches from a run; `lathe cancel` stops it.
-- The first submission starts a manager if none is running. Workers inherit its environment, so export `MOONSHOT_API_KEY` first. `LATHE_CAPACITY` sets concurrent runs (default 1).
+- The first submission starts a manager if none is running. Workers inherit its environment: configure credentials for every provider in the captured agent roster, including providers used only by later agents. Export provider keys (for example `MOONSHOT_API_KEY`) before starting the manager, or log in with Pi as the worker user. Restart the manager after changing its environment. `LATHE_CAPACITY` sets concurrent runs (default 1).
 - `implement` and `build` need a clean checkout. Don't edit files or switch branches there until they finish.
-- `build` needs `gh` logged in. A failed build keeps its commit.
+- `build` needs `gh` logged in. A failure after a commit keeps that commit; terminal validation environment failures never reach commit.
 - `revise` extends a build whose latest iteration succeeded and whose pull request is still open. The checkout must be clean, on the pull request's branch, and at the commit lathe last pushed, with origin at that commit too; lathe does not switch branches, merge or rebase to get there, and says what to restore. Every revision is planned and validated from scratch, and only an accepted change is committed and pushed, with the push refused if origin moved. The run keeps its ID, pull request and totals; `show` lists each iteration and `wait --iteration n` waits for one.
 - The builder can only write files its plan named. The shell deny list is a rough filter, not a sandbox.
 - The planner, plan-reviewer and the four code reviewers have `web_read`, which fetches one public https page as markdown for docs and references. It refuses this machine, private networks and cloud metadata addresses. An agent can put anything it reads into a URL, so these agents can only read the repo and the Go module cache, and never `.env*`, key files or `.git/`. Repo source can still leave that way, which matters for a private repo. No agent has both `web_read` and a shell. Every URL is in the run's `raw.jsonl`.
 - Traces go to `~/.local/share/lathe/lathe.db`, or under `$XDG_DATA_HOME`.
 
-Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `implement`, or `build`. A bare number uses the target checkout’s GitHub remote (`--repo` still selects the local checkout). The worker needs `gh` on `PATH` and authenticated. An `issue` code phase fetches the title and body when the run starts, saves `issue.json`, and passes that task to the planner and subsequent agents. A failed lookup stops the run before planning. Issue comments are not included.
+Before planning, `plan`, `implement`, `build` and `revise` run a traced, engineer-owned `auth` phase: request → auth → optional issue → plan. It checks each distinct captured provider once, including later agents, and does not repeat on planning send-backs. Scout is unchanged. To diagnose readiness, run `pi auth check --provider <provider> --json` from the repository as the worker user with the worker environment. Pi must support that command; unsupported or malformed responses fail closed before any agent turn. This checks credential availability, not live API-key validity; expired OAuth credentials may be refreshed and Pi's credential store updated. The command timeout and run cancellation bound the check; raw auth output is not traced.
+
+Measured test exits **126/127** are terminal environment failures: check required executables, the worker's `PATH` and executable permissions, then rerun. `validation.json` records `environment_failed` and retains the tester report, command, result and output tail. There is one tester attempt, no adjudication or repairs, and no commit, push or PR (not even a draft). Already-running reviewers are joined before cleanup. Other worker failures may retry and exhausted retries produce `incomplete`, which build may publish as a draft; ordinary red suites still go to adjudication. Environment failures are neither of those outcomes, even if a suite intentionally uses 126/127 for another purpose.
+
+Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `implement`, or `build`. A bare number uses the target checkout’s GitHub remote (`--repo` still selects the local checkout). The worker needs `gh` on `PATH` and authenticated. An `issue` code phase fetches the title and body after auth preflight, saves `issue.json`, and passes that task to the planner and subsequent agents. A failed lookup stops the run before planning. Issue comments are not included.
 
 ## Project config
 

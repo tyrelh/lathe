@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,8 +62,61 @@ func latestRun(t *testing.T) trace.Row {
 	return rows[0]
 }
 
-// The whole workflow: the branch exists and is checked out, one commit carries
-// the change, the branch reached origin, and pr.json holds the URL gh printed.
+func TestBuildAuthPreflight(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			cfg, repo, _ := shipRepo(t)
+			preflightProviders(&cfg, "pr-author")
+			stub := codeStub(t)
+			want := 0
+			if fail {
+				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				want = 1
+			}
+			if got := execute(t, cfg, "build", repo, "greet the world"); got != want {
+				t.Fatalf("exit = %d, want %d", got, want)
+			}
+			assertPreflight(t, stub, 0, fail)
+			if fail && totalSpawns(t, stub) != 0 {
+				t.Fatal("auth failure consumed agent turns")
+			}
+		})
+	}
+}
+
+func TestBuildEnvironmentFailurePublishesNothing(t *testing.T) {
+	for _, exit := range []int{126, 127} {
+		t.Run(fmt.Sprint(exit), func(t *testing.T) {
+			cfg, repo, origin := shipRepo(t)
+			stub := codeStub(t)
+			lyingGit(t, stub, origin)
+			head := rev(t, repo, "HEAD")
+			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
+			if exit == 127 {
+				command = "echo artifact > test-output.tmp; " + command
+			}
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			if got := execute(t, cfg, "build", repo, "greet the world"); got != 1 {
+				t.Fatalf("exit = %d", got)
+			}
+			assertEnvironmentFailure(t, stub, latestRunDir(t), command, exit, 0)
+			if rev(t, repo, "HEAD") != head || gitBuild(t, origin, "for-each-ref", "--format=%(refname)", "refs/heads") != "" {
+				t.Fatal("environment failure committed or pushed")
+			}
+			if _, err := os.Stat(filepath.Join(stub, "pushed")); !os.IsNotExist(err) {
+				t.Fatal("environment failure attempted a push")
+			}
+			if _, err := os.Stat(filepath.Join(repo, "test-output.tmp")); !os.IsNotExist(err) {
+				t.Fatalf("test artifact survived: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(latestRunDir(t), "pr.json")); !os.IsNotExist(err) {
+				t.Fatal("environment failure published a PR")
+			}
+		})
+	}
+}
+
+// The branch, commit and pull request carry the accepted change.
 func TestBuildShipsTheChange(t *testing.T) {
 	cfg, repo, origin := shipRepo(t)
 	stub := shipStub(t, "feat/greet-the-world")

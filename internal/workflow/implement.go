@@ -191,9 +191,13 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		cur.Tests = &out
 		tail, err := e.Command(*out.Command)
 		var red *run.CommandFailure
+		var environment *run.EnvironmentError
 		switch {
 		case err == nil:
 			cur.Measured = &Measured{Command: *out.Command, Green: true, Result: "passed", Tail: tail}
+		case errors.As(err, &environment):
+			cur.Measured = &Measured{Command: *out.Command, Result: err.Error(), Tail: tail}
+			return err
 		case errors.As(err, &red):
 			// A red suite is a result for the adjudicator, not a failed worker.
 			cur.Measured = &Measured{Command: *out.Command, Result: err.Error(), Tail: tail}
@@ -216,12 +220,25 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 
 	g.AddGroup(run.Node{Name: "validate", Owner: "engineer"}, workers, func(e *run.Entry, res run.GroupResult) (string, error) {
 		cur := c.v.current()
+		var environmentErr error
 		for _, name := range res.FailedNames() {
-			cur.Failures = append(cur.Failures, WorkerFailure{Worker: name, Error: res.Failed[name].Error()})
+			failed := res.Failed[name]
+			cur.Failures = append(cur.Failures, WorkerFailure{Worker: name, Error: failed.Error()})
+			var environment *run.EnvironmentError
+			if environmentErr == nil && errors.As(failed, &environment) {
+				environmentErr = failed
+			}
 			// Whatever a failed reviewer decoded is not a report.
 			delete(cur.Reports, name)
 		}
 		cur.Mutated = res.Mutated
+		if environmentErr != nil {
+			c.v.settle(outcomeEnvironmentFailed, environmentErr.Error())
+			if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+				return "", err
+			}
+			return "", environmentErr
+		}
 		if len(res.Mutated) > 0 {
 			reason := "source changed while validation ran, so this round cannot approve the implementation: " +
 				strings.Join(res.Mutated, ", ")

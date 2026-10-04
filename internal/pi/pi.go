@@ -142,6 +142,64 @@ type Options struct {
 	OnStart func(pid int) // child PID, so a hung agent is killable by run id
 }
 
+// CheckAuth checks one provider's credential readiness without an agent turn.
+// OAuth checks may refresh the inherited Pi credential store. Output is never exposed.
+func CheckAuth(ctx context.Context, o Options) error {
+	bin := o.Bin
+	if bin == "" {
+		bin = "pi"
+	}
+	cmd := exec.CommandContext(ctx, bin, "auth", "check", "--provider", o.Provider, "--json")
+	cmd.Dir = o.Dir
+	if len(o.Env) > 0 {
+		cmd.Env = append(os.Environ(), o.Env...)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
+	err := cmd.Start()
+	if err == nil {
+		err = cmd.Wait()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var response struct {
+		Provider string `json:"provider"`
+		Status   string `json:"status"`
+		Reason   string `json:"reason"`
+	}
+	invalid := errors.New("Pi auth check unavailable or invalid response; check Pi on the worker PATH and install a version supporting auth check --provider <provider> --json")
+	if json.Unmarshal(stdout.Bytes(), &response) != nil || response.Provider != o.Provider || o.Provider == "" {
+		return invalid
+	}
+	// Only validated status and reason codes may leave this function.
+	switch response.Status {
+	case "ready":
+		if response.Reason != "" {
+			return invalid
+		}
+		if err == nil {
+			return nil
+		}
+		return errors.New("Pi auth check failed despite reporting readiness")
+	case "not_ready":
+		switch response.Reason {
+		case "provider_not_found", "credentials_not_configured", "credential_not_available":
+			return fmt.Errorf("Pi auth check: not_ready (%s)", response.Reason)
+		}
+	case "invalid":
+		if response.Reason == "invalid_state" {
+			return errors.New("Pi auth check: invalid (invalid_state)")
+		}
+	}
+	return invalid
+}
+
 // Run spawns Pi, streams its events to onEvent, and returns the run's totals.
 // The context kills the child.
 func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result, error) {

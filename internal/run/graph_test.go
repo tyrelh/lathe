@@ -2,6 +2,7 @@ package run
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,35 @@ func record(g *Graph, log *[]visit, n Node, targets ...string) {
 		}
 		return "", nil
 	})
+}
+
+func TestGraphEnvironmentFailureIsTerminal(t *testing.T) {
+	for _, code := range []int{126, 127} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			r := newRun(t, "")
+			failure := &EnvironmentError{ExitCode: code}
+			g := NewGraph(r)
+			attempts := 0
+			g.AddGroup(Node{Name: "validate", Owner: "engineer"}, []Worker{
+				{Name: "test", Owner: "engineer", Run: func(e *Entry) error {
+					attempts++
+					return failure
+				}},
+			}, func(e *Entry, res GroupResult) (string, error) {
+				return "", res.Failed["test"]
+			})
+			var visits []visit
+			for _, name := range []string{"adjudicate", "repair", "commit", "publish"} {
+				record(g, &visits, Node{Name: name, Owner: "engineer"})
+			}
+			if err := g.Run(); err != failure || attempts != 1 || len(visits) != 0 {
+				t.Fatalf("err=%v attempts=%d later=%v", err, attempts, visits)
+			}
+			if code := r.Finish(true, ""); code != 1 {
+				t.Fatalf("terminal error did not fail the run: %d", code)
+			}
+		})
+	}
 }
 
 func TestGraphForwardsOffTheEnd(t *testing.T) {

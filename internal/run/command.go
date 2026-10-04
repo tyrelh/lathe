@@ -17,6 +17,13 @@ type CommandFailure struct{ ExitCode int }
 
 func (e *CommandFailure) Error() string { return fmt.Sprintf("test command exited %d", e.ExitCode) }
 
+// EnvironmentError is a measured command that could not execute in the worker environment.
+type EnvironmentError struct{ ExitCode int }
+
+func (e *EnvironmentError) Error() string {
+	return fmt.Sprintf("test command exited %d: environment failure; install the required executable, check the worker PATH and executable permissions, then rerun", e.ExitCode)
+}
+
 // tailBytes is how much of a suite's output the fix round is shown.
 const tailBytes = 4096
 
@@ -90,17 +97,20 @@ func (h *Handle) Command(command string) (string, error) {
 	if enforceErr != nil {
 		return tail, enforceErr
 	}
+	if ctx.Err() != nil {
+		return tail, fmt.Errorf("test command: %w", ctx.Err())
+	}
+	var exit *exec.ExitError
+	if errors.As(runErr, &exit) && (exit.ExitCode() == 126 || exit.ExitCode() == 127) {
+		return tail, &EnvironmentError{ExitCode: exit.ExitCode()}
+	}
 	if len(reverted) > 0 {
 		return tail, fmt.Errorf("command wrote outside its scope; reverted %s", strings.Join(reverted, ", "))
 	}
 	if logErr != nil {
 		return tail, logErr
 	}
-	if ctx.Err() != nil {
-		return tail, fmt.Errorf("test command: %w", ctx.Err())
-	}
-	var exit *exec.ExitError
-	if errors.As(runErr, &exit) && exit.ExitCode() >= 0 {
+	if exit != nil && exit.ExitCode() >= 0 {
 		return tail, &CommandFailure{ExitCode: exit.ExitCode()}
 	}
 	return tail, runErr

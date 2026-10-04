@@ -1,6 +1,7 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -130,7 +131,7 @@ type Worker struct {
 	Name, Owner string
 	// Run does the worker's job. An error is the worker failing to produce a
 	// usable result — not a finding and not a red suite, both of which are
-	// results — so it is retried against the same code.
+	// results — so it is retried unless it is an environment failure.
 	Run func(*Entry) error
 }
 
@@ -142,7 +143,7 @@ const WorkerRetries = 2
 
 // GroupResult is what a group entry leaves for the node that judges it.
 type GroupResult struct {
-	// Failed is every worker that exhausted its retries, with its last error.
+	// Failed holds terminal environment failures and retry-exhausted workers' last errors.
 	Failed map[string]error
 	// Mutated is every source path that changed while the workers ran, found
 	// before the cleanup that would hide it. A nonempty list means the round
@@ -154,7 +155,7 @@ type GroupResult struct {
 func (g GroupResult) FailedNames() []string { return slices.Sorted(maps.Keys(g.Failed)) }
 
 // AddGroup appends a node that runs every worker concurrently, waits for all
-// of them to finish or exhaust their retries, and hands the result to done,
+// of them to finish, fail terminally or exhaust retries, and hands the result to done,
 // which returns the target as any node would. Each worker is traced as its own
 // phase; each retry is another phase, so a failed attempt stays in the trace
 // after a retry recovers it.
@@ -233,9 +234,8 @@ func (g *Graph) parallel(e *Entry, workers []Worker, states []*node) (GroupResul
 	return res, err
 }
 
-// work runs one worker for one group entry, retrying a failure up to
-// WorkerRetries times. A retry starts a fresh session: the one that failed may
-// be the thing that is broken, and the prompt carries the round's evidence.
+// work retries ordinary failures up to WorkerRetries times with fresh sessions.
+// Environment failures return immediately after their first attempt.
 func (g *Graph) work(w Worker, n *node) error {
 	left := maxCorrections
 	var failed error
@@ -253,8 +253,8 @@ func (g *Graph) work(w Worker, n *node) error {
 			}
 			failed = w.Run(&Entry{Handle: h, Round: n.round, node: n})
 			// Cancellation is the run's failure, not the worker's. Anything
-			// else fails this attempt without failing the run: a retry may yet
-			// recover it, and the attempt stays in the trace either way.
+			// else fails this attempt without failing the run. Ordinary failures
+			// may recover on retry; terminal environment errors go to the join.
 			if failed != nil && g.run.ctx.Err() == nil {
 				h.failed = failed
 				return nil
@@ -264,7 +264,8 @@ func (g *Graph) work(w Worker, n *node) error {
 		if err != nil {
 			return err
 		}
-		if failed == nil {
+		var environment *EnvironmentError
+		if failed == nil || errors.As(failed, &environment) {
 			break
 		}
 		n.session = ""

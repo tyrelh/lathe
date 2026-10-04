@@ -256,8 +256,8 @@ type Measured struct {
 	Tail    string `json:"tail"`
 }
 
-// WorkerFailure is a worker that exhausted its retries. It is an
-// infrastructure outcome, kept apart from findings.
+// WorkerFailure records a terminal environment failure or exhausted retries,
+// kept apart from findings.
 type WorkerFailure struct {
 	Worker string `json:"worker"`
 	Error  string `json:"error"`
@@ -300,12 +300,14 @@ func (r *Round) findings() []Finding {
 
 // Outcomes of validation. Only accepted is success; unresolved and incomplete
 // are the outcomes build may still publish as a draft, and invalidated is a
-// repository-integrity failure, which it may not.
+// repository-integrity failure, which it may not. Environment failures are
+// terminal before adjudication and may not be published.
 const (
-	outcomeAccepted    = "accepted"
-	outcomeUnresolved  = "unresolved"
-	outcomeIncomplete  = "incomplete"
-	outcomeInvalidated = "invalidated"
+	outcomeAccepted          = "accepted"
+	outcomeUnresolved        = "unresolved"
+	outcomeIncomplete        = "incomplete"
+	outcomeInvalidated       = "invalidated"
+	outcomeEnvironmentFailed = "environment_failed"
 )
 
 // Validation is validation.json: every round, every amendment, and how it ended.
