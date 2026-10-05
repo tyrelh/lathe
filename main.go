@@ -78,6 +78,8 @@ environment:
   MOONSHOT_API_KEY, PATH, test settings. An auto-started manager takes the
   environment of the submission that started it; restart it to change that.
   LATHE_CAPACITY      how many runs may execute at once (default 1)
+  TYPESAFE_API_KEY    lets routing pick tiers set in lathe.toml; without it,
+                      routed agents use their default tier
 
 Run install from a checkout of the lathe repo; it links the checkout itself,
 so SKILL.md stays discoverable.
@@ -113,6 +115,9 @@ func dispatch(args []string) int {
 		return cancel(args[1:])
 	case "install":
 		return installCmd()
+	// Hidden: a tuning tool for whoever configures routing, not a workflow.
+	case "route-calibrate":
+		return routeCalibrate(args[1:])
 	case "version", "--version":
 		fmt.Println(version)
 		return 0

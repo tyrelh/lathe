@@ -531,6 +531,7 @@ const MODEL_TIERS = [
   ['#D57355', 'claude-', 'anthropic', [['claude-fable-5-1'], ['claude-opus-5-5', 'claude-opus-5'], ['claude-sonnet-5', 'claude-haiku-4-5']]],
   ['#439F7C', 'gpt-', 'openai', [['gpt-6-astra'], ['gpt-6-sol', 'gpt-5-6-sol', 'gpt-5-6-terra'], ['gpt-6-luna', 'gpt-5-6-luna']]],
   ['#1C81FA', 'kimi-', 'moonshotai', [['kimi-k3'], ['kimi-k2-7-code', 'kimi-k2-6'], []]],
+  ['#F386A1', 'jev-', 'typesafe', []],
 ];
 function modelColour(model) {
   if (!model) return 'var(--dim)';
@@ -1033,7 +1034,7 @@ async function detail(current) {
       // Rendered once, on arrival: the details card is redrawn every poll, and
       // re-escaping every system prompt each second is the cost of not doing it.
       inputs.set(e.phase_id, (inputs.get(e.phase_id) || '') +
-        `<p>${e.type === 'input' ? 'Agent turn' : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
+        `<p>${e.type === 'input' ? (e.name === 'jev' ? 'Jev request' : 'Agent turn') : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
     }
     if (isCommand(e)) bucket(tails, e.phase_id);
     if (e.type === 'log' && e.name === 'output') bucket(tails, e.phase_id).push(text(e.payload));
@@ -1041,7 +1042,10 @@ async function detail(current) {
     // Events arrive in ID order across pages. Replace rather than sum: the
     // last settled invocation is the phase's current context estimate.
     if (e.type === 'context' && e.payload) contexts.set(e.phase_id, e.payload);
-    if ((e.type === 'output' || e.type === 'envelope' || e.type === 'gate') && typeof e.payload?.text === 'string') {
+    if (e.type === 'output' && e.name === 'jev') {
+      responses.set(e.phase_id, '<p>Jev response</p>' + (e.payload?.text
+        ? `<pre>${esc(prettyJSON(e.payload.text))}</pre>` : '<p class="dim">No response arrived.</p>'));
+    } else if ((e.type === 'output' || e.type === 'envelope' || e.type === 'gate') && typeof e.payload?.text === 'string') {
       responses.set(e.phase_id, (responses.get(e.phase_id) || '') +
         `<p>Response ${(e.payload.attempt ?? 0) + 1}${e.type !== 'output' ? ' · rejected' : ''}</p><pre>${esc(e.payload.text)}</pre>`);
     }
@@ -1573,6 +1577,38 @@ function renderReport(v) {
   return `<p>${esc(String(v))}</p>`;
 }
 
+// routeResult renders a routing phase's report: the tier picked and why, and
+// every tier with the probability Jev gave it.
+function routeResult(d) {
+  const levels = Array.isArray(d.levels) ? d.levels : [];
+  const name = l => `${l?.provider || 'unknown'}/${l?.model || 'unknown'}${l?.thinking ? ` · thinking ${l.thinking}` : ''}`;
+  const why = {
+    routed: 'the tier Jev found most likely',
+    'low-confidence': `confidence was under the ${d.floor} floor, so the pick moved up one tier`,
+    error: 'Jev gave no usable answer, so the default tier was used',
+  }[d.reason];
+  const confidence = typeof d.confidence === 'number'
+    ? `${d.confidence.toFixed(2)} <span class="dim">· floor ${esc(d.floor)}</span>` : '<span class="dim">No answer</span>';
+  return `<h3>Routing</h3>
+    <p><b>${esc(name(levels[d.tier]))}</b> <span class="dim">· tier ${esc(d.tier + 1)} of ${levels.length}</span></p>
+    <table class="facts">
+      <tr><th>Decision</th><td class="${d.reason === 'error' ? 'fail' : ''}">${esc(d.reason)}${why ? ` · ${esc(why)}` : ''}</td></tr>
+      <tr><th>Confidence</th><td>${confidence}</td></tr>`
+    + (typeof d.score === 'number' ? `<tr><th>Score</th><td>${d.score.toFixed(2)} <span class="dim">· 0 to ${levels.length - 1}</span></td></tr>` : '')
+    + (d.jev ? `<tr><th>Jev</th><td>${esc(d.jev)}</td></tr>` : '')
+    + (d.error ? `<tr><th>Error</th><td class="fail">${esc(d.error)}</td></tr>` : '')
+    + `</table><h4>Tiers, cheapest first</h4>
+    <table class="facts"><tr><th></th><th class="num">Probability</th><th>Tier</th></tr>${levels.map((l, i) => `<tr>
+      <td>${i === d.tier ? '<span aria-label="picked">▶</span>' : ''}</td>
+      <td class="num">${typeof l.probability === 'number' ? (l.probability * 100).toFixed(1) + '%' : '—'}</td>
+      <td>${i === d.tier ? `<b>${esc(name(l))}</b>` : esc(name(l))}${l.default ? ' <span class="dim">· default</span>' : ''}<br><span class="dim">${esc(l.when)}</span></td></tr>`).join('')}</table>`;
+}
+
+// prettyJSON indents s when it parses as JSON, and returns it unchanged otherwise.
+function prettyJSON(s) {
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
+}
+
 function details(p, r, now) {
   if (!p) return '<h2>phase</h2><p class="dim">Select a phase.</p>';
   const id = p.phase_id, t = phaseTiming(p, r, now), s = spend.get(id);
@@ -1614,6 +1650,8 @@ function details(p, r, now) {
       + (feedback?.length === 0
         ? '<p class="ok">Accepted · no objections.</p>'
         : reportList('Feedback', feedback, false, 'Feedback not recorded.'));
+  } else if (report && p.name.startsWith('route-')) {
+    result = routeResult(report);
   } else if (report !== undefined) {
     result = `<h3>Output</h3>${renderReport(report)}`;
   } else if (p.owner !== 'engineer' && !tails.has(id)) {
@@ -1627,7 +1665,8 @@ function details(p, r, now) {
     : absent('command output', 'Command output not recorded.'));
 
   const uses = usage.get(id), estimate = contextEstimate(contexts.get(id));
-  const spent = p.owner === 'engineer' ? '' : '<h3>Usage</h3>' + (uses ? `
+  // An engineer phase has usage only when lathe itself paid for a call.
+  const spent = p.owner === 'engineer' && !uses ? '' : '<h3>Usage</h3>' + (uses ? `
     <p>${count(s.tokens)} tok · <span class="cost">${money(s.cost)}</span></p>
     <table class="facts">${uses.map(u => `<tr>
       <td class="dim">attempt ${(u.attempt ?? 0) + 1}</td><td class="dim">response ${esc(u.seq ?? '?')}</td>

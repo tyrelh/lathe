@@ -62,6 +62,14 @@ How validation ended. Accepted needs a usable report from every worker and a mea
 A role assigned part of a workflow, with tools and instructions appropriate to
 that role.
 
+**Tier**:
+One of an agent's engineer-configured model choices, ordered from cheapest to most capable, each described by the kind of task it suits. One tier per agent is the default, used whenever routing cannot decide.
+_Avoid_: route, model class
+
+**Routing**:
+The engineer-owned phase that picks one of an agent's tiers for the rest of an iteration, from the task in front of that agent. A run started with a provider, model or thinking flag is not routed.
+_Avoid_: model selection
+
 **Artifact**:
 A file an agent reports having written during its work.
 

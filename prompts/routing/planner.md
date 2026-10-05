@@ -1,0 +1,1 @@
+How demanding is planning this software change? The state is the request an engineer gave a coding agent. That agent will read the repository and write the step-by-step plan another agent implements, so judge how much investigation of existing code and design judgment a correct plan needs, not how long the request is.

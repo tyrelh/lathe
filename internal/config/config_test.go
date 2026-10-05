@@ -319,3 +319,117 @@ func TestCaptureFreezesProject(t *testing.T) {
 		t.Fatalf("reloaded model = %q; want second", got)
 	}
 }
+
+const tiered = `
+model = "kimi-k2.6"
+
+[routing]
+confidence_floor = 0.7
+
+[agents.builder]
+provider = "openai-codex"
+
+[[agents.builder.tiers]]
+when  = "Mechanical change"
+model = "gpt-6-luna"
+
+[[agents.builder.tiers]]
+when    = "Behaviour change"
+default = true
+
+[[agents.builder.tiers]]
+when     = "Cross-cutting change"
+model    = "gpt-6-astra"
+thinking = "high"
+`
+
+func TestCaptureResolvesTiers(t *testing.T) {
+	c, _, err := project(t, tiered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.Capture([]string{"planner", "builder"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Routing["planner"]; ok || len(s.Routing) != 1 || s.ConfidenceFloor != 0.7 || s.RoutingOff {
+		t.Fatalf("routing = %+v floor %v off %v", s.Routing, s.ConfidenceFloor, s.RoutingOff)
+	}
+	rt := s.Routing["builder"]
+	if !strings.Contains(rt.Instructions, "implementing this plan") || rt.Default() != 1 ||
+		strings.Join(rt.Criteria(), "|") != "Mechanical change|Behaviour change|Cross-cutting change" {
+		t.Fatalf("routing = %+v", rt)
+	}
+	// A tier sets only what differs; the rest is the agent's own resolution.
+	for i, want := range []string{"openai-codex/gpt-6-luna/medium", "openai-codex/kimi-k2.6/medium", "openai-codex/gpt-6-astra/high"} {
+		a := rt.Tiers[i].Resolved
+		if got := a.Provider + "/" + a.Model + "/" + a.Thinking; got != want || !strings.Contains(a.SystemPrompt, "You are the builder") {
+			t.Errorf("tier %d = %s, want %s", i, got, want)
+		}
+	}
+	if a := s.Agents["builder"]; a.Model != "kimi-k2.6" {
+		t.Fatalf("the agent's own config moved: %+v", a)
+	}
+}
+
+func TestCaptureFlagsTurnRoutingOff(t *testing.T) {
+	c, _, err := project(t, tiered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ov := range []Overrides{{Provider: "p"}, {Model: "m"}, {Thinking: "low"}} {
+		s, err := c.Capture([]string{"builder"}, ov)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Routing) != 0 || !s.RoutingOff {
+			t.Fatalf("%+v: routing = %+v off %v", ov, s.Routing, s.RoutingOff)
+		}
+	}
+	// No tiers is no routing, and nothing turned it off.
+	s, err := assets(t).Capture([]string{"builder"}, Overrides{Model: "m"})
+	if err != nil || s.Routing != nil || s.RoutingOff || s.ConfidenceFloor != 0 {
+		t.Fatalf("untiered: %+v %v", s, err)
+	}
+}
+
+func TestCaptureDefaultFloor(t *testing.T) {
+	c, _, err := project(t, strings.Replace(tiered, "confidence_floor = 0.7", "", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.Capture([]string{"builder"}, Overrides{})
+	if err != nil || s.ConfidenceFloor != 0.5 {
+		t.Fatalf("floor = %v, %v", s.ConfidenceFloor, err)
+	}
+}
+
+func TestLoadProjectRejectsBadTiers(t *testing.T) {
+	two := "[[agents.%s.tiers]]\nwhen = \"a\"\ndefault = true\n[[agents.%s.tiers]]\nwhen = \"b\"\n"
+	for name, body := range map[string]string{
+		"unroutable agent": strings.ReplaceAll(two, "%s", "tester"),
+		"one tier":         "[[agents.builder.tiers]]\nwhen = \"a\"\ndefault = true\n",
+		"eleven tiers":     "[[agents.builder.tiers]]\nwhen = \"a\"\ndefault = true\n" + strings.Repeat("[[agents.builder.tiers]]\nwhen = \"b\"\n", 10),
+		"no default":       "[[agents.planner.tiers]]\nwhen = \"a\"\n[[agents.planner.tiers]]\nwhen = \"b\"\n",
+		"two defaults":     "[[agents.planner.tiers]]\nwhen = \"a\"\ndefault = true\n[[agents.planner.tiers]]\nwhen = \"b\"\ndefault = true\n",
+		"empty when":       "[[agents.planner.tiers]]\nwhen = \" \"\ndefault = true\n[[agents.planner.tiers]]\nwhen = \"b\"\n",
+		"unknown tier key": strings.ReplaceAll(two, "%s", "planner") + "timeout = \"1m\"\n",
+		"floor above 1":    "[routing]\nconfidence_floor = 1.5\n",
+		"floor below 0":    "[routing]\nconfidence_floor = -0.1\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if loaded, err := projectErr(t, body); err == nil || loaded {
+				t.Fatalf("accepted: %v", loaded)
+			}
+		})
+	}
+	if _, err := projectErr(t, strings.ReplaceAll(two, "%s", "planner")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func projectErr(t *testing.T, body string) (bool, error) {
+	t.Helper()
+	_, loaded, err := project(t, body)
+	return loaded, err
+}
