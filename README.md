@@ -62,7 +62,7 @@ Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `i
 
 ## Project config
 
-Run `lathe init` from the target project root to create `lathe.toml` in the current directory with the built-in global defaults and effective settings for every agent. It does not require a Git repo and refuses to replace an existing file. The generated per-agent settings override the top level, so edit or remove those entries when changing global values.
+Run `lathe init` from the target project root to create `lathe.toml` in the current directory with the built-in global defaults, effective settings for every agent, and the roster's default [model routing](#model-routing) tiers and confidence floor, so the generated file turns routing on. It does not require a Git repo and refuses to replace an existing file. The generated per-agent settings override the top level, so edit or remove those entries when changing global values.
 
 A `lathe.toml` at the repo root overrides the built-in roster. The top level applies to every agent, and an `[agents.<name>]` block applies to one:
 

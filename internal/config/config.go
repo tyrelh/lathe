@@ -58,6 +58,9 @@ type Config struct {
 	CommandTimeout string  `toml:"command_timeout"`
 	Defaults       Agent   `toml:"defaults"`
 	Agents         []Agent `toml:"agents"`
+	// Tiers is the routing tiers DefaultTOML writes for each routable agent.
+	// Runs never read them; routing only uses tiers from lathe.toml.
+	Tiers map[string][]ProjectTier `toml:"tiers"`
 
 	fsys    fs.FS
 	project Project
@@ -122,8 +125,9 @@ var routingPrompts = map[string]string{
 // defaultFloor is the confidence floor when lathe.toml sets none.
 const defaultFloor = 0.5
 
-// DefaultTOML encodes the roster's effective built-in settings for every agent
-// as a project configuration, without applying loaded project overrides.
+// DefaultTOML encodes the roster's effective built-in settings for every agent,
+// its fully resolved routing tiers and the default confidence floor as a
+// project configuration, without applying loaded project overrides.
 func (c Config) DefaultTOML() ([]byte, error) {
 	c.project = Project{}
 	defaultsRepo := c.Defaults.WantsRepoInstructions()
@@ -142,8 +146,21 @@ func (c Config) DefaultTOML() ([]byte, error) {
 			return nil, err
 		}
 		repo := r.WantsRepoInstructions()
-		p.Agents[a.Name] = ProjectAgent{Overrides: Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}}
+		pa := ProjectAgent{Overrides: Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}}
+		if err := checkTiers(a.Name, c.Tiers[a.Name]); err != nil {
+			return nil, fmt.Errorf("roster.toml: [tiers.%s]: %w", a.Name, err)
+		}
+		for i, t := range c.Tiers[a.Name] {
+			tr, err := c.Resolve(a.Name, Overrides{Provider: t.Provider, Model: t.Model, Thinking: t.Thinking})
+			if err != nil {
+				return nil, fmt.Errorf("roster.toml: [tiers.%s] tier %d: %w", a.Name, i+1, err)
+			}
+			pa.Tiers = append(pa.Tiers, ProjectTier{When: t.When, Default: t.Default, Provider: tr.Provider, Model: tr.Model, Thinking: tr.Thinking})
+		}
+		p.Agents[a.Name] = pa
 	}
+	floor := defaultFloor
+	p.Routing.ConfidenceFloor = &floor
 	var b bytes.Buffer
 	if err := toml.NewEncoder(&b).Encode(p); err != nil {
 		return nil, err

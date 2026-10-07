@@ -351,6 +351,30 @@ func TestDefaultTOMLRoundTrip(t *testing.T) {
 	if !*first.RepoInstructions || *second.RepoInstructions || second.Model != "agent-model" || first.Provider != c.Defaults.Provider {
 		t.Fatal("per-agent overrides or inherited defaults were lost")
 	}
+
+	if p.Routing.ConfidenceFloor == nil || *p.Routing.ConfidenceFloor != defaultFloor {
+		t.Fatalf("confidence_floor = %v; want %v", p.Routing.ConfidenceFloor, defaultFloor)
+	}
+	routed := make([]string, 0, len(routingPrompts))
+	for name := range routingPrompts {
+		routed = append(routed, name)
+	}
+	s, err := loaded.Capture(routed, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range routed {
+		roster, got := c.Tiers[name], s.Routing[name].Tiers
+		if len(roster) == 0 || len(got) != len(roster) {
+			t.Fatalf("%s: captured %d tiers; roster has %d", name, len(got), len(roster))
+		}
+		for i, tier := range p.Agents[name].Tiers {
+			want := resolve(t, c, name, Overrides{Provider: roster[i].Provider, Model: roster[i].Model, Thinking: roster[i].Thinking})
+			if tier.Provider != want.Provider || tier.Model != want.Model || tier.Thinking != want.Thinking || tier.When != roster[i].When || tier.Default != roster[i].Default {
+				t.Errorf("%s tier %d: generated %+v; want %+v", name, i+1, tier, want.Agent)
+			}
+		}
+	}
 }
 
 func TestDefaultTOMLIgnoresProject(t *testing.T) {
