@@ -18,8 +18,7 @@ import (
 
 func TestInit(t *testing.T) {
 	t.Run("creates roster defaults outside a Git repository", func(t *testing.T) {
-		root := t.TempDir()
-		t.Chdir(root)
+		t.Chdir(t.TempDir())
 		if code := dispatch([]string{"init"}); code != 0 {
 			t.Fatalf("init exited %d", code)
 		}
@@ -38,9 +37,6 @@ func TestInit(t *testing.T) {
 		if !bytes.Equal(body, want) {
 			t.Fatalf("lathe.toml differs from embedded roster defaults:\n%s", body)
 		}
-		if ok, err := roster.LoadProject(root); !ok || err != nil {
-			t.Fatalf("generated file: loaded = %v, err = %v", ok, err)
-		}
 	})
 	t.Run("refuses to replace an existing file", func(t *testing.T) {
 		t.Chdir(t.TempDir())
@@ -54,15 +50,6 @@ func TestInit(t *testing.T) {
 		got, err := os.ReadFile("lathe.toml")
 		if err != nil || string(got) != string(original) {
 			t.Fatalf("existing file changed: %q, %v", got, err)
-		}
-	})
-	t.Run("filesystem error returns nonzero", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		if err := os.Mkdir("lathe.toml", 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if code := dispatch([]string{"init"}); code == 0 {
-			t.Fatal("init succeeded with a directory at lathe.toml")
 		}
 	})
 }

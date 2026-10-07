@@ -94,6 +94,7 @@ type Project struct {
 // DefaultTOML encodes the roster's effective built-in settings for every agent
 // as a project configuration, without applying loaded project overrides.
 func (c Config) DefaultTOML() ([]byte, error) {
+	c.project = Project{}
 	defaultsRepo := c.Defaults.WantsRepoInstructions()
 	p := Project{
 		Overrides: Overrides{
@@ -105,12 +106,12 @@ func (c Config) DefaultTOML() ([]byte, error) {
 		Agents: make(map[string]Overrides, len(c.Agents)),
 	}
 	for _, a := range c.Agents {
-		p.Agents[a.Name] = Overrides{
-			Provider:         a.Provider,
-			Model:            a.Model,
-			Thinking:         a.Thinking,
-			RepoInstructions: a.RepoInstructions,
-		}.Or(p.Overrides)
+		r, err := c.Resolve(a.Name, Overrides{})
+		if err != nil {
+			return nil, err
+		}
+		repo := r.WantsRepoInstructions()
+		p.Agents[a.Name] = Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}
 	}
 	var b bytes.Buffer
 	if err := toml.NewEncoder(&b).Encode(p); err != nil {

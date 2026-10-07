@@ -305,6 +305,7 @@ func TestDefaultTOMLRoundTrip(t *testing.T) {
 	off, on := false, true
 	c.Defaults.RepoInstructions = &off
 	c.Agents[0].RepoInstructions = &on
+	c.Agents[1].Model = "agent-model"
 
 	body, err := c.DefaultTOML()
 	if err != nil {
@@ -346,10 +347,8 @@ func TestDefaultTOMLRoundTrip(t *testing.T) {
 			t.Errorf("%s: round trip = %+v; want %+v", agent.Name, got.Agent, want.Agent)
 		}
 	}
-	if !*p.Agents["scout"].RepoInstructions || *p.Agents["planner"].RepoInstructions || *p.Agents["brancher"].RepoInstructions {
-		t.Fatal("agent repo_instructions did not respect true override, false inheritance and false override")
-	}
-	if p.Agents["planner"].Model != "kimi-k3" || p.Agents["scout"].Model != c.Defaults.Model || p.Agents["scout"].Provider != c.Defaults.Provider {
+	first, second := p.Agents[c.Agents[0].Name], p.Agents[c.Agents[1].Name]
+	if !*first.RepoInstructions || *second.RepoInstructions || second.Model != "agent-model" || first.Provider != c.Defaults.Provider {
 		t.Fatal("per-agent overrides or inherited defaults were lost")
 	}
 }
