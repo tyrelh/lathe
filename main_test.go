@@ -52,6 +52,15 @@ func TestInit(t *testing.T) {
 			t.Fatalf("existing file changed: %q, %v", got, err)
 		}
 	})
+	t.Run("rejects arguments", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if code := dispatch([]string{"init", "extra"}); code != 2 {
+			t.Fatalf("init exited %d", code)
+		}
+		if _, err := os.Stat("lathe.toml"); !os.IsNotExist(err) {
+			t.Fatalf("lathe.toml was created: %v", err)
+		}
+	})
 }
 
 // TestEndToEnd is the one test that uses real processes: a submitter that

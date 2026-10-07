@@ -113,7 +113,7 @@ func dispatch(args []string) int {
 	case "cancel":
 		return cancel(args[1:])
 	case "init":
-		return initCmd()
+		return initCmd(args[1:])
 	case "install":
 		return installCmd()
 	case "version", "--version":
@@ -775,7 +775,13 @@ func flush(w *tabwriter.Writer) int {
 }
 
 // initCmd creates lathe.toml in the current directory without replacing it.
-func initCmd() int {
+func initCmd(args []string) int {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	fs.Parse(args)
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "lathe init: takes no arguments")
+		return 2
+	}
 	cfg, err := config.Load(Assets)
 	if err != nil {
 		return fail(fmt.Errorf("loading roster: %w", err))
