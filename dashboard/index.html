@@ -462,7 +462,7 @@ const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 // clip cuts by code point, so an emoji is never split in half.
 const clip = (s, n) => { const cs = [...(s || '')]; return cs.length > n ? cs.slice(0, n).join('') + '…' : cs.join(''); };
 const money = n => '$' + (n || 0).toFixed(5);
-const averageCost = (cost, runs) => runs ? cost / runs : 0;
+const averageMoney = (cost, runs) => money(runs ? cost / runs : 0);
 const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
 const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo).replace(/'/g, '%27');
@@ -776,16 +776,16 @@ function missing() {
   fresh = Date.now();
 }
 
-const projectRow = (p, i, withTokens) => {
+const projectRow = (p, i, full) => {
   const href = esc(projectHref(p.repo));
   return `<tr class="project" data-row="${esc(p.repo)}" onclick="location.hash='${href}'">
     <td class="dim">${i + 1}</td>
     <td title="${esc(p.repo)}"><a data-focus="${esc('project-' + p.repo)}" href="${href}">${esc(base(p.repo) || 'unknown repo')}</a></td>
     <td class="num cost">${money(p.cost)}</td>
-    ${withTokens ? `<td class="num cost">${money(averageCost(p.cost, p.runs))}</td>` : ''}
+    ${full ? `<td class="num cost">${averageMoney(p.cost, p.runs)}</td>` : ''}
     <td class="num dim">${pct(p.share)}</td>
-    <td class="num dim${withTokens ? '' : ' lo'}">${count(p.runs)} run${p.runs === 1 ? '' : 's'}</td>
-    ${withTokens ? `<td class="num dim lo">${count(p.tokens)} tok</td>` : ''}
+    <td class="num dim${full ? '' : ' lo'}">${count(p.runs)} run${p.runs === 1 ? '' : 's'}</td>
+    ${full ? `<td class="num dim lo">${count(p.tokens)} tok</td>` : ''}
   </tr>`;
 };
 
@@ -823,7 +823,7 @@ async function overview(current) {
   ensurePage('overview');
   swap($('page-summary'), summaryRow('<h2>Overview</h2><p class="dim">Every run in every repository, for all time. Spend updates after each model response.</p>',
     tally(count(o.runs), 'runs recorded') + tally(money(o.cost), 'recorded spend', true)));
-  $('average-spend').textContent = money(averageCost(o.cost, o.runs));
+  $('average-spend').textContent = averageMoney(o.cost, o.runs);
   swap($('rank-projects'), `<table>${o.top_projects.map((p, i) => projectRow(p, i, false)).join('') || empty('project spend')}</table>`);
   swap($('rank-runs'), `<table>${o.top_runs.map(runRow).join('') || empty('runs')}</table>`);
   swap($('rank-models'), `<table>${o.top_models.map(modelRow).join('') || empty('model spend')}</table><p class="dim">${attribution(o)}</p>`);
@@ -970,7 +970,7 @@ function renderProject() {
     <p class="one-line dim" title="${esc(p.repo)}">${esc(p.repo || 'Repository path not recorded')}</p>
     <button type="button" data-focus="repo-reader" onclick="readText('Repository', view.repo, this)">Full path</button>`,
     tally(count(p.runs), 'runs recorded') + tally(count(p.tokens), 'tokens')
-    + tally(money(averageCost(p.cost, p.runs)), 'avg spend per PR', true) + tally(money(p.cost), 'recorded spend', true))
+    + tally(averageMoney(p.cost, p.runs), 'avg spend per PR', true) + tally(money(p.cost), 'recorded spend', true))
     + `<p class="dim">Lifetime metrics for this repository. ${pct(p.share)} of total recorded spend.</p>`);
   swap($('project-runs'), runTable(projectRows.map(runListRow).join('') || '<tr><td colspan="7" class="dim">No runs recorded yet.</td></tr>')
     + (projectMore ? `<button class="more" data-focus="more-runs" type="button" onclick="moreProjectRuns()" ${projectLoading ? 'disabled' : ''}>${projectLoading ? 'Loading…' : 'Load more runs'}</button>` : ''));

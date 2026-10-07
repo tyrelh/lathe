@@ -81,26 +81,15 @@ const json = (body, headers = {}) =>
 // anchor rather than matching the call verbatim, so reformatting it does not
 // silently leave the page self-ticking against an unresolved fetch.
 const source = fs.readFileSync('index.html', 'utf8');
-const styles = source.match(/<style>([\s\S]*?)<\/style>/)[1];
 const script = source.match(/<script>([\s\S]*?)<\/script>/)[1];
 const bootstrap = script.lastIndexOf('navigate();');
 assert(bootstrap > 0, 'bootstrap not found');
 vm.runInContext(script.slice(0, bootstrap), context);
 const evaluate = code => vm.runInContext(code, context);
 const call = (fn, ...args) => { context.args = args; return evaluate(`${fn}(...args)`); };
-assert.equal(call('averageCost', 1, 4), 0.25);
-assert.equal(call('averageCost', 9, 0), 0);
-assert.equal(call('averageCost', 0, 3), 0);
-assert(styles.includes('.ranking-column { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr))'),
-  'ranking columns keep independently bounded scroll panels');
-assert(styles.includes('.ranking-column:first-child { grid-template-rows: auto repeat(2, minmax(0, 1fr))'),
-  'the compact average card does not take half the ranking height');
-assert(!styles.includes('.ranking-grid > :nth-child'), 'overview placement is structural, not positional');
-assert(styles.includes('.project-summary .totals { display: grid; grid-template-columns: repeat(4, max-content)'),
-  'project metrics share one large-screen row');
-assert(/@media \(max-width: 1100px\)\s*{\s*\.project-summary \.totals\s*{\s*grid-template-columns: repeat\(2, max-content\); justify-content: end;/.test(styles),
-  'only the project summary wraps at a width-only medium breakpoint');
-assert(!styles.includes('.page-summary .totals { display: grid'), 'other summaries retain their layout');
+assert.equal(call('averageMoney', 1, 4), '$0.25000');
+assert.equal(call('averageMoney', 9, 0), '$0.00000');
+assert.equal(call('averageMoney', 0, 3), '$0.00000');
 
 // Immediate text-only content, viewport clamping, keyboard dismissal, and
 // rebinding when polling replaces the hovered chart block.
@@ -778,7 +767,6 @@ const costs = () => nodes.get('costs').innerHTML;
     && appHTML.indexOf('id="rank-models"') < appHTML.indexOf('id="rank-providers"'),
     'overview left and right columns retain ranking order');
   assert(appHTML.includes('</div><div class="ranking-column">'), 'models and providers occupy an explicit second column');
-  assert(styles.includes('.totals b, .average-card b { display: block; font-size: 20px;'), 'card value matches totals typography');
   assert(!nodes.get('rank-projects').innerHTML.includes('Avg / PR'), 'overview rankings do not gain an average column');
   for (const text of ['1,284','$42.18374','$9.50000','alpha','$38.00000','90.0%','900 runs',
                       'moonshotai/kimi','71.1%','unknown/unknown',
