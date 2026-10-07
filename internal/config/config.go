@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -120,6 +121,35 @@ var routingPrompts = map[string]string{
 
 // defaultFloor is the confidence floor when lathe.toml sets none.
 const defaultFloor = 0.5
+
+// DefaultTOML encodes the roster's effective built-in settings for every agent
+// as a project configuration, without applying loaded project overrides.
+func (c Config) DefaultTOML() ([]byte, error) {
+	c.project = Project{}
+	defaultsRepo := c.Defaults.WantsRepoInstructions()
+	p := Project{
+		Overrides: Overrides{
+			Provider:         c.Defaults.Provider,
+			Model:            c.Defaults.Model,
+			Thinking:         c.Defaults.Thinking,
+			RepoInstructions: &defaultsRepo,
+		},
+		Agents: make(map[string]ProjectAgent, len(c.Agents)),
+	}
+	for _, a := range c.Agents {
+		r, err := c.Resolve(a.Name, Overrides{})
+		if err != nil {
+			return nil, err
+		}
+		repo := r.WantsRepoInstructions()
+		p.Agents[a.Name] = ProjectAgent{Overrides: Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}}
+	}
+	var b bytes.Buffer
+	if err := toml.NewEncoder(&b).Encode(p); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
 
 // Resolved is one agent with defaults, roster keys and flags already applied
 // and its prompts already read. Nothing downstream touches the FS again.

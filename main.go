@@ -47,6 +47,7 @@ commands:
   wait <id>           block until a run is terminal; exit with its outcome
                       (--iteration <n> waits for that iteration instead)
   cancel <id>         ask a run's current iteration to stop
+  init                create lathe.toml with built-in defaults in the current directory
   install             link this repo into each agent's skills directory
   version             print the version of this binary
   help                show this message
@@ -59,10 +60,10 @@ flags (before the request, as Go's flag package stops at the first argument):
   --model <name>      override the model for this run
   --thinking <level>  override the thinking level; ignored by models without one
 
-Every command records a run and then blocks until it finishes. The work happens
+Workflow commands record a run and block until it finishes. The work happens
 in a worker process, so interrupting the wait detaches from the run rather than
 cancelling it; use lathe cancel for that. A manager is started automatically if
-none is running, and serves the dashboard.
+none is running, and serves the dashboard. init only writes a local file.
 
 implement and build need a clean checkout and own it until they stop. build
 leaves the checkout on the branch it created, and a failure after its commit
@@ -113,6 +114,8 @@ func dispatch(args []string) int {
 		return waitCmd(args[1:])
 	case "cancel":
 		return cancel(args[1:])
+	case "init":
+		return initCmd(args[1:])
 	case "install":
 		return installCmd()
 	// Hidden: a tuning tool for whoever configures routing, not a workflow.
@@ -773,6 +776,37 @@ func flush(w *tabwriter.Writer) int {
 	if err := w.Flush(); err != nil {
 		return fail(err)
 	}
+	return 0
+}
+
+// initCmd creates lathe.toml in the current directory without replacing it.
+func initCmd(args []string) int {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	fs.Parse(args)
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "lathe init: takes no arguments")
+		return 2
+	}
+	cfg, err := config.Load(Assets)
+	if err != nil {
+		return fail(fmt.Errorf("loading roster: %w", err))
+	}
+	body, err := cfg.DefaultTOML()
+	if err != nil {
+		return fail(fmt.Errorf("generating lathe.toml: %w", err))
+	}
+	f, err := os.OpenFile("lathe.toml", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fail(fmt.Errorf("creating lathe.toml: %w", err))
+	}
+	_, err = f.Write(body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fail(fmt.Errorf("writing lathe.toml: %w", err))
+	}
+	fmt.Println("created lathe.toml")
 	return 0
 }
 
