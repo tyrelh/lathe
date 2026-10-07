@@ -150,7 +150,8 @@ func Plan(r *run.Run) int {
 // review hands any remaining objections to the builder as risks.
 const maxSendBacks = 4
 
-// addPlanNodes appends auth, optional issue lookup, planning and review.
+// addPlanNodes appends auth, optional issue lookup, planner routing when
+// configured, planning and review.
 // A nonempty revision supplies the planner brief and permits an empty file list.
 func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 	g.Add(run.Node{Name: "auth", Owner: "engineer"}, func(e *run.Entry) (string, error) {
@@ -164,6 +165,17 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 			}
 			r.Request = request
 			return "", nil
+		})
+	}
+	// After issue, which rewrites r.Request. Nothing sends back here, so the
+	// planner's tier holds for the whole iteration.
+	if r.Routes("planner") {
+		g.Add(run.Node{Name: "route-plan", Owner: "engineer"}, func(e *run.Entry) (string, error) {
+			request := r.Request
+			if revision != "" {
+				request = revision
+			}
+			return "", e.Route("planner", PlanRouteState(request))
 		})
 	}
 	// The reviewer's objections, which of them block the plan outright, and

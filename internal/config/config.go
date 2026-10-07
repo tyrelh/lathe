@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/tyrelh/lathe/internal/jev"
 )
 
 // Agent is one row of the roster, and also the [defaults] block. An empty
@@ -57,6 +58,9 @@ type Config struct {
 	CommandTimeout string  `toml:"command_timeout"`
 	Defaults       Agent   `toml:"defaults"`
 	Agents         []Agent `toml:"agents"`
+	// Tiers is the routing tiers DefaultTOML writes for each routable agent.
+	// Runs never read them; routing only uses tiers from lathe.toml.
+	Tiers map[string][]ProjectTier `toml:"tiers"`
 
 	fsys    fs.FS
 	project Project
@@ -85,14 +89,45 @@ func (o Overrides) Or(fallback Overrides) Overrides {
 }
 
 // Project is the target repository's lathe.toml: overrides for every
-// agent, and for any agent by name.
+// agent, and for any agent by name, plus the routing floor.
 type Project struct {
 	Overrides
-	Agents map[string]Overrides `toml:"agents"`
+	Agents  map[string]ProjectAgent `toml:"agents"`
+	Routing struct {
+		ConfidenceFloor *float64 `toml:"confidence_floor"`
+	} `toml:"routing"`
 }
 
-// DefaultTOML encodes the roster's effective built-in settings for every agent
-// as a project configuration, without applying loaded project overrides.
+// ProjectAgent is one [agents.<name>] block: its overrides and, for a routable
+// agent, its tiers.
+type ProjectAgent struct {
+	Overrides
+	Tiers []ProjectTier `toml:"tiers"`
+}
+
+// ProjectTier is one [[agents.<name>.tiers]] entry. Empty fields inherit the
+// agent's own resolved config.
+type ProjectTier struct {
+	When     string `toml:"when"`
+	Default  bool   `toml:"default"`
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+	Thinking string `toml:"thinking"`
+}
+
+// routingPrompts is every agent that may have tiers, and the embedded Score
+// instructions its routing phase asks.
+var routingPrompts = map[string]string{
+	"planner": "prompts/routing/planner.md",
+	"builder": "prompts/routing/builder.md",
+}
+
+// defaultFloor is the confidence floor when lathe.toml sets none.
+const defaultFloor = 0.5
+
+// DefaultTOML encodes the roster's effective built-in settings for every agent,
+// its fully resolved routing tiers and the default confidence floor as a
+// project configuration, without applying loaded project overrides.
 func (c Config) DefaultTOML() ([]byte, error) {
 	c.project = Project{}
 	defaultsRepo := c.Defaults.WantsRepoInstructions()
@@ -103,7 +138,7 @@ func (c Config) DefaultTOML() ([]byte, error) {
 			Thinking:         c.Defaults.Thinking,
 			RepoInstructions: &defaultsRepo,
 		},
-		Agents: make(map[string]Overrides, len(c.Agents)),
+		Agents: make(map[string]ProjectAgent, len(c.Agents)),
 	}
 	for _, a := range c.Agents {
 		r, err := c.Resolve(a.Name, Overrides{})
@@ -111,8 +146,21 @@ func (c Config) DefaultTOML() ([]byte, error) {
 			return nil, err
 		}
 		repo := r.WantsRepoInstructions()
-		p.Agents[a.Name] = Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}
+		pa := ProjectAgent{Overrides: Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}}
+		if err := checkTiers(a.Name, c.Tiers[a.Name]); err != nil {
+			return nil, fmt.Errorf("roster.toml: [tiers.%s]: %w", a.Name, err)
+		}
+		for i, t := range c.Tiers[a.Name] {
+			tr, err := c.Resolve(a.Name, Overrides{Provider: t.Provider, Model: t.Model, Thinking: t.Thinking})
+			if err != nil {
+				return nil, fmt.Errorf("roster.toml: [tiers.%s] tier %d: %w", a.Name, i+1, err)
+			}
+			pa.Tiers = append(pa.Tiers, ProjectTier{When: t.When, Default: t.Default, Provider: tr.Provider, Model: tr.Model, Thinking: tr.Thinking})
+		}
+		p.Agents[a.Name] = pa
 	}
+	floor := defaultFloor
+	p.Routing.ConfidenceFloor = &floor
 	var b bytes.Buffer
 	if err := toml.NewEncoder(&b).Encode(p); err != nil {
 		return nil, err
@@ -152,9 +200,10 @@ func Load(fsys fs.FS) (Config, error) {
 
 // LoadProject reads <root>/lathe.toml, the target repository's overrides. A
 // missing file returns (false, nil). Invalid TOML, a wrong type, an unknown
-// key, or an agent the roster does not have rejects the whole file; the error
-// says why and the roster applies unchanged. The file can only set provider,
-// model, thinking and repo_instructions.
+// key, an agent the roster does not have, or invalid tiers or routing floor
+// reject the whole file; the error says why and the roster applies unchanged.
+// The file can only set provider, model, thinking, repo_instructions, tiers
+// and the routing floor.
 func (c *Config) LoadProject(root string) (loaded bool, err error) {
 	b, err := os.ReadFile(filepath.Join(root, "lathe.toml"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -175,13 +224,45 @@ func (c *Config) LoadProject(root string) (loaded bool, err error) {
 		}
 		return false, fmt.Errorf("lathe.toml: unknown keys: %s", strings.Join(names, ", "))
 	}
-	for name := range p.Agents {
+	for name, a := range p.Agents {
 		if !c.hasAgent(name) {
 			return false, fmt.Errorf("lathe.toml: [agents.%s]: no such agent in the roster", name)
 		}
+		if err := checkTiers(name, a.Tiers); err != nil {
+			return false, fmt.Errorf("lathe.toml: [agents.%s]: %w", name, err)
+		}
+	}
+	if f := p.Routing.ConfidenceFloor; f != nil && (*f < 0 || *f > 1) {
+		return false, fmt.Errorf("lathe.toml: [routing] confidence_floor = %v: must be between 0 and 1", *f)
 	}
 	c.project = p
 	return true, nil
+}
+
+// checkTiers returns why an agent's tiers are invalid, or nil. No tiers is valid.
+func checkTiers(name string, tiers []ProjectTier) error {
+	if len(tiers) == 0 {
+		return nil
+	}
+	if _, ok := routingPrompts[name]; !ok {
+		return errors.New("tiers are only allowed on planner and builder")
+	}
+	if len(tiers) < jev.MinLevels || len(tiers) > jev.MaxLevels {
+		return fmt.Errorf("%d tiers; routing needs %d to %d", len(tiers), jev.MinLevels, jev.MaxLevels)
+	}
+	defaults := 0
+	for i, t := range tiers {
+		if strings.TrimSpace(t.When) == "" {
+			return fmt.Errorf("tier %d has no when", i+1)
+		}
+		if t.Default {
+			defaults++
+		}
+	}
+	if defaults != 1 {
+		return fmt.Errorf("%d tiers set default = true; exactly one must", defaults)
+	}
+	return nil
 }
 
 func (c Config) hasAgent(name string) bool {
@@ -213,7 +294,7 @@ func (c Config) Resolve(name string, ov Overrides) (Resolved, error) {
 	}
 
 	// Flags, then the project's block for this agent, then its top level.
-	ov = ov.Or(c.project.Agents[name]).Or(c.project.Overrides)
+	ov = ov.Or(c.project.Agents[name].Overrides).Or(c.project.Overrides)
 	r := Resolved{Agent: a}
 	r.Provider = pick(ov.Provider, a.Provider, c.Defaults.Provider)
 	r.Model = pick(ov.Model, a.Model, c.Defaults.Model)
@@ -302,13 +383,54 @@ type Snapshot struct {
 	// at submission rather than when the first code phase reaches for it.
 	CommandDeadline time.Duration       `json:"command_deadline"`
 	Agents          map[string]Resolved `json:"agents"`
+	// Routing is every routed agent's question and tiers. ConfidenceFloor
+	// applies to all of them. RoutingOff is a run whose flags turned routing
+	// off, leaving Routing empty.
+	Routing         map[string]Routing `json:"routing,omitempty"`
+	ConfidenceFloor float64            `json:"confidence_floor,omitempty"`
+	RoutingOff      bool               `json:"routing_off,omitempty"`
+}
+
+// Routing is one routed agent as captured: the Score instructions its routing
+// phase asks and its tiers, cheapest first.
+type Routing struct {
+	Instructions string `json:"instructions"`
+	Tiers        []Tier `json:"tiers"`
+}
+
+// Tier is one resolved tier.
+type Tier struct {
+	When     string   `json:"when"`
+	Default  bool     `json:"default,omitempty"`
+	Resolved Resolved `json:"resolved"`
+}
+
+// Criteria is each tier's when, in order: one Score level per tier.
+func (r Routing) Criteria() []string {
+	c := make([]string, len(r.Tiers))
+	for i, t := range r.Tiers {
+		c[i] = t.When
+	}
+	return c
+}
+
+// Default is the index of the default tier.
+func (r Routing) Default() int {
+	for i, t := range r.Tiers {
+		if t.Default {
+			return i
+		}
+	}
+	return 0
 }
 
 // SnapshotVersion is stamped into every captured specification. A worker that
 // does not recognise it refuses the run rather than guessing.
-const SnapshotVersion = 2
+const SnapshotVersion = 3
 
-// Capture resolves every named agent now and freezes the result.
+// Capture resolves every named agent, and every tier of a routed one, now and
+// freezes the result. A provider, model or thinking flag in ov turns routing
+// off for the run.
 func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 	s := Snapshot{
 		Version:    SnapshotVersion,
@@ -329,6 +451,34 @@ func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 		s.Agents[name] = r
+
+		tiers := c.project.Agents[name].Tiers
+		if len(tiers) == 0 {
+			continue
+		}
+		if ov.Provider != "" || ov.Model != "" || ov.Thinking != "" {
+			s.RoutingOff = true
+			continue
+		}
+		rt := Routing{}
+		if rt.Instructions, err = c.readPrompt(routingPrompts[name]); err != nil {
+			return Snapshot{}, fmt.Errorf("agent %s: routing: %w", name, err)
+		}
+		for i, t := range tiers {
+			tr, err := c.Resolve(name, Overrides{Provider: t.Provider, Model: t.Model, Thinking: t.Thinking})
+			if err != nil {
+				return Snapshot{}, fmt.Errorf("agent %s: tier %d: %w", name, i+1, err)
+			}
+			rt.Tiers = append(rt.Tiers, Tier{When: t.When, Default: t.Default, Resolved: tr})
+		}
+		if s.Routing == nil {
+			s.Routing = map[string]Routing{}
+			s.ConfidenceFloor = defaultFloor
+			if f := c.project.Routing.ConfidenceFloor; f != nil {
+				s.ConfidenceFloor = *f
+			}
+		}
+		s.Routing[name] = rt
 	}
 	return s, nil
 }

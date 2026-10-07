@@ -1,8 +1,9 @@
 # The agent roster. Embedded into the binary at build time, so editing this
 # file means rebuilding — `go run .` during development, `make build` to deploy.
 # A target repository's own lathe.toml can override provider, model, thinking
-# and repo_instructions on top of it; nothing else here is settable from the
-# target.
+# and repo_instructions on top of it, and give the planner and builder routing
+# tiers; nothing else here is settable from the target. `lathe init` writes
+# these settings, plus the [tiers] at the bottom, into a new lathe.toml.
 
 # Paths no agent may write and no plan may name. An entry ending in "/" is a
 # directory name, matched at any depth; anything else is a glob matched against
@@ -179,3 +180,35 @@ user = "prompts/pr-author/user.md"
 tools = ["read", "grep", "find", "ls", "bash"]
 # Reads AGENTS.md itself with the rest of its convention sources.
 repo_instructions = false
+
+# Routing tiers `lathe init` writes into a new lathe.toml, cheapest first.
+# Routing only ever runs on tiers from a repo's lathe.toml; these are never read
+# at run time. Each default tier matches the agent's pinned model above, so a
+# routing failure lands where an unrouted run would.
+[[tiers.planner]]
+when  = "Small, well-specified request; the files to change and the approach are obvious"
+model = "kimi-k2.7-code"
+
+[[tiers.planner]]
+when    = "Typical fix or feature in one area; the planner has to read around to choose an approach"
+model   = "kimi-k3"
+default = true
+
+[[tiers.planner]]
+when     = "Cross-cutting or open-ended request, design decisions, or an issue that leaves the approach unclear"
+model    = "kimi-k3"
+thinking = "high"
+
+[[tiers.builder]]
+when  = "Mechanical change in one or two files; the plan spells out every edit"
+model = "kimi-k2.6"
+
+[[tiers.builder]]
+when    = "Behaviour change within one area; some judgment about existing code needed"
+model   = "kimi-k2.7-code"
+default = true
+
+[[tiers.builder]]
+when     = "Cross-cutting change, concurrency, migrations, or an under-specified plan"
+model    = "kimi-k3"
+thinking = "high"

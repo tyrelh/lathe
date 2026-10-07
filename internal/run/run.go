@@ -496,16 +496,33 @@ func (h *Handle) Log(name, payload string) error {
 	return h.run.db.Event(h.run.ID, h.phase.ID, "log", name, payload)
 }
 
-// AuthPreflight checks each captured provider once and logs only safe readiness results.
+// AuthPreflight checks each captured provider once, every tier's included, and
+// logs only safe readiness results. It also logs when routing is off or will
+// fall back for want of TYPESAFE_API_KEY; neither fails it.
 func (h *Handle) AuthPreflight() error {
 	return h.authPreflight(pi.CheckAuth)
 }
 
 func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) error {
 	r := h.run
+	if r.cfg.RoutingOff {
+		if err := h.Log("routing", "off: a provider, model or thinking flag was passed"); err != nil {
+			return err
+		}
+	}
+	if len(r.cfg.Routing) > 0 && os.Getenv("TYPESAFE_API_KEY") == "" {
+		if err := h.Log("routing", "TYPESAFE_API_KEY is not set in the worker environment; routing will use the default tiers"); err != nil {
+			return err
+		}
+	}
 	providers := make([]string, 0, len(r.cfg.Agents))
 	for _, agent := range r.cfg.Agents {
 		providers = append(providers, agent.Provider)
+	}
+	for _, rt := range r.cfg.Routing {
+		for _, t := range rt.Tiers {
+			providers = append(providers, t.Resolved.Provider)
+		}
 	}
 	slices.Sort(providers)
 	providers = slices.Compact(providers)

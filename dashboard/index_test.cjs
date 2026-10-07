@@ -198,6 +198,28 @@ assert.equal(call('modelColour', 'mystery'), '#7A9EFB', 'unknown providers take 
 assert.equal(call('providerColour', 'anthropic'), '#D57355', 'providers draw at their full hue');
 assert.equal(call('providerColour', 'openai-codex'), '#439F7C', 'provider variants share a hue');
 assert.equal(call('providerColour', 'unknown'), '#7A9EFB', 'unknown providers take the default hue');
+assert.equal(call('modelColour', 'jev-1.13.0'), 'color-mix(in srgb, #F386A1 100%, var(--card))', 'jev draws in the TypeSafe hue');
+assert.equal(call('providerColour', 'typesafe'), '#F386A1', 'TypeSafe has its own hue');
+{
+  const levels = [
+    {when: 'Mechanical', provider: 'openai-codex', model: 'gpt-6-luna', probability: 0.7},
+    {when: 'Behaviour', provider: 'openai-codex', model: 'gpt-6-sol', default: true, probability: 0.2},
+    {when: 'Cross-cutting <b>', provider: 'openai-codex', model: 'gpt-6-astra', thinking: 'high', probability: 0.1},
+  ];
+  const routed = call('routeResult', {agent: 'builder', tier: 1, reason: 'low-confidence', floor: 0.5,
+    confidence: 0.31, score: 0.4, jev: 'jev-1.13.0', levels});
+  for (const want of ['<b>openai-codex/gpt-6-sol</b>', 'tier 2 of 3', 'low-confidence', 'under the 0.5 floor',
+                      '0.31', '70.0%', 'jev-1.13.0', '· default', 'Cross-cutting &lt;b>', 'thinking high']) {
+    assert(routed.includes(want), `route result missing ${want}: ${routed}`);
+  }
+  const failed = call('routeResult', {agent: 'builder', tier: 1, reason: 'error', floor: 0.5,
+    error: 'TYPESAFE_API_KEY is not set', levels: levels.map(({probability, ...l}) => l)});
+  for (const want of ['class="fail">error', 'default tier was used', 'No answer', 'TYPESAFE_API_KEY is not set', '—']) {
+    assert(failed.includes(want), `failed route result missing ${want}: ${failed}`);
+  }
+  assert.equal(call('prettyJSON', '{"a":1}'), '{\n  "a": 1\n}');
+  assert.equal(call('prettyJSON', 'not json'), 'not json');
+}
 assert(call('gantt', settled, [ph(1,'x',T(0),T(5),{owner:'"><b>'})], 0).includes('data-owner="&quot;>&lt;b>"'), 'owner is escaped');
 
 // Execution arrows follow send-backs, but never bridge iterations, concurrent

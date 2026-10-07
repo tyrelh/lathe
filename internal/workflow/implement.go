@@ -137,17 +137,27 @@ func addRequestNode(g *run.Graph, r *run.Run) {
 	})
 }
 
-// addCodeNodes appends the implement, validate and adjudicate nodes both
-// writing workflows share. They are shared rather than repeated for the same
-// reason addPlanNodes is: the graph decides what comes before and after them,
-// so nothing here has to know whether a branch was created first or a commit
-// follows.
+// addCodeNodes appends builder routing when configured, then the implement,
+// validate and adjudicate nodes every writing workflow shares. They are shared
+// rather than repeated for the same reason addPlanNodes is: the graph decides
+// what comes before and after them, so nothing here has to know whether a
+// branch was created first or a commit follows.
 //
 // They forward on every outcome that leaves something to hand off — accepted,
 // unresolved at the send-back limit, or incomplete because a worker failed —
 // and c.v.Outcome says which. They end the run only on what nothing should be
 // published from: an error, cancellation, or source that changed under review.
 func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
+	// Repairs send back to implement, never here, so the builder's tier holds
+	// for the whole iteration.
+	if r.Routes("builder") {
+		g.Add(run.Node{Name: "route-build", Owner: "engineer"}, func(e *run.Entry) (string, error) {
+			if len(*c.plan.Files) == 0 {
+				return "", e.Log("route", "skipped: the plan permits no files, so the builder does not run")
+			}
+			return "", e.Route("builder", BuildRouteState(r.Request, &c.plan))
+		})
+	}
 	g.Add(run.Node{Name: "implement", Owner: "builder"}, func(e *run.Entry) (string, error) {
 		request := c.feedback
 		if e.Round == 0 {
