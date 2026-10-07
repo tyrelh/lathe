@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -14,6 +15,57 @@ import (
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 )
+
+func TestInit(t *testing.T) {
+	t.Run("creates roster defaults outside a Git repository", func(t *testing.T) {
+		root := t.TempDir()
+		t.Chdir(root)
+		if code := dispatch([]string{"init"}); code != 0 {
+			t.Fatalf("init exited %d", code)
+		}
+		body, err := os.ReadFile("lathe.toml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		roster, err := config.Load(Assets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := roster.DefaultTOML()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(body, want) {
+			t.Fatalf("lathe.toml differs from embedded roster defaults:\n%s", body)
+		}
+		if ok, err := roster.LoadProject(root); !ok || err != nil {
+			t.Fatalf("generated file: loaded = %v, err = %v", ok, err)
+		}
+	})
+	t.Run("refuses to replace an existing file", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		original := []byte("custom config\n")
+		if err := os.WriteFile("lathe.toml", original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := dispatch([]string{"init"}); code == 0 {
+			t.Fatal("init replaced an existing file")
+		}
+		got, err := os.ReadFile("lathe.toml")
+		if err != nil || string(got) != string(original) {
+			t.Fatalf("existing file changed: %q, %v", got, err)
+		}
+	})
+	t.Run("filesystem error returns nonzero", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.Mkdir("lathe.toml", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if code := dispatch([]string{"init"}); code == 0 {
+			t.Fatal("init succeeded with a directory at lathe.toml")
+		}
+	})
+}
 
 // TestEndToEnd is the one test that uses real processes: a submitter that
 // starts a manager, a manager that launches a worker, and a worker that runs

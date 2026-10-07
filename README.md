@@ -27,6 +27,7 @@ lathe implement "add retry"              # plan, implement, test; leave it uncom
 lathe build "add retry"                  # implement, then branch, commit and open a PR
 lathe build --detach "add retry"         # queue it and exit
 lathe revise <id> "log the retry count"  # push another change to that build's pull request
+lathe init                               # create lathe.toml in the current directory
 
 lathe runs                               # recent runs, every repo
 lathe show <id>                          # outcome, iterations and reports (--json, --iteration n)
@@ -56,6 +57,8 @@ revise:    request → plan → review → implement → validate → adjudicate
 Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `implement`, or `build`. A bare number uses the target checkout’s GitHub remote (`--repo` still selects the local checkout). The worker needs `gh` on `PATH` and authenticated. An `issue` code phase fetches the title and body when the run starts, saves `issue.json`, and passes that task to the planner and subsequent agents. A failed lookup stops the run before planning. Issue comments are not included.
 
 ## Project config
+
+Run `lathe init` from the target project root to create `lathe.toml` in the current directory with the built-in global defaults and effective settings for every agent. It does not require a Git repo and refuses to replace an existing file. The generated per-agent settings override the top level, so edit or remove those entries when changing global values.
 
 A `lathe.toml` at the repo root overrides the built-in roster. The top level applies to every agent, and an `[agents.<name>]` block applies to one:
 
