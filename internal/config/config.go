@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -88,6 +89,35 @@ func (o Overrides) Or(fallback Overrides) Overrides {
 type Project struct {
 	Overrides
 	Agents map[string]Overrides `toml:"agents"`
+}
+
+// DefaultTOML encodes the roster's effective built-in settings for every agent
+// as a project configuration, without applying loaded project overrides.
+func (c Config) DefaultTOML() ([]byte, error) {
+	c.project = Project{}
+	defaultsRepo := c.Defaults.WantsRepoInstructions()
+	p := Project{
+		Overrides: Overrides{
+			Provider:         c.Defaults.Provider,
+			Model:            c.Defaults.Model,
+			Thinking:         c.Defaults.Thinking,
+			RepoInstructions: &defaultsRepo,
+		},
+		Agents: make(map[string]Overrides, len(c.Agents)),
+	}
+	for _, a := range c.Agents {
+		r, err := c.Resolve(a.Name, Overrides{})
+		if err != nil {
+			return nil, err
+		}
+		repo := r.WantsRepoInstructions()
+		p.Agents[a.Name] = Overrides{Provider: r.Provider, Model: r.Model, Thinking: r.Thinking, RepoInstructions: &repo}
+	}
+	var b bytes.Buffer
+	if err := toml.NewEncoder(&b).Encode(p); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
 
 // Resolved is one agent with defaults, roster keys and flags already applied

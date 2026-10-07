@@ -1,10 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // The shipped roster is the thing that actually has to decode, so the test
@@ -292,6 +295,83 @@ func TestLoadProjectAcceptsAgentsOutsideTheWorkflow(t *testing.T) {
 	}
 	if s.Agents["scout"].Model != "kimi-k2.7-code" {
 		t.Fatalf("scout: %+v", s.Agents["scout"])
+	}
+}
+
+func TestDefaultTOMLRoundTrip(t *testing.T) {
+	c := assets(t)
+	c.Defaults.Provider = "default-provider"
+	c.Defaults.Thinking = "low"
+	off, on := false, true
+	c.Defaults.RepoInstructions = &off
+	c.Agents[0].RepoInstructions = &on
+	c.Agents[1].Model = "agent-model"
+
+	body, err := c.DefaultTOML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := c.DefaultTOML()
+	if err != nil || !bytes.Equal(body, again) {
+		t.Fatalf("output is not deterministic: %v", err)
+	}
+	var p Project
+	if _, err := toml.Decode(string(body), &p); err != nil {
+		t.Fatalf("invalid TOML: %v\n%s", err, body)
+	}
+	if p.Provider != c.Defaults.Provider || p.Model != c.Defaults.Model || p.Thinking != c.Defaults.Thinking || p.RepoInstructions == nil || *p.RepoInstructions {
+		t.Fatalf("global defaults: %+v", p.Overrides)
+	}
+	if len(p.Agents) != len(c.Agents) {
+		t.Fatalf("generated %d agents; want %d", len(p.Agents), len(c.Agents))
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "lathe.toml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded := c
+	if ok, err := loaded.LoadProject(root); !ok || err != nil {
+		t.Fatalf("generated file: loaded = %v, err = %v", ok, err)
+	}
+	for _, agent := range c.Agents {
+		want := resolve(t, c, agent.Name, Overrides{})
+		got := resolve(t, loaded, agent.Name, Overrides{})
+		entry, ok := p.Agents[agent.Name]
+		if !ok || entry.RepoInstructions == nil {
+			t.Fatalf("%s: missing explicit settings", agent.Name)
+		}
+		if entry.Provider != want.Provider || entry.Model != want.Model || entry.Thinking != want.Thinking || *entry.RepoInstructions != want.WantsRepoInstructions() {
+			t.Errorf("%s: generated settings = %+v; want %+v", agent.Name, entry, want.Agent)
+		}
+		if got.Provider != want.Provider || got.Model != want.Model || got.Thinking != want.Thinking || got.WantsRepoInstructions() != want.WantsRepoInstructions() {
+			t.Errorf("%s: round trip = %+v; want %+v", agent.Name, got.Agent, want.Agent)
+		}
+	}
+	first, second := p.Agents[c.Agents[0].Name], p.Agents[c.Agents[1].Name]
+	if !*first.RepoInstructions || *second.RepoInstructions || second.Model != "agent-model" || first.Provider != c.Defaults.Provider {
+		t.Fatal("per-agent overrides or inherited defaults were lost")
+	}
+}
+
+func TestDefaultTOMLIgnoresProject(t *testing.T) {
+	c := assets(t)
+	want, err := c.DefaultTOML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "lathe.toml"), []byte("model = \"project-model\"\nrepo_instructions = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := c.LoadProject(root); !ok || err != nil {
+		t.Fatalf("project: loaded = %v, err = %v", ok, err)
+	}
+	if resolve(t, c, "scout", Overrides{}).Model != "project-model" {
+		t.Fatal("project override was not applied")
+	}
+	got, err := c.DefaultTOML()
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("project settings changed generated defaults: %v\n%s", err, got)
 	}
 }
 
