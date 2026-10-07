@@ -28,7 +28,7 @@ for (const id of ['app', 'status', 'note', 'version',
 const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
   'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status', 'log', 'run-total',
   'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
-const pageIDs = ['page-summary', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
+const pageIDs = ['page-summary', 'average-spend', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
   'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status'];
 const appNode = nodes.get('app');
 let appHTML = '', scaffoldCount = 0;
@@ -80,12 +80,27 @@ const json = (body, headers = {}) =>
 // Everything up to the bootstrap; the harness drives tick() itself. Cut at one
 // anchor rather than matching the call verbatim, so reformatting it does not
 // silently leave the page self-ticking against an unresolved fetch.
-const script = fs.readFileSync('index.html', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const source = fs.readFileSync('index.html', 'utf8');
+const styles = source.match(/<style>([\s\S]*?)<\/style>/)[1];
+const script = source.match(/<script>([\s\S]*?)<\/script>/)[1];
 const bootstrap = script.lastIndexOf('navigate();');
 assert(bootstrap > 0, 'bootstrap not found');
 vm.runInContext(script.slice(0, bootstrap), context);
 const evaluate = code => vm.runInContext(code, context);
 const call = (fn, ...args) => { context.args = args; return evaluate(`${fn}(...args)`); };
+assert.equal(call('averageCost', 1, 4), 0.25);
+assert.equal(call('averageCost', 9, 0), 0);
+assert.equal(call('averageCost', 0, 3), 0);
+assert(styles.includes('.ranking-column { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr))'),
+  'ranking columns keep independently bounded scroll panels');
+assert(styles.includes('.ranking-column:first-child { grid-template-rows: auto repeat(2, minmax(0, 1fr))'),
+  'the compact average card does not take half the ranking height');
+assert(!styles.includes('.ranking-grid > :nth-child'), 'overview placement is structural, not positional');
+assert(styles.includes('.project-summary .totals { display: grid; grid-template-columns: repeat(4, max-content)'),
+  'project metrics share one large-screen row');
+assert(/@media \(max-width: 1100px\)\s*{\s*\.project-summary \.totals\s*{\s*grid-template-columns: repeat\(2, max-content\); justify-content: end;/.test(styles),
+  'only the project summary wraps at a width-only medium breakpoint');
+assert(!styles.includes('.page-summary .totals { display: grid'), 'other summaries retain their layout');
 
 // Immediate text-only content, viewport clamping, keyboard dismissal, and
 // rebinding when polling replaces the hovered chart block.
@@ -675,14 +690,27 @@ const costs = () => nodes.get('costs').innerHTML;
   context.location.hash = '#/projects';
   evaluate('view = route(); generation++');
   response = json([{repo:'/one/alpha',runs:3,tokens:300,cost:3,share:0.75},
-                   {repo:'/two/alpha',runs:1,tokens:100,cost:1,share:0.25}]);
+                   {repo:'/two/alpha',runs:2,tokens:100,cost:1,share:0.25},
+                   {repo:'/free',runs:2,tokens:10,cost:0,share:0},
+                   {repo:'/no-runs',runs:0,tokens:0,cost:0,share:0}]);
   await evaluate('tick()');
   const projects = pageHTML();
   assert(projects.includes('4 runs') === false, projects);
-  assert(projects.includes('2</b><span>projects recorded'), projects);
+  assert(projects.includes('4</b><span>projects recorded'), projects);
+  const projectTableHTML = nodes.get('list-body').innerHTML;
+  assert(projectTableHTML.includes('<th class="num">Total Spend</th><th class="num">Avg / PR</th>'), projectTableHTML);
+  assert.equal((projectTableHTML.match(/<th[\s>]/g) || []).length, 7);
+  const projectRowHTML = repo => projectTableHTML.match(new RegExp(`<tr class="project" data-row="${repo}"[^>]*>[\\s\\S]*?<\\/tr>`))?.[0];
+  assert(projectRowHTML('/one/alpha').includes('<td class="num cost">$3.00000</td>\n    <td class="num cost">$1.00000</td>'));
+  assert(projectRowHTML('/two/alpha').includes('<td class="num cost">$1.00000</td>\n    <td class="num cost">$0.50000</td>'));
+  assert(projectRowHTML('/free').includes('<td class="num cost">$0.00000</td>\n    <td class="num cost">$0.00000</td>'), 'free runs remain in the denominator');
+  assert(projectRowHTML('/no-runs').includes('<td class="num cost">$0.00000</td>\n    <td class="num cost">$0.00000</td>'), 'no runs have a zero average');
   assert(projects.includes('#/projects/detail?repo=%2Fone%2Falpha'), projects);
   assert(projects.includes('#/projects/detail?repo=%2Ftwo%2Falpha'), projects);
   assert(projects.indexOf('$3.00000') < projects.indexOf('$1.00000'), projects);
+  response = json([]);
+  await evaluate('tick()');
+  assert(nodes.get('list-body').innerHTML.includes('<td colspan="7" class="dim">No projects recorded yet.</td>'));
 
   // One project shows lifetime totals and pages its own runs into run links.
   context.location.hash = '#/projects/detail?repo=%2Fone%2Falpha';
@@ -691,14 +719,20 @@ const costs = () => nodes.get('costs').innerHTML;
   const second = {...run, run_id:'r2', repo:'/one/alpha'};
   const third = {...run, run_id:'r1', repo:'/one/alpha'};
   routeResponses = new Map([
-    ['/api/projects/detail?repo=%2Fone%2Falpha', json({repo:'/one/alpha',runs:3,tokens:300,cost:3,share:0.75})],
+    ['/api/projects/detail?repo=%2Fone%2Falpha', json({repo:'/one/alpha',runs:3,tokens:300,cost:3.5,share:0.75})],
     ['/api/projects/runs?repo=%2Fone%2Falpha&n=50', json({runs:[first,second],more:true})],
     ['/api/projects/runs?repo=%2Fone%2Falpha&n=50&before_at=2026-09-20T11%3A59%3A50Z&before_id=r2',
       json({runs:[third],more:false})],
   ]);
   await evaluate('tick()');
   const head = nodes.get('project-head').innerHTML;
-  assert(head.includes('300</b><span>tokens') && head.includes('$3.00000'), head);
+  assert(appHTML.includes('id="project-head" class="card page-summary project-summary"'));
+  assert(head.includes('300</b><span>tokens') && head.includes('$3.50000'), head);
+  assert(head.indexOf('runs recorded') < head.indexOf('tokens') && head.indexOf('tokens') < head.indexOf('avg spend per PR')
+    && head.indexOf('avg spend per PR') < head.indexOf('recorded spend'), 'project metrics keep their reading order');
+  assert(head.includes('<div class="cost"><b>$1.16667</b><span>avg spend per PR</span></div>'), head);
+  assert(head.includes('Lifetime metrics for this repository. 75.0% of total recorded spend.'));
+  assert(head.includes('Full path') && head.includes('/one/alpha'), 'repository identity stays in the summary');
   let project = nodes.get('project-runs').innerHTML;
   assert(project.includes("location.hash='/runs/r3'") && project.includes('Load more runs'), project);
   assert(nodes.get('status').innerHTML.includes('showing 2 of 3 runs'));
@@ -706,12 +740,22 @@ const costs = () => nodes.get('costs').innerHTML;
   project = nodes.get('project-runs').innerHTML;
   assert(project.includes("location.hash='/runs/r1'") && !project.includes('Load more runs'), project);
   assert(nodes.get('status').innerHTML.includes('showing 3 of 3 runs'));
+  assert(nodes.get('project-head').innerHTML.includes('$1.16667'), 'loading more run rows does not change the lifetime average');
+  routeResponses.set('/api/projects/detail?repo=%2Fone%2Falpha',
+    json({repo:'/one/alpha',runs:4,tokens:330,cost:3.6,share:0.75}));
+  await evaluate('tick()');
+  assert(nodes.get('project-head').innerHTML.includes('<b>$0.90000</b><span>avg spend per PR</span>'),
+    'polling updates from summary totals, not loaded runs');
+  failNext = 'database is locked';
+  await evaluate('tick()');
+  assert(nodes.get('project-head').innerHTML.includes('<b>$0.90000</b><span>avg spend per PR</span>'),
+    'a failed project refresh retains the last average');
   routeResponses = null;
 
   // Overview: lifetime totals, all four rankings, and the attribution caveats.
   context.location.hash = '#/overview';
   evaluate('view = route(); generation++');
-  response = json({
+  const overviewData = {
     runs: 1284, tokens: 9_000_000, cost: 42.18374,
     top_projects: [{repo:'/repos/alpha', runs:900, cost:38, share:0.9},
                    {repo:'', runs:100, cost:4, share:0.1}],
@@ -721,9 +765,21 @@ const costs = () => nodes.get('costs').innerHTML;
     top_providers: [{provider:'moonshotai', cost:32, share:0.7586, phases:2712},
                     {provider:'', cost:2, share:0.0474, phases:12}],
     at: '2026-09-20T12:00:00Z',
-  });
+  };
+  response = json(overviewData);
   await evaluate('tick()');
   const over = pageHTML();
+  assert.equal(nodes.get('average-spend').textContent, '$0.03285', 'global lifetime totals determine the fractional average');
+  assert(appHTML.includes('<div class="ranking-column"><section class="card average-card"><h2>average spend per PR</h2>'));
+  assert(appHTML.includes('id="average-spend" class="cost"'), 'average uses the purple cost style');
+  assert(appHTML.indexOf('id="average-spend"') < appHTML.indexOf('id="rank-projects"')
+    && appHTML.indexOf('id="rank-projects"') < appHTML.indexOf('id="rank-runs"')
+    && appHTML.indexOf('id="rank-runs"') < appHTML.indexOf('id="rank-models"')
+    && appHTML.indexOf('id="rank-models"') < appHTML.indexOf('id="rank-providers"'),
+    'overview left and right columns retain ranking order');
+  assert(appHTML.includes('</div><div class="ranking-column">'), 'models and providers occupy an explicit second column');
+  assert(styles.includes('.totals b, .average-card b { display: block; font-size: 20px;'), 'card value matches totals typography');
+  assert(!nodes.get('rank-projects').innerHTML.includes('Avg / PR'), 'overview rankings do not gain an average column');
   for (const text of ['1,284','$42.18374','$9.50000','alpha','$38.00000','90.0%','900 runs',
                       'moonshotai/kimi','71.1%','unknown/unknown',
                       '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
@@ -745,11 +801,23 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(provCard.indexOf('moonshotai') < provCard.indexOf('>unknown<'), 'providers are sorted by spend descending');
   assert(over.includes('#/projects/detail?repo=%2Frepos%2Falpha'), 'overview project links to its detail');
 
+  response = json({...overviewData, runs: 3, cost: 12.34567});
+  await evaluate('tick()');
+  assert.equal(nodes.get('average-spend').textContent, '$4.11522', 'polling replaces the global average');
+  failNext = 'database is locked';
+  await evaluate('tick()');
+  assert.equal(nodes.get('average-spend').textContent, '$4.11522', 'failed polling keeps the last good average');
+  assert.equal(nodes.get('note').className, 'stale');
+  response = json({...overviewData, runs: 4, cost: 0});
+  await evaluate('tick()');
+  assert.equal(nodes.get('average-spend').textContent, '$0.00000', 'zero-cost runs show a zero average');
+
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');
   response = json({runs:0, tokens:0, cost:0, top_projects:[], top_runs:[], top_models:[], top_providers:[], at:''});
   await evaluate('tick()');
   const empty = pageHTML();
+  assert.equal(nodes.get('average-spend').textContent, '$0.00000', 'zero runs show a zero average');
   assert(empty.includes('$0.00000') && empty.includes('No runs recorded yet.')
          && empty.includes('No model spend recorded yet.')
          && empty.includes('No provider spend recorded yet.')
@@ -758,6 +826,7 @@ const costs = () => nodes.get('costs').innerHTML;
   // A failed refresh keeps the last good values and says they are stale.
   failNext = 'database is locked';
   await evaluate('tick()');
+  assert.equal(nodes.get('average-spend').textContent, '$0.00000', 'the zero-run average survives a failed poll');
   assert(pageHTML().includes('$0.00000'), 'values must survive a failed poll');
   assert.equal(nodes.get('note').className, 'stale');
   assert(nodes.get('note').textContent.includes('database is locked'));
