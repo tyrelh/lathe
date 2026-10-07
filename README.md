@@ -14,7 +14,7 @@
   <a href="https://github.com/tyrelh/lathe/actions/workflows/ci.yml?query=branch%3Amain"><img alt="ci status" src="https://github.com/tyrelh/lathe/actions/workflows/ci.yml/badge.svg?branch=main"></a>
 </p>
 
-Lathe is a Go binary that runs bounded agent workflows against the repo you invoke it from. It traces every run to SQLite.
+Lathe is a Go binary that runs bounded agent workflows against whatever repo you run it from, and traces every run to SQLite.
 
 ```sh
 make install   # build ~/.local/bin/lathe and link it into your agents' skills
@@ -34,6 +34,7 @@ lathe show <id>                          # outcome, iterations and reports (--js
 lathe wait <id>                          # or --iteration n, for one iteration's outcome
 lathe cancel <id>
 lathe manager                            # queue and dashboard at http://127.0.0.1:4700
+lathe route-calibrate --agent builder    # compare routing picks against past runs
 ```
 
 ```
@@ -45,29 +46,19 @@ revise:    request → auth → [route-plan] → plan → review → [route-buil
 
 ## Running
 
-- Ctrl-C detaches from a run; `lathe cancel` stops it.
-- The first submission starts a manager if none is running. Workers inherit its environment: configure credentials for every provider in the captured agent roster, including providers used only by later agents. Export provider keys (for example `MOONSHOT_API_KEY`) before starting the manager, or log in with Pi as the worker user. Restart the manager after changing its environment. `LATHE_CAPACITY` sets concurrent runs (default 1).
-- `implement` and `build` need a clean checkout. Don't edit files or switch branches there until they finish.
-- `build` needs `gh` logged in. A failure after a commit keeps that commit; terminal validation environment failures never reach commit.
-- `revise` extends a build whose latest iteration succeeded and whose pull request is still open. The checkout must be clean, on the pull request's branch, and at the commit lathe last pushed, with origin at that commit too; lathe does not switch branches, merge or rebase to get there, and says what to restore. Every revision is planned and validated from scratch, and only an accepted change is committed and pushed, with the push refused if origin moved. The run keeps its ID, pull request and totals; `show` lists each iteration and `wait --iteration n` waits for one.
-- The builder can only write files its plan named. The shell deny list is a rough filter, not a sandbox.
-- The planner, plan-reviewer and the four code reviewers have `web_read`, which fetches one public https page as markdown for docs and references. It refuses this machine, private networks and cloud metadata addresses. An agent can put anything it reads into a URL, so these agents can only read the repo and the Go module cache, and never `.env*`, key files or `.git/`. Repo source can still leave that way, which matters for a private repo. No agent has both `web_read` and a shell. Every URL is in the run's `raw.jsonl`.
-- Traces go to `~/.local/share/lathe/lathe.db`, or under `$XDG_DATA_HOME`.
-
-Before planning, `plan`, `implement`, `build` and `revise` run a traced, engineer-owned `auth` phase: request → auth → optional issue → plan. It checks each distinct captured provider once, including later agents, and does not repeat on planning send-backs. Scout is unchanged. To diagnose readiness, run `pi auth check --provider <provider> --json` from the repository as the worker user with the worker environment. Pi must support that command; unsupported or malformed responses fail closed before any agent turn. This checks credential availability, not live API-key validity; expired OAuth credentials may be refreshed and Pi's credential store updated. The command timeout and run cancellation bound the check; raw auth output is not traced.
-
-Measured test exits **126/127** are terminal environment failures: check required executables, the worker's `PATH` and executable permissions, then rerun. `validation.json` records `environment_failed` and retains the tester report, command, result and output tail. There is one tester attempt, no adjudication or repairs, and no commit, push or PR (not even a draft). Already-running reviewers are joined before cleanup. Other worker failures may retry and exhausted retries produce `incomplete`, which build may publish as a draft; ordinary red suites still go to adjudication. Environment failures are neither of those outcomes, even if a suite intentionally uses 126/127 for another purpose.
-
-Use `--issue <number|URL|owner/repo#number>` instead of a prompt with `plan`, `implement`, or `build`. A bare number uses the target checkout’s GitHub remote (`--repo` still selects the local checkout). The worker needs `gh` on `PATH` and authenticated. An `issue` code phase fetches the title and body after auth preflight, saves `issue.json`, and passes that task to the planner and subsequent agents. A failed lookup stops the run before planning. Issue comments are not included.
+- Ctrl-C just detaches from a run. Use `lathe cancel` if you actually want to stop it.
+- Your first run starts a manager, and workers inherit its environment. So export your provider keys (like `MOONSHOT_API_KEY` or `TYPESAFE_API_KEY`) first, and restart the manager if you change them. `LATHE_CAPACITY` sets how many runs go at once (default 1).
+- `implement`, `build` and `revise` need a clean checkout. `build`, `revise` and `--issue` need `gh` logged in.
+- Every run checks auth for all the providers it'll use before any agent starts. If that fails, `pi auth check --provider <provider> --json` is the quickest way to see why.
+- The builder can only write the files its plan named. Agents with `web_read` can't read secrets or `.git/`, but repo source can still leave through a URL, so keep that in mind for private repos.
+- A test exit of 126 or 127 means something is wrong with the environment (missing executable, bad `PATH`), so the run stops there with no repairs and no commit.
+- Traces live in `~/.local/share/lathe/lathe.db`.
 
 ## Project config
 
-Run `lathe init` from the target project root to create `lathe.toml` in the current directory with the built-in global defaults, effective settings for every agent, and the roster's default [model routing](#model-routing) tiers and confidence floor, so the generated file turns routing on. It does not require a Git repo and refuses to replace an existing file. The generated per-agent settings override the top level, so edit or remove those entries when changing global values.
-
-A `lathe.toml` at the repo root overrides the built-in roster. The top level applies to every agent, and an `[agents.<name>]` block applies to one:
+Run `lathe init` in your project and you'll get a `lathe.toml` with every option filled in, routing included. Then change whatever you want:
 
 ```toml
-# lathe.toml at the repo root
 provider = "anthropic"
 model    = "claude-sonnet-5"
 
@@ -75,38 +66,23 @@ model    = "claude-sonnet-5"
 model = "claude-opus-5-5"
 
 [agents.tester]
-provider = "openai-codex"
-model    = "gpt-6-luna"
-thinking = "low"
+provider          = "openai-codex"
+model             = "gpt-6-luna"
+thinking          = "low"
+repo_instructions = false   # don't send AGENTS.md / CLAUDE.md to this agent
 ```
 
-Keys: `provider`, `model`, `thinking`, `repo_instructions`, plus routing tiers and `[routing]` (see [Model routing](#model-routing)). Flags win, then `[agents.<name>]`, then the top level, then the built-in roster. Lathe ignores a malformed file, an unknown key, an unknown agent name or invalid tiers, and prints a warning. Commit it before `implement` or `build`.
+Flags win, then `[agents.<name>]`, then the top level, then the built-in roster. If the file is invalid lathe ignores it and prints a warning.
 
-The agents a block can name:
-
-- `scout`: finds and reports where things live
-- `planner`: reads the repo and writes the plan the builder implements
-- `plan-reviewer`: reviews the plan before the builder gets its write scope
-- `builder`: implements the plan, and is the only agent that writes files
-- `tester`: finds and runs the test command every validation round
-- `code-review-general`: reviews correctness, the request and plan, conventions and tests
-- `code-review-security`: reviews what crosses the application's trust boundaries
-- `code-review-slop`: reviews for unneeded complexity
-- `code-review-adversarial`: tries to break the change through failure paths, retries, races and stale state
-- `adjudicator`: decides every review finding and whether the builder goes round again
-- `brancher`: names the branch for `build`
-- `committer`: writes the commit message
-- `pr-author`: writes the pull request title and body
-
-Most agents also get the repo's AGENTS.md, or its CLAUDE.md, at the start of their first message. Lathe keeps it out of the system prompt so the repo can't outrank lathe's own instructions. The brancher, committer and pr-author read it themselves as one of their convention sources instead. Set `repo_instructions = false` at the top level to keep it from every agent, or in an `[agents.<name>]` block to change one agent either way.
+The agents you can configure are `scout`, `planner`, `plan-reviewer`, `builder`, `tester`, `code-review-general`, `code-review-security`, `code-review-slop`, `code-review-adversarial`, `adjudicator`, `brancher`, `committer` and `pr-author`.
 
 ## Model routing
 
-Routing picks the planner's and the builder's model per iteration from the task in front of them. It's off until a repo's `lathe.toml` gives an agent tiers: the models you're willing to run it on, cheapest first, each described by the kind of task it suits.
+Give the planner or builder a few tiers, cheapest first, and TypeSafe's Jev model will pick one each iteration based on the task:
 
 ```toml
 [routing]
-confidence_floor = 0.5
+confidence_floor = 0.5   # below this, bump up one tier
 
 [agents.builder]
 provider = "openai-codex"
@@ -126,15 +102,8 @@ model    = "gpt-6-astra"
 thinking = "high"
 ```
 
-A `route-plan` phase before planning and a `route-build` phase before implementing each ask TypeSafe's Jev model (`jev-1.13.0`) one Score question: how demanding is this task, against your `when` descriptions. The most likely tier wins, ties going to the more capable one, and confidence under `confidence_floor` (default 0.5) moves the pick up one more tier. Jev never names a model; it only picks one of yours. Send-backs and repairs keep the tier, and each revision routes again.
-
-- Only `planner` and `builder` take tiers: 2 to 10 each, exactly one `default = true`, and a non-empty `when` on every one. Describe a situation in `when` and leave out numbers and comparisons to other tiers; Jev judges each level on its own.
-- A tier sets only what differs. `provider`, `model` and `thinking` it leaves out come from the agent's usual config.
-- `--provider`, `--model` or `--thinking` turns routing off for that run.
-- The auth phase checks every tier's provider, so whichever one is picked is ready.
-- Workers need `TYPESAFE_API_KEY`. Without it, or on any API error or malformed response, routing uses the default tier and the run carries on.
-- Clicking a `route-*` phase on the dashboard shows the tier picked, the reason (`routed`, `low-confidence` or `error`), confidence and score, and every tier with its probability. The phase's Inputs and Raw responses hold the exact request sent to Jev and its unedited response. Jev's spend is recorded under the `typesafe` provider.
-- `route-plan` sends the request, or the issue's title and body, or a revision's brief including its branch diff. `route-build` sends the request and the accepted plan: summary, steps, file paths and risks. TypeSafe says it doesn't train on requests, but zero data retention is enterprise-only, so think about that before turning routing on for a private repo.
-- The plan-reviewer is never routed, so a cheap planner always has a capable reviewer behind it.
-
-Tune the `when` text and the floor before relying on it. From the repo, `lathe route-calibrate --agent planner|builder [--limit 30]` asks Jev about that repo's past runs through the same code the routing phases use and prints each pick next to the run's plan send-backs and builder repairs, with a blank column to fill in the tier you'd have picked. Label each run before you read Jev's answer. Past runs used fixed models, so their send-backs and repairs are only a hint.
+- You need 2 to 10 tiers with exactly one `default`. Anything a tier leaves out comes from the agent.
+- No `TYPESAFE_API_KEY`, or any error from Jev, and it falls back to the default tier. Passing `--provider`, `--model` or `--thinking` turns routing off for that run.
+- Your request and plan get sent to TypeSafe, and zero data retention is enterprise only. I'd think twice before turning this on for a private repo.
+- Click a `route-*` phase on the dashboard to see what it picked and the probability for every tier.
+- `lathe route-calibrate --agent builder` runs Jev over your past runs so you can tune the `when` text before relying on it.
