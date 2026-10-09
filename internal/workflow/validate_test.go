@@ -135,7 +135,7 @@ func adjudicatorReply(t *testing.T, verdict, changes string, decisions []map[str
 	}
 	return jsonReply(t, map[string]any{
 		"summary": "adjudicated", "verdict": verdict, "decisions": decisions, "changes": changes,
-		"scope": scope, "amendments": []map[string]string{}, "artifacts": []string{}})
+		"scope": scope, "amendments": []map[string]string{}, "verification": []string{}, "artifacts": []string{}})
 }
 
 func decide(ref, action string) map[string]string {
@@ -695,6 +695,8 @@ func TestAdjudicatedGate(t *testing.T) {
 			[]string{`"bug-9.9" is not a finding`, `"slop-1.1" has no decision`}},
 		{"twice", &revise, []Decision{{"general-1.1", "fix", "x"}, {"general-1.1", "fix", "x"}, {"slop-1.1", "fix", "x"}}, nil, green,
 			[]string{"decided more than once"}},
+		{"green send-back with nothing to fix", &revise, []Decision{{"general-1.1", "dismiss", "x"}, {"slop-1.1", "dismiss", "x"}}, nil, green,
+			[]string{"green suite and no finding to fix"}},
 		{"red waiver", &accept, []Decision{{"general-1.1", "dismiss", "x"}, {"slop-1.1", "dismiss", "x"}}, nil, red,
 			[]string{"cannot accept while the measured test suite is red"}},
 		{"bad scope", &revise, []Decision{{"general-1.1", "fix", "x"}, {"slop-1.1", "fix", "x"}},
@@ -721,7 +723,7 @@ func TestAdjudicatedGate(t *testing.T) {
 }
 
 func TestAdjudicationOutputValidate(t *testing.T) {
-	if v := (&AdjudicationOutput{}).Validate(); len(v) != 7 {
+	if v := (&AdjudicationOutput{}).Validate(); len(v) != 8 {
 		t.Fatalf("violations: %v", v)
 	}
 	summary, empty := "s", ""
@@ -735,7 +737,7 @@ func TestAdjudicationOutputValidate(t *testing.T) {
 		{verdictRevise, "do it", ""},
 	} {
 		a := &AdjudicationOutput{Summary: &summary, Verdict: &tc.verdict, Decisions: &decisions,
-			Changes: &tc.changes, Scope: &noScope, Amendments: &noAmend, Wrote: &none}
+			Changes: &tc.changes, Scope: &noScope, Amendments: &noAmend, Verification: &none, Wrote: &none}
 		v := a.Validate()
 		if (tc.want == "") != (len(v) == 0) || (tc.want != "" && !strings.Contains(v[0], tc.want)) {
 			t.Fatalf("%s %q: %v", tc.verdict, tc.changes, v)
@@ -752,5 +754,16 @@ func TestCodeReviewOutputValidate(t *testing.T) {
 	findings := []Finding{{Location: "", Evidence: "e", Explanation: "x", Outcome: ""}}
 	if v := (&CodeReviewOutput{Summary: &summary, Findings: &findings, Wrote: &none}).Validate(); len(v) != 1 || !strings.Contains(v[0], `"outcome"`) {
 		t.Fatalf("violations: %v", v)
+	}
+}
+
+func TestVerificationCallout(t *testing.T) {
+	checks := []string{"SMOKE-THE-APP"}
+	v := &Validation{Rounds: []*Round{{Adjudication: &AdjudicationOutput{Verification: &checks}}}}
+	if got := verificationCallout(v); !strings.Contains(got, "## Needs manual verification") || !strings.Contains(got, "- [ ] SMOKE-THE-APP") {
+		t.Fatalf("callout = %q", got)
+	}
+	if got := verificationCallout(&Validation{Rounds: []*Round{{}}}); got != "" {
+		t.Fatalf("callout without adjudication = %q", got)
 	}
 }

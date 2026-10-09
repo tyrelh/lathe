@@ -108,13 +108,14 @@ type Amendment struct {
 
 // AdjudicationOutput is the adjudicator's decision on one round.
 type AdjudicationOutput struct {
-	Summary    *string          `json:"summary"`
-	Verdict    *string          `json:"verdict"`
-	Decisions  *[]Decision      `json:"decisions"`
-	Changes    *string          `json:"changes"`
-	Scope      *[]ScopeAddition `json:"scope"`
-	Amendments *[]Amendment     `json:"amendments"`
-	Wrote      *[]string        `json:"artifacts"`
+	Summary      *string          `json:"summary"`
+	Verdict      *string          `json:"verdict"`
+	Decisions    *[]Decision      `json:"decisions"`
+	Changes      *string          `json:"changes"`
+	Scope        *[]ScopeAddition `json:"scope"`
+	Amendments   *[]Amendment     `json:"amendments"`
+	Verification *[]string        `json:"verification"`
+	Wrote        *[]string        `json:"artifacts"`
 }
 
 func (a *AdjudicationOutput) Validate() []string {
@@ -157,6 +158,11 @@ func (a *AdjudicationOutput) Validate() []string {
 				v = append(v, `every amendment needs a "change" and a "reason"`)
 			}
 		}
+	}
+	if a.Verification == nil {
+		v = append(v, `"verification" is missing; use [] if nothing needs a person to check`)
+	} else if slices.ContainsFunc(*a.Verification, func(s string) bool { return strings.TrimSpace(s) == "" }) {
+		v = append(v, `"verification" has an empty entry`)
 	}
 	if a.Wrote == nil {
 		v = append(v, `"artifacts" is missing; use [] if you wrote no files`)
@@ -242,6 +248,10 @@ func Adjudicated(findings []Finding, tests *Measured, protected []string) run.Ga
 		if *a.Verdict == verdictAccept && (tests == nil || !tests.Green) {
 			v = append(v, "you cannot accept while the measured test suite is red: tests must pass, "+
 				"even when the failures look unrelated or pre-existing; revise instead")
+		}
+		if *a.Verdict == verdictRevise && tests != nil && tests.Green && len(a.fixes(findings)) == 0 {
+			v = append(v, "you sent the work back with a green suite and no finding to fix: accept, "+
+				"and list any check only a person can do in verification")
 		}
 		return v
 	}
@@ -500,6 +510,24 @@ func (c *code) amend(request string, a *AdjudicationOutput) {
 	c.v.Scope = append(c.v.Scope, *a.Scope...)
 	c.v.Amendments = append(c.v.Amendments, *a.Amendments...)
 	c.handoff = implementRequest(request, &c.plan, c.v.Amendments)
+}
+
+// verificationCallout is the section every pull request carries when the last
+// adjudication named checks a person must do; "" when it named none.
+func verificationCallout(v *Validation) string {
+	if len(v.Rounds) == 0 {
+		return ""
+	}
+	a := v.current().Adjudication
+	if a == nil || a.Verification == nil || len(*a.Verification) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Needs manual verification\n\nAutomated validation could not check these; a reviewer should before merging.\n\n")
+	for _, s := range *a.Verification {
+		fmt.Fprintf(&b, "- [ ] %s\n", s)
+	}
+	return b.String()
 }
 
 // validationReport is the section a draft pull request carries: why automated

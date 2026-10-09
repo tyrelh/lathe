@@ -18,8 +18,9 @@ End your reply with a single fenced json block and nothing after it:
   "changes": "the one set of changes the implementer makes, with the reason for each; \"\" when accepting",
   "scope": [{"path": "repo/relative/file.go", "reason": "why the fix needs it"}],
   "amendments": [{"change": "the simplification to the plan", "reason": "why the requirements still hold"}],
+  "verification": ["a check a person must do on the pull request, such as a manual smoke test the request asks for"],
   "artifacts": []
 }
 ```
 
-All seven keys are required. Decide every finding listed above exactly once, by its ref. Accept only with a green measured suite and no finding decided fix; scope and amendments must be empty when you accept. A revise verdict needs nonempty changes. Scope paths are exact repo-relative files, never globs. You write no files, so artifacts must be empty.
+All eight keys are required. Decide every finding listed above exactly once, by its ref. Accept exactly when the measured suite is green and no finding is decided fix; lathe refuses any other verdict. Scope and amendments must be empty when you accept. A revise verdict needs nonempty changes. Scope paths are exact repo-relative files, never globs. You write no files, so artifacts must be empty.

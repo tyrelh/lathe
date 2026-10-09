@@ -260,6 +260,7 @@ func Build(r *run.Run) int {
 		if draft {
 			body += validationReport(&c.v)
 		}
+		body += verificationCallout(&c.v)
 		created, err := workspace.CreatePR(r.Repo, *out.Title, body, draft)
 		if err != nil {
 			return "", err
