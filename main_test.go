@@ -111,10 +111,19 @@ func TestEndToEnd(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("building lathe: %v\n%s", err, out)
 	}
-	// The manager outlives the submitter by design, so the test is what has to
-	// stop it. The binary path is unique to this test, which is what makes
-	// this safe to match on.
-	t.Cleanup(func() { exec.Command("pkill", "-f", bin+" manager").Run() })
+	// The manager and its workers outlive the submitter by design, so the test
+	// is what has to stop them, and wait for them before the temp dir they
+	// write to is removed. The binary path is unique to this test, which is
+	// what makes this safe to match on.
+	t.Cleanup(func() {
+		exec.Command("pkill", "-f", bin+" ").Run()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if exec.Command("pgrep", "-f", bin+" ").Run() != nil {
+				return
+			}
+		}
+		t.Errorf("lathe processes still running after cleanup")
+	})
 
 	repo := gitRepo(t, "")
 	// Submissions run from a repository with a lathe.toml of its own, which
