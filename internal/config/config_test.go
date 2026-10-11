@@ -617,8 +617,10 @@ func TestPromptsMissingFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Prompts(true); err == nil || !strings.Contains(err.Error(), tc.name) {
-			t.Errorf("without %s: err = %v; want one naming %s", tc.key, err, tc.name)
+		for _, bodies := range []bool{true, false} {
+			if _, err := c.Prompts(bodies); err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Errorf("without %s, bodies %v: err = %v; want one naming %s", tc.key, bodies, err, tc.name)
+			}
 		}
 	}
 }

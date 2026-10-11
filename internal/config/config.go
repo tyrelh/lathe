@@ -383,11 +383,9 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 			if p.Key == "" {
 				continue
 			}
-			if bodies {
-				var err error
-				if p.Body, err = c.readPrompt(p.Key); err != nil {
-					return nil, fmt.Errorf("agent %s: %w", a.Name, err)
-				}
+			var err error
+			if p.Body, err = c.prompt(p.Key, bodies); err != nil {
+				return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 			}
 			p.SharedWith = slices.DeleteFunc(slices.Clone(byKey[p.Key]), func(n string) bool { return n == a.Name })
 			ap.Prompts = append(ap.Prompts, p)
@@ -396,15 +394,23 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 	}
 	for _, r := range routingPrompts {
 		p := Prompt{Role: "instructions", Key: r.key, SharedWith: []string{}}
-		if bodies {
-			var err error
-			if p.Body, err = c.readPrompt(r.key); err != nil {
-				return nil, fmt.Errorf("%s: %w", r.phase, err)
-			}
+		var err error
+		if p.Body, err = c.prompt(r.key, bodies); err != nil {
+			return nil, fmt.Errorf("%s: %w", r.phase, err)
 		}
 		out = append(out, AgentPrompts{Name: r.phase, Kind: "routing", Routes: r.agent, Prompts: []Prompt{p}})
 	}
 	return out, nil
+}
+
+// prompt reads the prompt at key, or, when body is false, only checks that it
+// exists and returns "".
+func (c Config) prompt(key string, body bool) (string, error) {
+	if !body {
+		_, err := fs.Stat(c.fsys, key)
+		return "", err
+	}
+	return c.readPrompt(key)
 }
 
 // Prompt substitutes the request into the agent's user prompt. One placeholder
