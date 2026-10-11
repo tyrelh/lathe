@@ -1,6 +1,6 @@
 # Reassess and exercise the test command every validation round; lathe
 # independently verifies its exit.
-provider: moonshotai
-model: kimi-k2.6
-thinking: medium
-timeout: 10m
+provider: openai-codex
+model: gpt-6-luna
+thinking: low
+timeout: 5m

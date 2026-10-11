@@ -63,16 +63,16 @@ func TestReviewersHaveTheirOwnUserPrompt(t *testing.T) {
 func TestEmbeddedSettings(t *testing.T) {
 	cfg := embedded(t)
 	for name, want := range map[string]string{
-		"scout": "moonshotai/kimi-k2.7-code/medium", "planner": "moonshotai/kimi-k3/medium",
-		"builder": "moonshotai/kimi-k2.7-code/medium", "tester": "moonshotai/kimi-k2.6/medium",
-		"plan-reviewer": "moonshotai/kimi-k3/medium", "pr-author": "moonshotai/kimi-k2.6/medium",
+		"scout": "openai-codex/gpt-6-sol/low/5m0s", "planner": "anthropic/claude-opus-5-5/medium/10m0s",
+		"builder": "anthropic/claude-opus-5-5/low/10m0s", "tester": "openai-codex/gpt-6-luna/low/5m0s",
+		"plan-reviewer": "openai-codex/gpt-6-sol/medium/10m0s", "pr-author": "openai-codex/gpt-6-luna/low/5m0s",
 	} {
 		a, err := cfg.Resolve(name, config.Overrides{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := a.Provider + "/" + a.Model + "/" + a.Thinking; got != want || a.Deadline.Minutes() != 10 {
-			t.Errorf("%s = %s %v; want %s", name, got, a.Deadline, want)
+		if got := a.Provider + "/" + a.Model + "/" + a.Thinking + "/" + a.Deadline.String(); got != want {
+			t.Errorf("%s = %s; want %s", name, got, want)
 		}
 	}
 	for name, want := range map[string]bool{"builder": true, "brancher": false, "committer": false, "pr-author": false} {
@@ -80,7 +80,10 @@ func TestEmbeddedSettings(t *testing.T) {
 			t.Errorf("%s: repo instructions = %v", name, a.WantsRepoInstructions())
 		}
 	}
-	for name, models := range map[string]string{"planner": "kimi-k2.7-code,kimi-k3,kimi-k3", "builder": "kimi-k2.6,kimi-k2.7-code,kimi-k3"} {
+	for name, want := range map[string]struct{ models, top string }{
+		"planner": {"claude-sonnet-5-5,claude-opus-5-5,claude-opus-5-5", "xhigh"},
+		"builder": {"claude-sonnet-5-5,claude-opus-5-5,claude-opus-5-5", "medium"},
+	} {
 		s, err := cfg.Capture([]string{name}, config.Overrides{})
 		if err != nil {
 			t.Fatal(err)
@@ -90,7 +93,7 @@ func TestEmbeddedSettings(t *testing.T) {
 		for _, tier := range rt.Tiers {
 			got = append(got, tier.Resolved.Model)
 		}
-		if strings.Join(got, ",") != models || rt.Default() != 1 || rt.Tiers[2].Resolved.Thinking != "high" || rt.Instructions == "" {
+		if strings.Join(got, ",") != want.models || rt.Default() != 1 || rt.Tiers[2].Resolved.Thinking != want.top || rt.Instructions == "" {
 			t.Errorf("%s tiers = %v", name, got)
 		}
 	}

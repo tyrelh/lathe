@@ -1,8 +1,8 @@
 # Name the branch the change lands on, following whatever the repository
 # already does.
-provider: moonshotai
-model: kimi-k2.6
-thinking: medium
+provider: openai-codex
+model: gpt-6-luna
+thinking: low
 timeout: 10m
 # Reads AGENTS.md itself with the rest of its convention sources.
 repo_instructions: false

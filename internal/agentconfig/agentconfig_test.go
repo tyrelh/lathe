@@ -93,7 +93,7 @@ func TestSeedEmptyHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, err := c.Resolve("builder", config.Overrides{})
-	if err != nil || a.Model != "kimi-k2.7-code" || a.Provider != "moonshotai" || a.Thinking != "medium" ||
+	if err != nil || a.Model != "claude-opus-5-5" || a.Provider != "anthropic" || a.Thinking != "low" ||
 		!strings.Contains(a.SystemPrompt, "You are the builder") || len(c.Tiers["builder"]) != 3 || len(c.Tiers["planner"]) != 3 {
 		t.Fatalf("builder = %+v, tiers %v, %v", a, c.Tiers, err)
 	}

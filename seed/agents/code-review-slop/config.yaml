@@ -1,5 +1,5 @@
 # Unneeded complexity, with the same authority as the other three reviewers.
-provider: moonshotai
-model: kimi-k3
+provider: openai-codex
+model: gpt-6-sol
 thinking: medium
 timeout: 10m

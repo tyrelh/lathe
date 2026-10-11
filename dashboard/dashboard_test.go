@@ -641,7 +641,7 @@ func TestAgentRoutes(t *testing.T) {
 			t.Errorf("%s config = %+v", a.Name, a.Config)
 		}
 	}
-	if c := byName["planner"].Config; c == nil || c.Provider != "moonshotai" || c.Model != "kimi-k3" || c.Thinking != "medium" ||
+	if c := byName["planner"].Config; c == nil || c.Provider != "anthropic" || c.Model != "claude-opus-5-5" || c.Thinking != "medium" ||
 		c.Timeout != "10m" || c.Key != "agents/planner/config.yaml" {
 		t.Errorf("planner config = %+v", c)
 	}

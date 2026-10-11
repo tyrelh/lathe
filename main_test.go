@@ -50,7 +50,7 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := first.Agents["builder"]
-	if b.SystemPrompt != string(seeded) || b.Provider != "moonshotai" || b.Model != "kimi-k2.7-code" {
+	if b.SystemPrompt != string(seeded) || b.Provider != "anthropic" || b.Model != "claude-opus-5-5" {
 		t.Fatalf("builder = %s/%s %q", b.Provider, b.Model, b.SystemPrompt)
 	}
 	if len(first.Routing["builder"].Tiers) != 3 || len(first.Routing["planner"].Tiers) != 3 {
@@ -264,7 +264,7 @@ func TestEndToEnd(t *testing.T) {
 	if code != 0 || strings.Contains(out, "lathe.toml") {
 		t.Fatalf("configured submission exited %d:\n%s", code, out)
 	}
-	if a := capturedScout(t, home, out); a.Provider != "moonshotai" || a.Model != "kimi-k2.7-code" || a.Thinking != "high" {
+	if a := capturedScout(t, home, out); a.Provider != "openai-codex" || a.Model != "gpt-6-sol" || a.Thinking != "high" {
 		t.Fatalf("captured scout: %+v", a)
 	}
 

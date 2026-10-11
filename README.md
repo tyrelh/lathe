@@ -68,8 +68,8 @@ Everything an agent is told and runs on lives in plain files under `~/.lathe`, o
 ```
 
 ```yaml
-provider: moonshotai
-model: kimi-k2.6
+provider: openai-codex
+model: gpt-6-luna
 thinking: low               # off, minimal, low, medium, high or xhigh
 timeout: 10m
 repo_instructions: false    # don't send AGENTS.md / CLAUDE.md to this agent

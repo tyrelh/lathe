@@ -1,8 +1,8 @@
 # Write the pull request title and body from the repository's template and its
 # recently merged pull requests.
-provider: moonshotai
-model: kimi-k2.6
-thinking: medium
-timeout: 10m
+provider: openai-codex
+model: gpt-6-luna
+thinking: low
+timeout: 5m
 # Reads AGENTS.md itself with the rest of its convention sources.
 repo_instructions: false

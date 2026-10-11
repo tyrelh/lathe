@@ -1,8 +1,6 @@
 # Find and report where things live; change nothing.
-provider: moonshotai
-model: kimi-k2.7-code
-# A request, not a guarantee: kimi-k2.7-code has thinking always on and no
-# dial, and Pi drops the level for models that do not take one.
-thinking: medium
+provider: openai-codex
+model: gpt-6-sol
+thinking: low
 # A model that stalls otherwise hangs lathe until someone notices.
-timeout: 10m
+timeout: 5m
