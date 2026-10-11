@@ -86,7 +86,7 @@ func TestImplementEnvironmentFailure(t *testing.T) {
 			stub := codeStub(t)
 			head := rev(t, repo, "HEAD")
 			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
-			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command, exit, "ENV-TAIL\n"))
 			if got := execute(t, cfg, "implement", repo, "greet the world"); got != 1 {
 				t.Fatalf("exit = %d", got)
 			}

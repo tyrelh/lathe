@@ -35,7 +35,7 @@ func codeStub(t *testing.T) string {
 		"summary": "the history prefixes with feat/", "branch": "feat/greet-the-world", "artifacts": []string{}}))
 	write(t, filepath.Join(dir, "builder.sh"), "printf 'hello world\\n' > hello.txt\n")
 	write(t, filepath.Join(dir, "builder"), builderReply(t, "updated greeting"))
-	write(t, filepath.Join(dir, "tester"), testerReply(t, "true"))
+	write(t, filepath.Join(dir, "tester"), testerReply(t, "true", 0, ""))
 	for _, name := range reviewers {
 		write(t, filepath.Join(dir, name), reviewerReply(t))
 	}
@@ -105,10 +105,10 @@ func builderReply(t *testing.T, summary string) string {
 		"summary": summary, "changed": []string{"hello.txt"}, "needed": []string{}, "artifacts": []string{"hello.txt"}})
 }
 
-func testerReply(t *testing.T, command string) string {
+func testerReply(t *testing.T, command string, exit int, output string) string {
 	return jsonReply(t, map[string]any{
-		"summary": "discovered", "command": command, "failures": []string{"TESTER-OBSERVATION"},
-		"coverage": "unchanged", "artifacts": []string{}})
+		"summary": "discovered", "command": command, "exit_code": exit, "output": output,
+		"failures": []string{"TESTER-OBSERVATION"}, "coverage": "unchanged", "artifacts": []string{}})
 }
 
 // reviewerReply approves, or raises one finding per explanation given.
@@ -201,10 +201,10 @@ func assertEnvironmentFailure(t *testing.T, stub, dir, command string, exit, ite
 		t.Fatalf("validation = %+v", v)
 	}
 	round := v.Rounds[0]
-	if round.Tests == nil || round.Tests.Command == nil || *round.Tests.Command != command || round.Measured == nil ||
-		round.Measured.Command != command || round.Measured.Green || round.Measured.Tail != "ENV-TAIL\n" ||
-		!strings.Contains(round.Measured.Result, fmt.Sprintf("exited %d", exit)) || round.Adjudication != nil {
-		t.Fatalf("lost failed measurement or adjudicated it: %+v", round)
+	if round.Tests == nil || round.Tests.Command == nil || *round.Tests.Command != command || round.Tests.Green() ||
+		*round.Tests.Output != "ENV-TAIL\n" || !strings.Contains(round.Tests.Result(), fmt.Sprintf("exited %d", exit)) ||
+		round.Adjudication != nil {
+		t.Fatalf("lost failed test run or adjudicated it: %+v", round)
 	}
 	found := false
 	for _, failure := range round.Failures {
@@ -254,8 +254,9 @@ func TestEnvironmentFailureRetainsJoinedEvidence(t *testing.T) {
 		t.Run(fmt.Sprint(exit), func(t *testing.T) {
 			cfg, repo := buildRepo(t)
 			stub := codeStub(t)
-			command := fmt.Sprintf("echo mutated > hello.txt; echo ENV-TAIL; exit %d", exit)
-			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
+			write(t, filepath.Join(stub, "tester.sh"), "echo mutated > hello.txt\n")
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command, exit, "ENV-TAIL\n"))
 			write(t, filepath.Join(stub, "code-review-security"), piReply(t, "no report"))
 			if got := execute(t, cfg, "implement", repo, "greet the world"); got != 1 {
 				t.Fatalf("exit = %d", got)
@@ -275,14 +276,14 @@ func TestEnvironmentFailureRetainsJoinedEvidence(t *testing.T) {
 func TestOrdinaryRedSuiteStillAdjudicatesAndRepairs(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
-	write(t, filepath.Join(stub, "tester.0"), testerReply(t, "echo RED-TAIL; exit 7"))
+	write(t, filepath.Join(stub, "tester.0"), testerReply(t, "echo RED-TAIL; exit 7", 7, "RED-TAIL\n"))
 	write(t, filepath.Join(stub, "adjudicator.0"), adjudicatorReply(t, "revise", "fix the suite", nil, nil))
 	if got := execute(t, cfg, "implement", repo, "greet the world"); got != 0 {
 		t.Fatalf("exit = %d", got)
 	}
 	v := readValidation(t)
-	if v.Outcome != outcomeAccepted || len(v.Rounds) != 2 || v.Rounds[0].Measured.Green || !v.Rounds[1].Measured.Green ||
-		!strings.Contains(v.Rounds[0].Measured.Result, "exited 7") || v.Rounds[0].Measured.Tail != "RED-TAIL\n" || len(v.Rounds[0].Failures) != 0 {
+	if v.Outcome != outcomeAccepted || len(v.Rounds) != 2 || v.Rounds[0].Tests.Green() || !v.Rounds[1].Tests.Green() ||
+		!strings.Contains(v.Rounds[0].Tests.Result(), "exited 7") || *v.Rounds[0].Tests.Output != "RED-TAIL\n" || len(v.Rounds[0].Failures) != 0 {
 		t.Fatalf("ordinary red suite = %+v", v)
 	}
 	for _, name := range []string{"tester", "builder", "adjudicator"} {
@@ -342,7 +343,7 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 	}
 
 	v := readValidation(t)
-	if v.Outcome != outcomeAccepted || len(v.Rounds) != 1 || !v.Rounds[0].Measured.Green || len(v.Rounds[0].Reports) != len(reviewers) {
+	if v.Outcome != outcomeAccepted || len(v.Rounds) != 1 || !v.Rounds[0].Tests.Green() || len(v.Rounds[0].Reports) != len(reviewers) {
 		t.Fatalf("validation: %+v", v)
 	}
 	if row := latestRun(t); row.Status != "ok" {
@@ -406,7 +407,7 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 			t.Fatalf("%s's second round lacks the previous decision: %s", agent, second)
 		}
 	}
-	if got := stubFile(t, stub, "args.tester.1"); !strings.Contains(got, "Previous measurement") {
+	if got := stubFile(t, stub, "args.tester.1"); !strings.Contains(got, "Previous test run") {
 		t.Fatalf("tester was not asked to reassess: %s", got)
 	}
 	// Every reviewer sees a dismissed finding in full, not only its own.
@@ -429,7 +430,7 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 func TestSendBacksAreBoundedAndRedIsNeverAccepted(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
-	write(t, filepath.Join(stub, "tester"), testerReply(t, "echo RED-TAIL; false"))
+	write(t, filepath.Join(stub, "tester"), testerReply(t, "echo RED-TAIL; false", 1, "RED-TAIL\n"))
 	write(t, filepath.Join(stub, "adjudicator.0"), acceptReply(t))
 	write(t, filepath.Join(stub, "adjudicator"), adjudicatorReply(t, "revise", "make the suite pass", nil, nil))
 
@@ -437,7 +438,7 @@ func TestSendBacksAreBoundedAndRedIsNeverAccepted(t *testing.T) {
 	if code := executeWith(t, cfg, "implement", repo, "greet the world", context.Background(), &out); code != 1 {
 		t.Fatalf("code = %d", code)
 	}
-	if got := stubFile(t, stub, "args.adjudicator.1"); !strings.Contains(got, "cannot accept while the measured test suite is red") {
+	if got := stubFile(t, stub, "args.adjudicator.1"); !strings.Contains(got, "cannot accept while the test suite is red") {
 		t.Fatalf("red acceptance was not refused: %s", got)
 	}
 	if n := spawnsOf(t, stub, "builder"); n != maxRepairs+1 {
@@ -583,7 +584,7 @@ func TestBuildDraftsUnacceptedWork(t *testing.T) {
 		want          []string
 	}{
 		{"unresolved", outcomeUnresolved, func(t *testing.T, stub string) {
-			write(t, filepath.Join(stub, "tester"), testerReply(t, "echo RED-TAIL; false"))
+			write(t, filepath.Join(stub, "tester"), testerReply(t, "echo RED-TAIL; false", 1, "RED-TAIL\n"))
 			write(t, filepath.Join(stub, "code-review-slop"), reviewerReply(t, "TOO-CLEVER"))
 			for round := 1; round <= maxRepairs+1; round++ {
 				write(t, filepath.Join(stub, fmt.Sprintf("adjudicator.%d", round-1)), adjudicatorReply(t, "revise", "simplify it",
@@ -680,14 +681,15 @@ func TestCancelDuringValidationPublishesNothing(t *testing.T) {
 
 func TestAdjudicatedGate(t *testing.T) {
 	findings := []Finding{{Ref: "general-1.1"}, {Ref: "slop-1.1"}}
-	green, red := &Measured{Green: true}, &Measured{}
+	zero, one := 0, 1
+	green, red := &TestOutput{ExitCode: &zero}, &TestOutput{ExitCode: &one}
 	accept, revise := verdictAccept, verdictRevise
 	for _, tc := range []struct {
 		name      string
 		verdict   *string
 		decisions []Decision
 		scope     []ScopeAddition
-		tests     *Measured
+		tests     *TestOutput
 		want      []string
 	}{
 		{"complete", &revise, []Decision{{"general-1.1", "fix", "x"}, {"slop-1.1", "dismiss", "y"}}, nil, red, nil},
@@ -698,7 +700,7 @@ func TestAdjudicatedGate(t *testing.T) {
 		{"green send-back with nothing to fix", &revise, []Decision{{"general-1.1", "dismiss", "x"}, {"slop-1.1", "dismiss", "x"}}, nil, green,
 			[]string{"green suite and no finding to fix"}},
 		{"red waiver", &accept, []Decision{{"general-1.1", "dismiss", "x"}, {"slop-1.1", "dismiss", "x"}}, nil, red,
-			[]string{"cannot accept while the measured test suite is red"}},
+			[]string{"cannot accept while the test suite is red"}},
 		{"bad scope", &revise, []Decision{{"general-1.1", "fix", "x"}, {"slop-1.1", "fix", "x"}},
 			[]ScopeAddition{{"../x", "r"}, {"*.go", "r"}, {"keys/a.pem", "r"}}, green,
 			[]string{"not inside the repository", "looks like a glob", "is protected"}},

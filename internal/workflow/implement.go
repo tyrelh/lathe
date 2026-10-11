@@ -188,10 +188,8 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		return "", err
 	})
 
-	// Discovery is a claim; green and red are a measurement. The tester
-	// reassesses the command every round, but only the exit code from Command
-	// is evidence: a tester that could report the suite green could end a run
-	// green by saying so.
+	// The tester reassesses the command every round, runs it and reports its
+	// exit code, which is the evidence of green or red.
 	workers := []run.Worker{{Name: "test", Owner: "tester", Run: func(e *run.Entry) error {
 		cur := c.v.current()
 		var out TestOutput
@@ -199,21 +197,13 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			return err
 		}
 		cur.Tests = &out
-		tail, err := e.Command(*out.Command)
-		var red *run.CommandFailure
-		var environment *run.EnvironmentError
-		switch {
-		case err == nil:
-			cur.Measured = &Measured{Command: *out.Command, Green: true, Result: "passed", Tail: tail}
-		case errors.As(err, &environment):
-			cur.Measured = &Measured{Command: *out.Command, Result: err.Error(), Tail: tail}
-			return err
-		case errors.As(err, &red):
-			// A red suite is a result for the adjudicator, not a failed worker.
-			cur.Measured = &Measured{Command: *out.Command, Result: err.Error(), Tail: tail}
-			e.Failed(err)
+		switch code := *out.ExitCode; {
+		case code == 0:
+		case code == 126 || code == 127:
+			return &run.EnvironmentError{ExitCode: code}
 		default:
-			return err // denied or timed out: no measurement, so retry
+			// A red suite is a result for the adjudicator, not a failed worker.
+			e.Failed(&run.CommandFailure{ExitCode: code})
 		}
 		return nil
 	}}}
@@ -277,7 +267,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		findings := cur.findings()
 		var out AdjudicationOutput
 		err := e.Call(&out, adjudicationRequest(c, r.Request, e.Round+1, e.SendBacksLeft),
-			run.ArtifactsExist, run.FilesNonEmpty, Adjudicated(findings, cur.Measured, r.Protected()))
+			run.ArtifactsExist, run.FilesNonEmpty, Adjudicated(findings, cur.Tests, r.Protected()))
 		if err != nil {
 			return "", err
 		}
@@ -291,8 +281,8 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		if e.SendBacksLeft == 0 {
 			c.v.Unresolved = fixes
 			reason := fmt.Sprintf("%d send-backs spent; %d findings unresolved", maxRepairs, len(fixes))
-			if !cur.Measured.Green {
-				reason += "; " + cur.Measured.Result
+			if !cur.Tests.Green() {
+				reason += "; " + cur.Tests.Result()
 			}
 			c.v.settle(outcomeUnresolved, reason)
 			return "", writeResult(r.Dir, "validation.json", &c.v)

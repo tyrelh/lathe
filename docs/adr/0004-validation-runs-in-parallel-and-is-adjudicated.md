@@ -63,3 +63,9 @@ The reviewers and the adjudicator judge code quality and correctness, and nothin
 The adjudicator now lists such checks in a required `verification` key instead. Every pull request `build` opens, accepted or draft, carries them as a `## Needs manual verification` checklist taken from the last adjudication; when the list is empty the body is unchanged. Handing work to a person is no longer only what a draft does: an accepted change can hand over the checks automation could not make.
 
 The gate gains a fourth refusal to back this up: a revise while the measured suite is green and no finding is decided fix. That is the one combination with nothing for the builder to do, so the adjudicator must accept. It is the first short-circuit for rounds that make no progress, and the only one: an adjudicator that keeps deciding the same finding fix still spends the whole budget.
+
+## Since: the tester's run is the evidence
+
+Lathe no longer runs the suite itself. The tester already ran the command it discovered, and lathe then ran it again with `Handle.Command` as the only evidence of green, so every round paid for the suite twice, one run after the other, on the critical path of `validate`. A run against lathe itself spent about 104 seconds in each.
+
+The tester now reports the command's `exit_code` and the end of its `output` alongside the command, and that report is the evidence: zero is green, 126 or 127 is an environment failure, and anything else is a red suite for the adjudicator. The gate still refuses an acceptance while the suite is red; it reads the tester's exit code instead of lathe's. The tester's run happens under its own bash guard and agent timeout rather than `command_timeout`. This trusts the tester to report its run accurately, which the earlier design deliberately did not.
