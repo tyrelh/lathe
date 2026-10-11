@@ -806,7 +806,7 @@ async function overview(current) {
   const modelRow = (m, i) => `
     <tr data-row="${esc(JSON.stringify([m.provider, m.model]))}">
       <td class="dim">${i + 1}</td>
-      <td>${esc((m.provider || 'unknown') + '/' + (m.model || 'unknown'))}</td>
+      <td><span style="display:flex;align-items:center;gap:8px"><span class="model-dot" aria-hidden="true" style="--model-color:${modelColour(m.model || 'unknown')}"></span>${esc((m.provider || 'unknown') + '/' + (m.model || 'unknown'))}</span></td>
       <td class="num cost">${money(m.cost)}</td>
       <td class="num dim">${pct(m.share)}</td>
       <td class="num dim lo">${count(m.phases)} phase${m.phases === 1 ? '' : 's'}</td>
@@ -814,7 +814,7 @@ async function overview(current) {
   const providerRow = (p, i) => `
     <tr data-row="${esc(p.provider)}">
       <td class="dim">${i + 1}</td>
-      <td>${esc(p.provider || 'unknown')}</td>
+      <td><span style="display:flex;align-items:center;gap:8px"><span class="model-dot" aria-hidden="true" style="--model-color:${providerColour(p.provider)}"></span>${esc(p.provider || 'unknown')}</span></td>
       <td class="num cost">${money(p.cost)}</td>
       <td class="num dim">${pct(p.share)}</td>
       <td class="num dim lo">${count(p.phases)} phase${p.phases === 1 ? '' : 's'}</td>
