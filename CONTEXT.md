@@ -9,7 +9,7 @@ for the engineer to inspect.
 One execution of a workflow for an engineer's request against a repository.
 
 **Iteration**:
-One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteratifon 0; each revision adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
+One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteration 0; each revision adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
 
 **Revision**:
 A further change requested against a build whose latest iteration succeeded and whose pull request is still open. It is the next iteration of the same run, not a new run: planned, validated and published to the same pull request, and published only if accepted.
@@ -59,8 +59,7 @@ The adjudicator's decision on one validation round: every finding fixed or dismi
 How validation ended. Accepted needs a usable report from every worker and a green suite from the tester. Unresolved is findings still to fix after the last send-back; incomplete is a worker that exhausted its retries; invalidated is source that changed while the workers ran. `environment_failed` is a reported test exit of 126 or 127: terminal after one tester attempt, with command/result/output evidence retained and already-running reviewers joined before cleanup. Unlike retryable worker failures and publishable incomplete validation, environment failures receive no adjudication, repairs, commit, push or pull request. `build` publishes unresolved and incomplete work as a draft pull request and still fails the run.
 
 **Agent**:
-A role assigned part of a workflow, with tools and instructions appropriate to
-that role.
+A role lathe runs in the harness, with its own tools, instructions and configuration. Most agents do part of a workflow; scorers grade a run after it.
 
 **Agent configuration**:
 What one agent is told and runs on, held per machine and owned by the engineer: its system and user prompts, provider, model, thinking, timeout, tiers and whether it receives the repository's instructions. It is the only source of these, captured at submission, so an edit only changes work submitted after it. Every agent's configuration is complete on its own; there is no shared defaults layer and no per-repository layer.
@@ -140,3 +139,10 @@ the review limit may still have unresolved feedback and is not reviewer-approved
 **Correction**:
 A request for an agent to repair an invalid report or an unsupported claim
 within its current phase; it is separate from a plan send-back or a builder repair. A group worker's corrections and retries share one allowance.
+
+**Scorer**:
+An agent that grades a finished build run with a pull request against one rubric, outside the run. Each scorer judges the whole run from its own angle, such as plan quality or review signal, and is started by the engineer.
+_Avoid_: judge, grader
+
+**Score**:
+One scorer's 0-100 judgment of a run, with its rationale. A run has at most one score per scorer; scoring again replaces it. Scoring is not a phase: it never changes the run's state, outcome or cost.
