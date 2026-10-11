@@ -754,6 +754,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	r.db.Event(r.ID, h.phase.ID, "input", a.Name, map[string]any{
 		"attempt": attempt, "system": opts.SystemPrompt, "prompt": prompt,
 		"session_id": opts.SessionID, "allow": scope.Allow,
+		"thinking": opts.Thinking,
 	})
 
 	// Spend is persisted per completed model response rather than per attempt,

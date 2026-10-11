@@ -517,6 +517,53 @@ func TestCallCorrectsInTheSameSession(t *testing.T) {
 	}
 }
 
+// Every input event records the thinking level passed to Pi, including on a
+// correction, and an empty level stays empty.
+func TestInputRecordsThinking(t *testing.T) {
+	for _, level := range []string{"high", ""} {
+		bin, argsFile := stubPi(t, reply(t, "no json"), reply(t, envelope("corrected")))
+		r := newRunWith(t, bin, func(o *Options) {
+			a := o.Snapshot.Agents["scout"]
+			a.Thinking = level
+			o.Snapshot.Agents["scout"] = a
+		})
+		var out scoutOutput
+		if err := r.Phase(Params{Name: "scout", Owner: "scout"},
+			func(h *Handle) error { return h.Call(&out, "what is here") }); err != nil {
+			t.Fatal(err)
+		}
+		r.Finish(true, "")
+		db := readDB(t)
+		rows, err := db.Query(`SELECT json_extract(payload, '$.thinking') FROM events WHERE run_id = ? AND type = 'input' ORDER BY event_id`, r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, v)
+		}
+		rows.Close()
+		if len(got) != 2 || got[0] != level || got[1] != level {
+			t.Fatalf("thinking %q: input events recorded %q", level, got)
+		}
+		args, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := strings.Count(string(args), "--thinking\n")
+		if level == "" && n != 0 {
+			t.Fatalf("empty thinking passed --thinking:\n%s", args)
+		}
+		if level != "" && strings.Count(string(args), "--thinking\n"+level+"\n") != 2 {
+			t.Fatalf("--thinking %s not sent on both turns:\n%s", level, args)
+		}
+	}
+}
+
 // Each Pi process gets a distinct context file. A correction's latest
 // snapshot belongs to the same phase; a missing snapshot cannot reuse the
 // earlier estimate, an unreadable one is logged without failing the phase,
