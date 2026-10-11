@@ -597,7 +597,7 @@ function turnPage(key, direction) {
 function renderCosts(r) {
   const list = (rows, key) => {
     const visible = pageRows(key, rows, row => row.name);
-    return rows.length ? `<div class="cost-list" data-cost-list="${key}" style="--rows:${Math.min(2, rows.length)}"><div class="cost-list-heading"><h3 class="dim">${key}</h3>${pageControls(key)}</div><div class="paged-body" data-page-body="${key}"><ul class="model-costs">${visible.map(m => `<li style="--model-color:${m.colour}" title="${esc(m.name)}">
+    return rows.length ? `<div class="cost-list" data-cost-list="${key}" style="--rows:${Math.min(key === 'providers' ? 4 : 2, rows.length)}"><div class="cost-list-heading"><h3 class="dim">${key}</h3>${pageControls(key)}</div><div class="paged-body" data-page-body="${key}"><ul class="model-costs">${visible.map(m => `<li style="--model-color:${m.colour}" title="${esc(m.name)}">
       <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span><span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div></div>` : '';
   };
   const providers = providerCosts(), models = modelSpend();

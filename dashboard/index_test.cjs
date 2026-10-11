@@ -676,6 +676,27 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(evaluate('usage.size'), 0, 'navigating to another run resets the event cache');
   const liveEmpty = call('renderCosts', {...run, status:'running', cost:0});
   assert(liveEmpty.includes('No usage recorded yet.'), liveEmpty);
+  for (const [count, rows] of [[3, 3], [4, 4], [5, 4]]) {
+    evaluate(`usage.clear(); pagers.clear(); for (let i = 0; i < ${count}; i++) usage.set('p' + i, [{provider: 'p' + i, model: 'm', cost: 0.1}])`);
+    let html = call('renderCosts', run);
+    assert(html.includes(`data-cost-list="providers" style="--rows:${rows}"`), `${count} providers size to ${rows} rows`);
+    assert(html.includes('data-cost-list="models" style="--rows:1"'), 'models sizing is unchanged');
+    // A provider body sized to its --rows of 21px rows, as the CSS lays it out.
+    const row = Object.assign(new Element(), {getBoundingClientRect: () => ({height: 21})});
+    const pager = Object.assign(new Element(), {hidden: true});
+    const body = Object.assign(new Element(), {clientHeight: rows * 21, clientWidth: 400, dataset: {pageBody: 'providers'},
+      querySelector: () => row, parentElement: Object.assign(new Element(), {querySelector: () => pager})});
+    nodes.get('app').querySelectorAll = sel => sel === '[data-page-body]' ? [body] : [];
+    evaluate('fitPages()');
+    nodes.get('app').querySelectorAll = () => [];
+    html = call('renderCosts', run);
+    const providersHtml = html.slice(html.indexOf('data-cost-list="providers"'), html.indexOf('data-cost-list="models"'));
+    const shownRows = (providersHtml.match(/<li /g) || []).length;
+    const pagerHidden = /data-pager="providers" hidden/.test(providersHtml);
+    if (count <= 4) assert(shownRows === count && pagerHidden, `${count} providers fit without a pager`);
+    else assert(shownRows === 4 && !pagerHidden && providersHtml.includes('1–4 of 5'), `${count} providers page four at a time`);
+  }
+  evaluate('usage.clear(); pagers.clear()');
 
   // Runs: the summary says displayed versus total, and says whose numbers those are.
   context.location.hash = '#/runs';
