@@ -1,88 +1,108 @@
 package main
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/workflow"
 )
 
-// The embedded copy is the one that ships. A //go:embed pattern that missed a
-// prompt would otherwise only show up as a broken run on someone else's machine.
-func TestEmbeddedAssetsResolveTheRoster(t *testing.T) {
-	cfg, err := config.Load(Assets)
+// embedded seeds a fresh home from the embedded seed and loads it.
+func embedded(t *testing.T) config.Config {
+	t.Helper()
+	cfg, err := agentconfig.Open(t.TempDir(), Seed, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := cfg.Resolve("scout", config.Overrides{})
+	return cfg
+}
+
+// The embedded seed covers exactly the compiled agents, plus routing.
+func TestSeedCoversTheRoster(t *testing.T) {
+	dirs, err := fs.ReadDir(Seed, "agents")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(a.SystemPrompt, "You are the scout") || !strings.Contains(a.UserPrompt, "## Report") {
-		t.Fatal("the scout's prompts are not in the binary")
+	if len(dirs) != len(config.Permissions) {
+		t.Fatalf("seed has %d agent dirs; the binary knows %d agents", len(dirs), len(config.Permissions))
+	}
+	for _, p := range config.Permissions {
+		for _, f := range []string{"config.yaml", "system.md", "user.md"} {
+			if _, err := fs.Stat(Seed, config.AgentFile(p.Name, f)); err != nil {
+				t.Errorf("seed: %v", err)
+			}
+		}
+	}
+	for _, r := range config.Routes {
+		if _, err := fs.Stat(Seed, r.Key); err != nil {
+			t.Errorf("seed: %v", err)
+		}
 	}
 }
 
-func TestEmbeddedBuilder(t *testing.T) {
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := cfg.Resolve("builder", config.Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(a.Tools, ",") != "read,grep,find,ls,write,edit" {
-		t.Fatalf("builder tools: %v", a.Tools)
-	}
-	if !strings.Contains(a.SystemPrompt, "You are the builder") || !strings.Contains(a.UserPrompt, `"needed"`) {
-		t.Fatal("builder prompts missing")
-	}
-}
-
-func TestEmbeddedTester(t *testing.T) {
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := cfg.Resolve("tester", config.Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(a.Tools, ",") != "read,grep,find,ls,bash" {
-		t.Fatalf("tester tools: %v", a.Tools)
-	}
-	if !strings.Contains(a.SystemPrompt, "You are the tester") || !strings.Contains(a.UserPrompt, `"command"`) {
-		t.Fatal("tester prompts missing")
+// Each reviewer has its own copy of the code-review report contract.
+func TestReviewersHaveTheirOwnUserPrompt(t *testing.T) {
+	var first string
+	for _, name := range []string{"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial"} {
+		b, err := fs.ReadFile(Seed, config.AgentFile(name, "user.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == "" {
+			first = string(b)
+		}
+		if string(b) != first || !strings.Contains(first, `"findings"`) {
+			t.Errorf("%s user prompt differs from the shared contract", name)
+		}
 	}
 }
 
-func TestEmbeddedPlanReviewer(t *testing.T) {
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		t.Fatal(err)
+func TestEmbeddedSettings(t *testing.T) {
+	cfg := embedded(t)
+	for name, want := range map[string]string{
+		"scout": "openai-codex/gpt-6-sol/low/5m0s", "planner": "anthropic/claude-opus-5-5/medium/10m0s",
+		"builder": "anthropic/claude-opus-5-5/low/10m0s", "tester": "openai-codex/gpt-6-luna/low/5m0s",
+		"plan-reviewer": "openai-codex/gpt-6-sol/medium/10m0s", "pr-author": "openai-codex/gpt-6-luna/low/5m0s",
+	} {
+		a, err := cfg.Resolve(name, config.Overrides{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := a.Provider + "/" + a.Model + "/" + a.Thinking + "/" + a.Deadline.String(); got != want {
+			t.Errorf("%s = %s; want %s", name, got, want)
+		}
 	}
-	a, err := cfg.Resolve("plan-reviewer", config.Overrides{})
-	if err != nil {
-		t.Fatal(err)
+	for name, want := range map[string]bool{"builder": true, "brancher": false, "committer": false, "pr-author": false} {
+		if a, _ := cfg.Resolve(name, config.Overrides{}); a.WantsRepoInstructions() != want {
+			t.Errorf("%s: repo instructions = %v", name, a.WantsRepoInstructions())
+		}
 	}
-	if a.Model != "kimi-k3" || strings.Join(a.Tools, ",") != "read,grep,find,ls,web_read" {
-		t.Fatalf("reviewer configuration: %+v", a)
-	}
-	if !strings.Contains(a.SystemPrompt, "You are the plan-reviewer") || !strings.Contains(a.UserPrompt, `"feedback"`) {
-		t.Fatal("reviewer prompts missing")
+	for name, want := range map[string]struct{ models, top string }{
+		"planner": {"claude-sonnet-5-5,claude-opus-5-5,claude-opus-5-5", "xhigh"},
+		"builder": {"claude-sonnet-5-5,claude-opus-5-5,claude-opus-5-5", "medium"},
+	} {
+		s, err := cfg.Capture([]string{name}, config.Overrides{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := s.Routing[name]
+		var got []string
+		for _, tier := range rt.Tiers {
+			got = append(got, tier.Resolved.Model)
+		}
+		if strings.Join(got, ",") != want.models || rt.Default() != 1 || rt.Tiers[2].Resolved.Thinking != want.top || rt.Instructions == "" {
+			t.Errorf("%s tiers = %v", name, got)
+		}
 	}
 }
 
-// Every workflow's whole roster resolves out of the embedded assets, which is
-// what catches an agent added to a graph with no row in roster.toml or no prompt
-// file — a failure that would otherwise wait for someone to run that workflow.
+// Every workflow's whole roster resolves out of the seed, which is what
+// catches an agent added to a graph with no seed files.
 func TestEmbeddedRostersResolve(t *testing.T) {
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := embedded(t)
 	for name, agents := range workflow.Agents {
 		snapshot, err := cfg.Capture(agents, config.Overrides{})
 		if err != nil {
@@ -100,5 +120,9 @@ func TestEmbeddedRostersResolve(t *testing.T) {
 	}
 	if _, ok := workflow.Graphs["build"]; !ok || len(workflow.Agents["build"]) != 12 {
 		t.Fatalf("build roster: %v", workflow.Agents["build"])
+	}
+	a, _ := cfg.Resolve("builder", config.Overrides{})
+	if strings.Join(a.Tools, ",") != "read,grep,find,ls,write,edit" {
+		t.Fatalf("builder tools: %v", a.Tools)
 	}
 }

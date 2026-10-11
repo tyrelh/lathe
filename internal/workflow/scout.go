@@ -53,7 +53,7 @@ var Agents = map[string][]string{
 // because encoding/json zero-fills anything absent — a plain string cannot
 // tell "the agent said nothing" from "the agent said empty".
 //
-// This struct and the `## Report` block of prompts/scout/user.md are one
+// This struct and the `## Report` block of seed/agents/scout/user.md are one
 // contract in two files. Changing either alone is the usual way this breaks.
 type ScoutOutput struct {
 	Summary  *string   `json:"summary"`

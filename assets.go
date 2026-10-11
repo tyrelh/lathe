@@ -1,10 +1,23 @@
 package main
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
-// Assets is everything lathe needs to read about itself: the agent roster and
-// the prompts. Compiling them in means there is no install root to resolve and
-// no way to end up reading a half-installed copy's prompts.
+// assets holds the agent configuration seed, laid out as it is on disk under
+// ~/.lathe. It is only ever copied there; capture reads the copy.
 //
-//go:embed roster.toml prompts
-var Assets embed.FS
+//go:embed seed
+var assets embed.FS
+
+// Seed is the embedded seed rooted at its top directory.
+var Seed = mustSub(assets, "seed")
+
+func mustSub(fsys fs.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}

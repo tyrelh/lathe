@@ -79,8 +79,8 @@ Before the request, not after:
 - `--issue <number|URL|owner/repo#number>` use a GitHub issue instead of a prompt for `plan`, `implement`, or `build`; bare numbers resolve against the target checkout. The worker fetches the title and body with authenticated `gh` in a traced `issue` phase after auth preflight and before planning and saves `issue.json`. Comments are not included.
 - `--repo <dir>` act on another repository
 - `--detach` record the request, print the run ID, exit 0
-- `--model`, `--provider`, `--thinking` override the roster for one run
-- `lathe.toml` at the target's root sets the same three keys for every agent, or per agent under `[agents.<name>]`; flags beat it, and a malformed file is ignored with a warning
+- `--model`, `--provider`, `--thinking` override every agent's configuration for one run, and turn routing off
+- agent configuration lives in `~/.lathe/agents/<name>/{config.yaml,system.md,user.md}` and `~/.lathe/routing/`; it is the only source, a missing or invalid file refuses the submission with the file named, and a target repository's `lathe.toml` is ignored
 
 `implement` and `build` need a clean checkout and own it until the run stops: do
 not edit files or switch branches there meanwhile. A second outstanding run of

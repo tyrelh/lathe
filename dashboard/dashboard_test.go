@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,9 +17,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
 )
+
+// seededRoster returns a fresh home seeded from the shipped seed, the seed, and
+// a roster that loads the home the way the manager does.
+func seededRoster(t *testing.T) (string, fs.FS, func() (config.Config, error)) {
+	t.Helper()
+	seed, err := fs.Sub(os.DirFS(".."), "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	return home, seed, func() (config.Config, error) { return agentconfig.Open(home, seed, "v1") }
+}
 
 // local is a request as the browser on this machine sends it: to the address
 // the dashboard listens on.
@@ -531,9 +545,9 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 	}
 }
 
-// The Agents page's two reads, against the shipped roster and prompts: the
-// list is every agent then every routing phase with no bodies, and an agent's
-// page carries the bodies as they are on disk.
+// The Agents page's two reads, against a home seeded from the shipped seed:
+// the list is every agent then every routing phase with no bodies, and an
+// agent's page carries the bodies as they are in the home.
 func TestAgentRoutes(t *testing.T) {
 	root := t.TempDir()
 	if err := trace.Init(root); err != nil {
@@ -544,8 +558,8 @@ func TestAgentRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	assets := os.DirFS("..")
-	h := handler(ro, "dev", Actions{}, Sources{Roster: func() (config.Config, error) { return config.Load(assets) }})
+	home, _, roster := seededRoster(t)
+	h := handler(ro, "dev", Actions{}, Sources{Roster: roster})
 
 	get := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -553,18 +567,33 @@ func TestAgentRoutes(t *testing.T) {
 		return w
 	}
 	type prompt struct {
-		Role       string   `json:"role"`
-		Key        string   `json:"key"`
-		Body       *string  `json:"body"`
-		SharedWith []string `json:"shared_with"`
+		Role   string  `json:"role"`
+		Key    string  `json:"key"`
+		Path   string  `json:"path"`
+		Body   *string `json:"body"`
+		Seed   *string `json:"seed"`
+		Hash   *string `json:"hash"`
+		Edited bool    `json:"edited"`
+		Drift  bool    `json:"drift"`
+	}
+	type settings struct {
+		Provider string  `json:"provider"`
+		Model    string  `json:"model"`
+		Thinking string  `json:"thinking"`
+		Timeout  string  `json:"timeout"`
+		Key      string  `json:"key"`
+		Body     *string `json:"body"`
+		Seed     *string `json:"seed"`
+		Hash     *string `json:"hash"`
 	}
 	type agent struct {
-		Name             string   `json:"name"`
-		Kind             string   `json:"kind"`
-		Routes           string   `json:"routes"`
-		RepoInstructions bool     `json:"repo_instructions"`
-		Workflows        []string `json:"workflows"`
-		Prompts          []prompt `json:"prompts"`
+		Name             string    `json:"name"`
+		Kind             string    `json:"kind"`
+		Routes           string    `json:"routes"`
+		RepoInstructions bool      `json:"repo_instructions"`
+		Workflows        []string  `json:"workflows"`
+		Config           *settings `json:"config"`
+		Prompts          []prompt  `json:"prompts"`
 	}
 
 	w := get("/api/agents")
@@ -575,7 +604,7 @@ func TestAgentRoutes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(assets)
+	cfg, err := roster()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,8 +620,10 @@ func TestAgentRoutes(t *testing.T) {
 	if len(list) != 15 || !reflect.DeepEqual(got, names) {
 		t.Fatalf("agents = %v; want %v", got, names)
 	}
-	if strings.Contains(w.Body.String(), `"body"`) {
-		t.Error("the list carries prompt bodies")
+	for _, field := range []string{`"body"`, `"seed"`, `"hash"`, `shared_with`} {
+		if strings.Contains(w.Body.String(), field) {
+			t.Errorf("the list carries %s", field)
+		}
 	}
 
 	byName := map[string]agent{}
@@ -602,10 +633,17 @@ func TestAgentRoutes(t *testing.T) {
 			t.Errorf("%s: workflows is null", a.Name)
 		}
 		for _, p := range a.Prompts {
-			if p.SharedWith == nil {
-				t.Errorf("%s %s: shared_with is null", a.Name, p.Role)
+			if p.Edited || p.Drift || p.Path != filepath.Join(home, filepath.FromSlash(p.Key)) {
+				t.Errorf("%s %s = %+v", a.Name, p.Role, p)
 			}
 		}
+		if (a.Kind == "agent") != (a.Config != nil) {
+			t.Errorf("%s config = %+v", a.Name, a.Config)
+		}
+	}
+	if c := byName["planner"].Config; c == nil || c.Provider != "anthropic" || c.Model != "claude-opus-5-5" || c.Thinking != "medium" ||
+		c.Timeout != "10m" || c.Key != "agents/planner/config.yaml" {
+		t.Errorf("planner config = %+v", c)
 	}
 	reviewers := []string{"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial"}
 	general := byName["code-review-general"]
@@ -615,19 +653,10 @@ func TestAgentRoutes(t *testing.T) {
 	}
 	for _, name := range reviewers {
 		a := byName[name]
-		if len(a.Prompts) != 2 || a.Prompts[0].Role != "system" || len(a.Prompts[0].SharedWith) != 0 {
+		// Each reviewer has its own user prompt; none is shared.
+		if len(a.Prompts) != 2 || a.Prompts[0].Role != "system" || a.Prompts[1].Role != "user" ||
+			a.Prompts[1].Key != "agents/"+name+"/user.md" {
 			t.Errorf("%s prompts = %+v", name, a.Prompts)
-			continue
-		}
-		user := a.Prompts[1]
-		var others []string
-		for _, r := range reviewers {
-			if r != name {
-				others = append(others, r)
-			}
-		}
-		if user.Role != "user" || user.Key != "prompts/code-review/user.md" || !reflect.DeepEqual(user.SharedWith, others) {
-			t.Errorf("%s user prompt = %+v; want shared with %v", name, user, others)
 		}
 	}
 	if byName["brancher"].RepoInstructions {
@@ -639,7 +668,7 @@ func TestAgentRoutes(t *testing.T) {
 	} {
 		a := byName[name]
 		if a.Kind != "routing" || a.Routes != want.Routes || a.RepoInstructions || !reflect.DeepEqual(a.Workflows, want.Workflows) ||
-			len(a.Prompts) != 1 || a.Prompts[0].Role != "instructions" || a.Prompts[0].Key != "prompts/routing/"+want.Routes+".md" {
+			len(a.Prompts) != 1 || a.Prompts[0].Role != "instructions" || a.Prompts[0].Key != "routing/"+want.Routes+".md" {
 			t.Errorf("%s = %+v", name, a)
 		}
 	}
@@ -654,14 +683,20 @@ func TestAgentRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, p := range d.Prompts {
-			b, err := os.ReadFile(filepath.Join("..", p.Key))
+			b, err := os.ReadFile(filepath.Join(home, p.Key))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if p.Body == nil || *p.Body != string(b) {
+			if p.Body == nil || *p.Body != string(b) || p.Seed == nil || *p.Seed != string(b) || p.Hash == nil || *p.Hash != config.Hash(string(b)) {
 				t.Errorf("%s %s body does not match %s", name, p.Role, p.Key)
 			}
-			d.Prompts[i].Body = nil
+			d.Prompts[i].Body, d.Prompts[i].Seed, d.Prompts[i].Hash = nil, nil, nil
+		}
+		if d.Config != nil {
+			if d.Config.Body == nil || d.Config.Hash == nil || *d.Config.Hash != config.Hash(*d.Config.Body) {
+				t.Errorf("%s config = %+v", name, d.Config)
+			}
+			d.Config.Body, d.Config.Seed, d.Config.Hash = nil, nil, nil
 		}
 		if want := byName[name]; !reflect.DeepEqual(d, want) {
 			t.Errorf("%s detail = %+v; want the list row %+v plus bodies", name, d, want)

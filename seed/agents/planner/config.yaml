@@ -1,0 +1,24 @@
+# Read the repo and produce the plan the builder implements; change nothing.
+# A large context window: a plan is only as good as how much of the repo
+# the planner got to read, and planning is the cheap phase to spend that on.
+provider: anthropic
+model: claude-opus-5-5
+thinking: medium
+timeout: 10m
+# Routing tiers, cheapest first. A tier sets only what differs from the agent's
+# own configuration. The default tier matches the model above, so a routing
+# failure lands where an unrouted run would.
+tiers:
+  - when: Small, well-specified request; the files to change and the approach are obvious
+    provider: anthropic
+    model: claude-sonnet-5-5
+    thinking: medium
+  - when: Typical fix or feature in one area; the planner has to read around to choose an approach
+    provider: anthropic
+    model: claude-opus-5-5
+    thinking: medium
+    default: true
+  - when: Cross-cutting or open-ended request, design decisions, or an issue that leaves the approach unclear
+    provider: anthropic
+    model: claude-opus-5-5
+    thinking: xhigh

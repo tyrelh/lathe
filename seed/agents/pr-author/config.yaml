@@ -1,0 +1,8 @@
+# Write the pull request title and body from the repository's template and its
+# recently merged pull requests.
+provider: openai-codex
+model: gpt-6-luna
+thinking: low
+timeout: 5m
+# Reads AGENTS.md itself with the rest of its convention sources.
+repo_instructions: false

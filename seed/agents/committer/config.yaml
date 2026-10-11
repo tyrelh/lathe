@@ -1,0 +1,7 @@
+# Write the commit message for the implemented change.
+provider: openai-codex
+model: gpt-6-luna
+thinking: low
+timeout: 5m
+# Reads AGENTS.md itself with the rest of its convention sources.
+repo_instructions: false

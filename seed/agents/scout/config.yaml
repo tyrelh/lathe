@@ -1,0 +1,6 @@
+# Find and report where things live; change nothing.
+provider: openai-codex
+model: gpt-6-sol
+thinking: low
+# A model that stalls otherwise hangs lathe until someone notices.
+timeout: 5m

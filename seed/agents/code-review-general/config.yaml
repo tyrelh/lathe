@@ -1,0 +1,5 @@
+# Correctness, the request and plan, repository conventions and tests.
+provider: openai-codex
+model: gpt-6-sol
+thinking: low
+timeout: 10m

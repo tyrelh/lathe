@@ -505,7 +505,7 @@ function pageShell(page) {
     + `<div class="ranking-column">` + panel('rank-models', 'top models by spend')
     + panel('rank-providers', 'top providers by spend') + '</div></div></div>';
   if (page === 'runs' || page === 'projects' || page === 'agents') return `<div class="page"><div id="page-summary" class="card page-summary"></div>${panel('list-body', {runs: 'latest runs', projects: 'projects by spend', agents: 'agents and routing phases'}[page])}</div>`;
-  if (page === 'agent') return `<div class="page"><div id="agent-head" class="card page-summary"></div>${panel('agent-prompts', 'prompts')}</div>`;
+  if (page === 'agent') return `<div class="page"><div id="agent-head" class="card page-summary"></div>${panel('agent-config', 'configuration')}${panel('agent-prompts', 'prompts')}</div>`;
   return '';
 }
 function ensurePage(page) {
@@ -930,14 +930,15 @@ const agentLinks = names => names.map(n => `<a href="${esc(agentHref(n))}">${esc
 const workflowNames = ws => ws?.length ? esc(ws.join(', ')) : '<span class="dim">none</span>';
 const agentRow = a => {
   const href = esc(agentHref(a.name));
-  const badge = (a.prompts || []).some(p => p.overridden)
-    ? ' <span class="badge" title="A prompt override is active">edited</span>' : '';
+  const files = [...(a.prompts || []), ...(a.config ? [a.config] : [])];
+  const badge = files.some(f => f.drift)
+    ? ' <span class="badge" title="An edited file whose seed has changed since">drift</span>'
+    : files.some(f => f.edited) ? ' <span class="badge" title="A file differs from its seed">edited</span>' : '';
   return `<tr class="agent" data-row="${esc(a.name)}" onclick="location.hash='${href}'">
     <td><a data-focus="${esc('agent-' + a.name)}" href="${href}">${esc(a.name)}</a>${badge}</td>
     <td class="dim">${esc(a.kind)}</td>
     <td>${workflowNames(a.workflows)}</td>
-    <td>${(a.prompts || []).map(p => esc(p.role) + (p.shared_with?.length
-      ? ` <span class="dim" title="${esc('Shared with ' + p.shared_with.join(', '))}">shared</span>` : '')).join(' · ')}</td>
+    <td>${(a.prompts || []).map(p => esc(p.role)).join(' · ')}</td>
   </tr>`;
 };
 
@@ -979,21 +980,98 @@ function promptEditor(p) {
   return `<label for="${esc(id)}">${esc(PROMPT_LABEL[p.role] || p.role)}</label>
     <textarea id="${esc(id)}" ${role} data-focus="${esc(id)}" spellcheck="false" rows="${Math.min(40, body.split('\n').length + 1)}" oninput="promptInput(this)">\n${esc(body)}</textarea>
     <div class="actions">${button('save', 'savePrompt', 'Save')}
-      ${button('discard', 'discardPrompt', 'Discard')}${p.overridden ? button('reset', 'resetPrompt', 'Reset to built-in') : ''}</div>`;
+      ${button('discard', 'discardPrompt', 'Discard')}${p.edited ? button('reset', 'resetPrompt', 'Reset to seed') : ''}</div>`;
 }
 // promptStatus renders box b's last write outcome, with the current version
 // to load after a conflict.
 const promptStatus = b => (b.status || '') + (!b.conflict ? ''
   : ` <button type="button" data-role="${esc(b.p.role)}" data-focus="${esc('prompt-' + b.p.role + '-load')}" onclick="loadCurrent(this.dataset.role)">Load current version</button>`);
-// promptInfo renders where prompt p's override lives, who shares it and, for
-// a user prompt, what is added to it at run time.
+// lineDiff returns b against a, one line per entry: "  " kept, "- " only in
+// a, "+ " only in b.
+function lineDiff(a, b) {
+  const x = a.split('\n'), y = b.split('\n'), n = x.length, m = y.length;
+  const L = Array.from({length: n + 1}, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (x[i] === y[j]) { out.push('  ' + x[i]); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push('- ' + x[i++]);
+    else out.push('+ ' + y[j++]);
+  }
+  while (i < n) out.push('- ' + x[i++]);
+  while (j < m) out.push('+ ' + y[j++]);
+  return out.join('\n');
+}
+// fileInfo renders where file f lives, whether it is edited or has drifted,
+// and, when its body and seed are loaded, its changes from the seed.
+function fileInfo(f) {
+  const state = f.drift ? ' <span class="badge" title="Edited, and its seed has changed since">drift</span>'
+    : f.edited ? ' <span class="badge" title="Differs from its seed">edited</span>' : ' <span class="dim">(seed)</span>';
+  const diff = f.edited && f.seed !== undefined && f.body !== undefined
+    ? `<details data-seed="${esc(lf(f.seed))}" data-body="${esc(lf(f.body))}" ontoggle="seedDiff(this)"><summary>Changes from the seed</summary><pre class="diff"></pre></details>` : '';
+  return `<p class="dim"><code>${esc(f.path || f.key)}</code>${state}</p>${diff}`;
+}
+// seedDiff fills an opened panel once with its changes from the seed.
+function seedDiff(panel) {
+  if (!panel.open) return;
+  panel.querySelector('pre').textContent = lineDiff(panel.dataset.seed, panel.dataset.body);
+  panel.ontoggle = null;
+}
+// promptInfo renders where prompt p lives, its drift and, for a user prompt,
+// what is added to it at run time.
 function promptInfo(p, repoInstructions) {
-  const where = !p.override_path ? `Built-in <code>${esc(p.key)}</code>`
-    : `Override: <code>${esc(p.override_path)}</code> ` + (p.overridden ? '(active)' : `(not set, using built-in <code>${esc(p.key)}</code>)`);
   const hint = p.role !== 'user' ? '' : '<p class="dim"><code>{{request}}</code> is replaced by the request.'
     + (repoInstructions ? ' The repo’s AGENTS.md is prepended on the first turn.' : '') + '</p>';
-  return `<p class="dim">${where}</p>`
-    + (p.shared_with?.length ? `<p class="dim">Shared with ${agentLinks(p.shared_with)}</p>` : '') + hint;
+  return fileInfo(p) + hint;
+}
+
+const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+// configBox is the open agent's config.yaml draft: {c, provider, model,
+// thinking, saving, status, error}.
+let configBox = null;
+// configEditor returns the provider, model and thinking controls for box b.
+function configEditor(b) {
+  if (!b) return '<p class="dim">A routing phase has no configuration of its own.</p>';
+  const field = (k, label) => `<label for="config-${k}">${label}</label><input id="config-${k}" data-key="${k}" value="${esc(b[k])}" oninput="configInput(this)">`;
+  const options = THINKING.map(t => `<option${t === b.thinking ? ' selected' : ''}>${t}</option>`).join('');
+  return fileInfo(b.c) + field('provider', 'Provider') + field('model', 'Model')
+    + `<label for="config-thinking">Thinking</label><select id="config-thinking" data-key="thinking" onchange="configInput(this)">${options}</select>`
+    + `<p class="dim">Timeout ${esc(b.c.timeout)}. Timeout, tiers and repo_instructions are edited in the file.</p>`
+    + `<div class="actions"><button type="button" onclick="saveConfig()"${b.saving ? ' disabled' : ''}>Save</button></div>`
+    + `<p role="status" class="${b.error ? 'fail' : ''}">${b.status || ''}</p>`;
+}
+function drawConfig() { swap($('agent-config'), configEditor(configBox)); }
+function configInput(el) {
+  if (configBox) configBox[el.dataset.key] = el.value;
+}
+// applyConfig resets the configuration draft to agent a's file.
+function applyConfig(a, status = '') {
+  configBox = a.config ? {c: a.config, provider: a.config.provider, model: a.config.model, thinking: a.config.thinking, status} : null;
+  drawConfig();
+}
+// saveConfig sends the draft with the hash its file was loaded with.
+async function saveConfig() {
+  const b = configBox;
+  if (!b || b.saving) return;
+  const current = generation;
+  Object.assign(b, {saving: true, status: 'Saving…', error: false});
+  drawConfig();
+  let status = 'Saved. Applies to runs and revisions submitted from now on.', error = false;
+  try {
+    const r = await send(`/api/agents/${encodeURIComponent(view.name)}/config`,
+      {provider: b.provider, model: b.model, thinking: b.thinking, base_hash: b.c.hash}, 'PUT');
+    if (current !== generation) return;
+    if (r.ok) { agentShown = r.body; applyConfig(r.body, status); return; }
+    status = esc(r.error); error = true;
+    if (r.status === 409 && r.body.config) b.c = r.body.config;
+  } catch (err) {
+    if (current !== generation) return;
+    status = esc(String(err)); error = true;
+  }
+  Object.assign(b, {saving: false, status, error});
+  drawConfig();
 }
 
 // drawPrompts renders every box, keeping the boxes and their status lines
@@ -1050,24 +1128,20 @@ function applyAgent(a, role = '') {
 }
 
 const promptURL = role => `/api/agents/${encodeURIComponent(view.name)}/prompts/${encodeURIComponent(role)}`;
-const sharers = b => andList([agentShown.name, ...b.p.shared_with]);
 
-// savePrompt saves role's text as its prompt override, after confirming when
-// other agents share the prompt.
+// savePrompt saves role's text to its file.
 async function savePrompt(role) {
   const b = promptBoxes.get(role);
   if (!b || b.saving || !edited(b)) return;
-  if (b.p.shared_with?.length && !confirm(`Saving changes this prompt for ${sharers(b)}.`)) return;
   await writePrompt(role, 'PUT', {body: b.text, base_hash: b.p.hash}, 'Saved. Applies to runs and revisions submitted from now on.');
 }
-// resetPrompt removes role's prompt override, after confirming when the box
-// has unsaved edits or other agents share the prompt.
+// resetPrompt restores role's file to its seed, after confirming when the box
+// has unsaved edits.
 async function resetPrompt(role) {
   const b = promptBoxes.get(role);
   if (!b || b.saving) return;
-  if (edited(b) && !confirm('Reset to the built-in? Your unsaved edits to this prompt will be lost.')) return;
-  if (b.p.shared_with?.length && !confirm(`Resetting changes this prompt for ${sharers(b)}.`)) return;
-  await writePrompt(role, 'DELETE', {}, 'Reset to the built-in. Applies to runs and revisions submitted from now on.');
+  if (edited(b) && !confirm('Reset to the seed? Your unsaved edits to this prompt will be lost.')) return;
+  await writePrompt(role, 'DELETE', {base_hash: b.p.hash}, 'Reset to the seed. Applies to runs and revisions submitted from now on.');
 }
 // writePrompt sends one write for role and redraws from the reply: the
 // updated agent on success, or the refusal, with the current version to load
@@ -1083,7 +1157,7 @@ async function writePrompt(role, method, payload, success) {
     if (r.ok) applyAgent(r.body, role);
     else {
       status = esc(r.error); error = true;
-      if (r.status === 409) conflict = {body: r.body.body, hash: r.body.hash, overridden: r.body.overridden};
+      if (r.status === 409) conflict = {body: r.body.body, hash: r.body.hash, edited: r.body.edited};
     }
   } catch (err) {
     if (current !== generation) return;
@@ -1106,8 +1180,8 @@ function discardPrompt(role) {
 function loadCurrent(role) {
   const b = promptBoxes.get(role);
   if (!b?.conflict || b.saving) return;
-  const {body, hash, overridden} = b.conflict;
-  promptBoxes.set(role, {p: {...b.p, body, hash, overridden}, text: lf(body), status: 'Loaded the current version.'});
+  const {body, hash, edited} = b.conflict;
+  promptBoxes.set(role, {p: {...b.p, body, hash, edited}, text: lf(body), status: 'Loaded the current version.'});
   drawBox(role);
 }
 
@@ -1126,7 +1200,8 @@ async function agent(current) {
   ensurePage('agent');
   swap($('agent-head'), summaryRow(`<a data-focus="all-agents" href="#/agents">&larr; all agents</a><h2>${esc(a.name)}</h2>
     <p class="dim">${kind} · workflows: ${workflowNames(a.workflows)}</p>
-    <p class="dim">Edits are saved as prompt overrides on this machine. Each run captures its prompts when it is submitted.</p>`, ''));
+    <p class="dim">Edits are saved to ~/.lathe on this machine. Each run captures its configuration when it is submitted.</p>`, ''));
+  applyConfig(a);
   applyAgent(a);
 
   bar.textContent = `Agents · ${a.name} · ${a.kind}`;

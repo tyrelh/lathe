@@ -15,7 +15,7 @@ import (
 // an empty one.
 //
 // Files is the load-bearing key. It is the builder's write scope, so this
-// struct and the `## The file list` block of prompts/planner/user.md are one
+// struct and the `## The file list` block of seed/agents/planner/user.md are one
 // contract in two files.
 type PlanOutput struct {
 	Summary *string   `json:"summary"`

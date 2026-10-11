@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/workspace"
@@ -68,14 +70,26 @@ func repo(t *testing.T) string {
 	return dir
 }
 
+// seeded loads the shipped seed from a fresh home, without routing tiers.
+func seeded(t *testing.T) config.Config {
+	t.Helper()
+	seed, err := fs.Sub(os.DirFS(filepath.Join("..", "..")), "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := agentconfig.Open(t.TempDir(), seed, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Tiers = nil
+	return cfg
+}
+
 // queue records a run the way the CLI does and dispatches it the way the
 // manager does, returning what the worker is launched with.
 func queue(t *testing.T, dataRoot, dir, workflow string) (db *trace.DB, runID, attemptID string) {
 	t.Helper()
-	cfg, err := config.Load(os.DirFS(filepath.Join("..", "..")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := seeded(t)
 	agents := map[string][]string{"scout": {"scout"}, "build": {"planner", "plan-reviewer", "builder", "tester"}}[workflow]
 	roster, err := cfg.Capture(agents, config.Overrides{})
 	if err != nil {

@@ -1,0 +1,6 @@
+# Reassess and exercise the test command every validation round; lathe
+# independently verifies its exit.
+provider: openai-codex
+model: gpt-6-luna
+thinking: low
+timeout: 5m

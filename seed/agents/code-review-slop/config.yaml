@@ -1,0 +1,5 @@
+# Unneeded complexity, with the same authority as the other three reviewers.
+provider: openai-codex
+model: gpt-6-sol
+thinking: medium
+timeout: 10m

@@ -1,0 +1,5 @@
+# OWASP Top 10 and whatever else crosses this application's trust boundaries.
+provider: openai-codex
+model: gpt-6-sol
+thinking: low
+timeout: 10m

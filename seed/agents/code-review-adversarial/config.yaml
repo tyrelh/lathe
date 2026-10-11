@@ -1,0 +1,7 @@
+# Tries to break the change: failure paths, partial failure, races, stale state
+# and degraded dependencies. Its system prompt is adapted from OpenAI's
+# adversarial-review.md in openai/codex-plugin-cc (Apache-2.0).
+provider: openai-codex
+model: gpt-6-sol
+thinking: low
+timeout: 10m
