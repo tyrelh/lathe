@@ -266,16 +266,17 @@ assert(!/class="block[^>]*data-tooltip-at/.test(html), 'blocks are not pointer-a
 {
   const track = new Element(), other = new Element(), blockEl = new Element();
   track.dataset = {tooltip: 'plan\nInvocations: 2', tooltipKey: 'row-plan', tooltipAt: 'pointer'};
-  track.closest = () => track; other.closest = () => other;
+  track.closest = () => track; other.closest = () => null;
   track.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
   listeners.get('pointerover')({target: track, pointerType: 'mouse', clientX: 200, clientY: 100});
+  assert.equal(tip.style.pointerEvents, 'none');
   assert.equal(tip.style.left, '212px'); assert.equal(tip.style.top, '118px');
   listeners.get('pointermove')({target: track, pointerType: 'mouse', clientX: 300, clientY: 150});
   assert.equal(tip.style.left, '312px'); assert.equal(tip.style.top, '168px');
   listeners.get('pointermove')({target: track, pointerType: 'mouse', clientX: 700, clientY: 550});
   assert.equal(tip.style.left, '492px'); assert.equal(tip.style.top, '424px');
   listeners.get('pointermove')({target: other, pointerType: 'mouse', clientX: 50, clientY: 50});
-  assert.equal(tip.style.left, '492px', 'other targets do not move the tooltip');
+  assert.equal(tip.style.left, '492px', 'a non-target area does not move the tooltip');
   const fresh = new Element();
   fresh.dataset = {...track.dataset};
   fresh.getBoundingClientRect = () => ({left: 0, top: 0, bottom: 5});
@@ -289,7 +290,113 @@ assert(!/class="block[^>]*data-tooltip-at/.test(html), 'blocks are not pointer-a
   blockEl.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
   listeners.get('pointerover')({target: blockEl, pointerType: 'mouse', clientX: 200, clientY: 100});
   assert.equal(tip.style.left, '10px'); assert.equal(tip.style.top, '36px');
+  assert.equal(tip.style.pointerEvents, '');
   call('tooltip.hide');
+}
+{
+  tip.getBoundingClientRect = () => ({width: 300, height: 120});
+  context.innerWidth = 800; context.innerHeight = 600;
+  const over = (target, x, y) => listeners.get('pointerover')({target, pointerType: 'mouse', clientX: x, clientY: y});
+  const move = (target, x, y) => listeners.get('pointermove')({target, pointerType: 'mouse', clientX: x, clientY: y});
+  const track = new Element(), blockEl = new Element(), gap = new Element();
+  track.dataset = {tooltip: 'plan totals', tooltipKey: 'row-plan', tooltipAt: 'pointer'};
+  track.closest = () => track;
+  blockEl.dataset = {tooltip: '#1 plan', tooltipKey: 'phase-c1'};
+  blockEl.closest = () => blockEl;
+  blockEl.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
+  gap.closest = () => null;
+  // (1) pointermove reshows a hidden tooltip.
+  over(track, 200, 100);
+  listeners.get('scroll')({target: new Element()});
+  assert.equal(tip.hidden, true);
+  move(track, 250, 120);
+  assert.equal(tip.hidden, false, 'pointermove reshows the tooltip');
+  assert.equal(tip.style.left, '262px'); assert.equal(tip.style.top, '138px');
+  // (2) Escape stays dismissed until the pointer leaves the target.
+  listeners.get('keydown')({key: 'Escape'});
+  assert.equal(tip.hidden, true);
+  move(track, 260, 120);
+  assert.equal(tip.hidden, true, 'escape stays dismissed on move');
+  const twin = new Element();
+  twin.dataset = {...track.dataset};
+  twin.closest = () => twin;
+  move(twin, 260, 120);
+  assert.equal(tip.hidden, true, 'escape stays dismissed across redraws');
+  over(gap, 0, 0);
+  move(track, 260, 120);
+  assert.equal(tip.hidden, false);
+  assert.equal(tip.style.left, '272px'); assert.equal(tip.style.top, '138px');
+  // (3) Leaving a block for the row defers the switch.
+  over(blockEl, 0, 0);
+  assert.equal(tip.textContent, '#1 plan');
+  listeners.get('pointerout')({target: blockEl, relatedTarget: track});
+  over(track, 200, 100);
+  move(track, 220, 100);
+  assert.equal(tip.textContent, '#1 plan', 'the block tooltip lingers');
+  assert(evaluate('tooltip.timer !== null'));
+  call('tooltip.settle');
+  assert.equal(tip.textContent, 'plan totals');
+  assert.equal(tip.style.left, '232px'); assert.equal(tip.style.top, '118px');
+  assert.equal(tip.style.pointerEvents, 'none');
+  // (4) Moving into the block tooltip keeps it.
+  over(blockEl, 0, 0);
+  listeners.get('pointerout')({target: blockEl, relatedTarget: track});
+  over(track, 200, 100);
+  tip.contains = el => el === tip;
+  listeners.get('pointerout')({target: track, relatedTarget: tip});
+  listeners.get('pointerover')({target: tip, pointerType: 'mouse'});
+  assert(evaluate('tooltip.timer === null'), 'entering the tooltip cancels the switch');
+  assert.equal(tip.textContent, '#1 plan');
+  delete tip.contains;
+  call('tooltip.hide');
+  // (5) focusout only leaves the tooltip's own target.
+  over(track, 200, 100);
+  listeners.get('focusout')({target: gap, relatedTarget: null});
+  assert(evaluate('tooltip.timer === null'), 'unrelated focusout keeps the tooltip');
+  listeners.get('focusin')({target: blockEl});
+  listeners.get('focusout')({target: blockEl, relatedTarget: null});
+  assert(evaluate('tooltip.timer !== null'));
+  call('tooltip.hide');
+  // (6) Refocus during swap does not move the hovered tooltip.
+  over(track, 200, 100);
+  const active = new Element();
+  active.dataset = {focus: 'k'};
+  context.document.activeElement = active;
+  const summary = new Element();
+  summary.dataset = {focus: 'k'};
+  summary.closest = () => null;
+  summary.focus = function () { this.focused = true; listeners.get('focusin')({target: this}); };
+  const reg = new Element();
+  reg.contains = el => el === active;
+  reg.querySelectorAll = sel => sel === '[data-focus]' ? [summary] : [];
+  call('swap', reg, '<x>');
+  assert.equal(summary.focused, true);
+  assert.equal(tip.hidden, false, 'refocus does not hide the tooltip');
+  assert.equal(tip.textContent, 'plan totals');
+  assert.equal(tip.style.left, '212px');
+  const focusTwin = new Element();
+  focusTwin.dataset = {focus: 'k', tooltip: '#1 plan', tooltipKey: 'phase-c1'};
+  focusTwin.closest = () => focusTwin;
+  focusTwin.focus = function () { this.focused = true; listeners.get('focusin')({target: this}); };
+  const reg2 = new Element();
+  reg2.contains = el => el === active;
+  reg2.querySelectorAll = sel => sel === '[data-focus]' ? [focusTwin] : [];
+  call('swap', reg2, '<x>');
+  assert.equal(tip.textContent, 'plan totals', 'refocus does not steal the tooltip');
+  context.document.activeElement = null;
+  // (7) A swap during a pending hide hides the tooltip.
+  over(blockEl, 0, 0);
+  listeners.get('pointerout')({target: blockEl, relatedTarget: gap});
+  const freshBlock = new Element();
+  freshBlock.dataset = {tooltip: '#1 plan', tooltipKey: 'phase-c1'};
+  freshBlock.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
+  const reg3 = new Element();
+  reg3.contains = el => el === blockEl;
+  reg3.querySelectorAll = () => [freshBlock];
+  call('swap', reg3, '<y>');
+  assert.equal(tip.hidden, true, 'a pending hide wins over a redraw');
+  call('tooltip.hide');
+  evaluate('tooltip.dismissed = null');
 }
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
 assert(html.includes('<span class="piece" aria-hidden="true">✅</span>'), 'the block shows its status mark');

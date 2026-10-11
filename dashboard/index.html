@@ -393,16 +393,19 @@ const app = $('app'), bar = $('status'), note = $('note');
 const followBox = $('follow-box'), followLabel = $('follow-label');
 // One shared tooltip outside scrolling panels. Delegation survives chart polling.
 const tooltip = {
-  target: null, timer: null, at: null,
+  target: null, timer: null, at: null, next: null, dismissed: null, quiet: false,
+  // cancel clears any pending hide or switch.
+  cancel() { clearTimeout(this.timer); this.timer = null; this.next = null; },
   // show displays target's text; a pointer-anchored target uses at {x, y}.
   show(target, at) {
-    clearTimeout(this.timer);
+    this.cancel();
     if (this.target !== target) this.hide();
     this.target = target;
     this.at = target.dataset.tooltipAt === 'pointer' && at ? at : null;
     const el = $('tooltip');
     el.textContent = target.dataset.tooltip;
     el.hidden = false;
+    el.style.pointerEvents = this.at ? 'none' : '';
     target.setAttribute('aria-describedby', 'tooltip');
     this.place();
   },
@@ -419,7 +422,7 @@ const tooltip = {
     el.style.top = top + 'px';
   },
   hide() {
-    clearTimeout(this.timer);
+    this.cancel();
     this.target?.removeAttribute('aria-describedby');
     this.target = null;
     this.at = null;
@@ -427,30 +430,61 @@ const tooltip = {
   },
   leave(next) {
     if (next && (this.target?.contains(next) || $('tooltip').contains(next))) return;
-    this.timer = setTimeout(() => this.hide(), 120);
+    this.cancel();
+    this.timer = setTimeout(() => this.settle(), 120);
+  },
+  // settle applies the pending switch, or hides when none is pending.
+  settle() {
+    const next = this.next;
+    this.cancel();
+    if (next) this.show(next.target, next.at); else this.hide();
+  },
+  // dismiss hides the tooltip and suppresses its target until the pointer moves elsewhere.
+  dismiss() {
+    this.dismissed = this.target ? (this.target.dataset.tooltipKey ?? this.target) : null;
+    this.hide();
+  },
+  // hover shows, moves or schedules a switch to target at pointer position at.
+  hover(target, at) {
+    const key = target.dataset.tooltipKey ?? target;
+    if (key === this.dismissed) return;
+    this.dismissed = null;
+    if (target === this.target) {
+      this.cancel();
+      if (this.at) { this.at = at; this.place(); }
+    } else if (this.target && !this.at && target.dataset.tooltipAt === 'pointer') {
+      this.next = {target, at};
+      if (!this.timer) this.timer = setTimeout(() => this.settle(), 120);
+    } else {
+      this.show(target, at);
+    }
   },
 };
 addEventListener('pointerover', e => {
   if (e.pointerType === 'touch') return;
-  if ($('tooltip').contains(e.target)) { clearTimeout(tooltip.timer); return; }
+  if ($('tooltip').contains(e.target)) { tooltip.cancel(); return; }
   const target = e.target.closest?.('[data-tooltip]');
-  if (target) tooltip.show(target, {x: e.clientX, y: e.clientY});
+  if (target) tooltip.hover(target, {x: e.clientX, y: e.clientY});
+  else tooltip.dismissed = null;
 });
 addEventListener('pointermove', e => {
-  if (e.pointerType === 'touch' || !tooltip.at || e.target.closest?.('[data-tooltip]') !== tooltip.target) return;
-  tooltip.at = {x: e.clientX, y: e.clientY};
-  tooltip.place();
+  if (e.pointerType === 'touch' || $('tooltip').contains(e.target)) return;
+  const target = e.target.closest?.('[data-tooltip]');
+  if (target) tooltip.hover(target, {x: e.clientX, y: e.clientY});
 });
 addEventListener('pointerout', e => {
   if (tooltip.target) tooltip.leave(e.relatedTarget);
 });
 addEventListener('focusin', e => {
+  if (tooltip.quiet) return;
   const target = e.target.closest?.('[data-tooltip]');
   if (target) tooltip.show(target);
   else tooltip.hide();
 });
-addEventListener('focusout', e => { if (tooltip.target) tooltip.leave(e.relatedTarget); });
-addEventListener('keydown', e => { if (e.key === 'Escape') tooltip.hide(); });
+addEventListener('focusout', e => {
+  if (!tooltip.quiet && tooltip.target && e.target.closest?.('[data-tooltip]') === tooltip.target) tooltip.leave(e.relatedTarget);
+});
+addEventListener('keydown', e => { if (e.key === 'Escape') tooltip.dismiss(); });
 addEventListener('scroll', e => { if (!$('tooltip').contains(e.target)) tooltip.hide(); }, true);
 addEventListener('resize', () => tooltip.hide());
 addEventListener('blur', () => tooltip.hide());
@@ -1681,9 +1715,11 @@ function swap(el, html) {
   }
   const tipKey = tooltip.target && el.contains(tooltip.target) ? tooltip.target.dataset.tooltipKey : null;
   const tipAt = tooltip.at;
+  tooltip.quiet = true;
+  try {
   el.innerHTML = html;
   if (tipKey != null) {
-    const target = [...el.querySelectorAll('[data-tooltip-key]')].find(x => x.dataset.tooltipKey === tipKey);
+    const target = tooltip.timer ? null : [...el.querySelectorAll('[data-tooltip-key]')].find(x => x.dataset.tooltipKey === tipKey);
     if (target) tooltip.show(target, tipAt);
     else tooltip.hide();
   }
@@ -1691,6 +1727,9 @@ function swap(el, html) {
   el.scrollTop = replacement ? el.scrollTop + replacement.getBoundingClientRect().top - edge - offset : top;
   el.scrollLeft = left;
   if (key) focusTarget(el, key)?.focus({preventScroll: true});
+  } finally {
+    tooltip.quiet = false;
+  }
 }
 
 // phaseTiming is the one reading of a phase's status and span the chart and
