@@ -99,8 +99,8 @@
   th { color: var(--dim); }
   td.wrap { white-space: normal; color: var(--dim); width: 100%; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.run, tr.project { cursor: pointer; }
-  tr.run:hover td, tr.project:hover td { background: var(--panel); }
+  tr.run, tr.project, tr.agent { cursor: pointer; }
+  tr.run:hover td, tr.project:hover td, tr.agent:hover td { background: var(--panel); }
   .dim { color: var(--dim); }
   .cost { color: var(--cost); font-variant-numeric: tabular-nums; }
   .ok { color: var(--ok); } .fail { color: var(--fail); } .running { color: var(--run); }
@@ -301,6 +301,12 @@
   dialog[open] { display: flex; flex-direction: column; }
   dialog::backdrop { background: #0008; }
   #reader-body { white-space: pre-wrap; }
+  .prompt + .prompt { margin-top: 18px; }
+  .prompt label { display: block; color: var(--dim); margin: 0 0 4px; }
+  .prompt textarea { display: block; width: 100%; max-height: 60vh; overflow: auto; resize: vertical;
+    font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 4px; padding: 6px 8px; white-space: pre-wrap; tab-size: 2; }
+  .prompt p { margin: 4px 0 0; overflow-wrap: anywhere; }
   @media (max-width: 1100px), (max-height: 850px) {
     body { --rail: 46px; }
     nav .label { display: none; }
@@ -350,6 +356,13 @@
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
       <path d="M1.5 4.5h5l1.5 2h6.5v7h-13zM1.5 4.5v-2h5l1.5 2"/>
     </svg><span class="label">Projects</span>
+  </a>
+  <a id="nav-agents" href="#/agents" title="Agents">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+      <rect x="2.5" y="5" width="11" height="8.5" rx="1.5"/>
+      <path d="M8 5V2.5M1 8.5v2.5M15 8.5v2.5M6 11h4"/>
+      <circle cx="6" cy="8.25" r=".6" fill="currentColor"/><circle cx="10" cy="8.25" r=".6" fill="currentColor"/>
+    </svg><span class="label">Agents</span>
   </a>
   <button id="collapse" type="button" aria-expanded="true" title="Collapse navigation">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
@@ -428,8 +441,9 @@ addEventListener('blur', () => tooltip.hide());
 
 const PAGE = 500;   // the server's per-poll event cap
 // How often each page asks for fresh data. Overview aggregates the whole
-// database and changes slowly; a live run's log does not.
-const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 1000, missing: 0};
+// database and changes slowly; a live run's log does not. Agents load once,
+// then set done; until then they retry.
+const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 1000, agents: 5000, agent: 5000, missing: 0};
 
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
@@ -467,6 +481,7 @@ const averageMoney = (cost, runs) => money(runs ? cost / runs : 0);
 const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
 const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo).replace(/'/g, '%27');
+const agentHref = name => '#/agents/' + encodeURIComponent(name).replace(/'/g, '%27');
 // bucket is the list stored under key, created empty on first use.
 const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
 
@@ -479,7 +494,8 @@ function pageShell(page) {
     + panel('rank-projects', 'top projects by spend') + panel('rank-runs', 'top runs by spend') + '</div>'
     + `<div class="ranking-column">` + panel('rank-models', 'top models by spend')
     + panel('rank-providers', 'top providers by spend') + '</div></div></div>';
-  if (page === 'runs' || page === 'projects') return `<div class="page"><div id="page-summary" class="card page-summary"></div>${panel('list-body', page === 'runs' ? 'latest runs' : 'projects by spend')}</div>`;
+  if (page === 'runs' || page === 'projects' || page === 'agents') return `<div class="page"><div id="page-summary" class="card page-summary"></div>${panel('list-body', {runs: 'latest runs', projects: 'projects by spend', agents: 'agents and routing phases'}[page])}</div>`;
+  if (page === 'agent') return `<div class="page"><div id="agent-head" class="card page-summary"></div>${panel('agent-prompts', 'prompts')}</div>`;
   return '';
 }
 function ensurePage(page) {
@@ -684,6 +700,14 @@ function route() {
   if (h === '/runs') return {page: 'runs'};
   if (h.startsWith('/runs/')) return {page: 'run', id: h.slice(6)};
   if (h === '/projects') return {page: 'projects'};
+  if (h === '/agents') return {page: 'agents'};
+  if (h.startsWith('/agents/')) {
+    try {
+      const name = decodeURIComponent(h.slice('/agents/'.length));
+      if (name) return {page: 'agent', name};
+    } catch {}
+    return {page: 'missing'};
+  }
   if (h.startsWith('/projects/detail?')) {
     const params = new URLSearchParams(h.slice('/projects/detail?'.length));
     if (params.has('repo')) return {page: 'project', repo: params.get('repo')};
@@ -713,11 +737,12 @@ function navigate() {
   activeTab = 'phases'; followSuspended = false; eventScrollTop = 0; pagers.clear();
   app.dataset.page = view.page;
   app.innerHTML = pageShell(view.page);
+  bar.textContent = '';
   followBox.checked = false;
   followLabel.style.display = 'none';
-  for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs'], ['nav-projects', 'projects']]) {
+  for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs'], ['nav-projects', 'projects'], ['nav-agents', 'agents']]) {
     const on = view.page === page || (page === 'runs' && view.page === 'run')
-      || (page === 'projects' && view.page === 'project');
+      || (page === 'projects' && view.page === 'project') || (page === 'agents' && view.page === 'agent');
     // Runs stays selected while a single run is open: a run is something
     // inside Runs, not a third place to be.
     if (on) $(id).setAttribute('aria-current', 'page');
@@ -737,8 +762,10 @@ async function tick() {
     else if (view.page === 'project') await project(current);
     else if (view.page === 'runs') await list(current);
     else if (view.page === 'run') await detail(current);
+    else if (view.page === 'agents') await agents(current);
+    else if (view.page === 'agent') await agent(current);
     else missing();
-    if (current === generation) { failure = ''; fresh = Date.now(); }
+    if (current === generation) { failure = ''; fresh = Date.now(); stamp(); }
   } catch (e) {
     // The last good values stay on screen; only the freshness note changes.
     // Replacing them with zeroes would read as "you have spent nothing".
@@ -746,12 +773,14 @@ async function tick() {
     stamp();
   } finally {
     polling = false;
+    // A page navigated to while this fetch was in flight has not fetched yet.
+    if (current !== generation) tick();
   }
 }
 
 async function get(url) {
   const r = await fetch(url);
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) throw Object.assign(new Error(await r.text()), {status: r.status});
   return {body: await r.json(), total: Number(r.headers?.get?.('X-Total-Runs'))};
 }
 
@@ -764,17 +793,20 @@ function stamp() {
     return;
   }
   note.className = '';
-  note.textContent = done ? 'run complete' : 'updated ' + ago();
+  note.textContent = !done ? 'updated ' + ago() : view.page === 'run' ? 'run complete' : 'loaded · reload to refresh';
 }
 const ago = () => {
   const s = Math.max(0, Math.round((Date.now() - fresh) / 1000));
   return s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago';
 };
 
-function missing() {
-  app.innerHTML = `<h2>not found</h2><p class="dim">No page at <code>${esc(location.hash)}</code>.</p>
-    <p><a href="#/overview">Overview</a> · <a href="#/projects">Projects</a> · <a href="#/runs">Runs</a></p>`;
-  bar.textContent = 'Page not found';
+// missing renders a not-found page from HTML: what is missing and where to go.
+function missing(what = `No page at <code>${esc(location.hash)}</code>.`,
+  links = '<a href="#/overview">Overview</a> · <a href="#/projects">Projects</a> · <a href="#/runs">Runs</a> · <a href="#/agents">Agents</a>',
+  title = 'Page not found') {
+  app.dataset.page = 'missing';
+  app.innerHTML = `<h2>not found</h2><p class="dim">${what}</p><p>${links}</p>`;
+  bar.textContent = title;
   fresh = Date.now();
 }
 
@@ -861,6 +893,71 @@ async function projects(current) {
 
   bar.textContent = `Projects · ${count(rows.length)} repositories · all time`;
   stamp();
+}
+
+const agentLinks = names => names.map(n => `<a href="${esc(agentHref(n))}">${esc(n)}</a>`).join(', ');
+const workflowNames = ws => ws?.length ? esc(ws.join(', ')) : '<span class="dim">none</span>';
+const agentRow = a => {
+  const href = esc(agentHref(a.name));
+  return `<tr class="agent" data-row="${esc(a.name)}" onclick="location.hash='${href}'">
+    <td><a data-focus="${esc('agent-' + a.name)}" href="${href}">${esc(a.name)}</a></td>
+    <td class="dim">${esc(a.kind)}</td>
+    <td>${workflowNames(a.workflows)}</td>
+    <td>${(a.prompts || []).map(p => esc(p.role) + (p.shared_with?.length
+      ? ` <span class="dim" title="${esc('Shared with ' + p.shared_with.join(', '))}">shared</span>` : '')).join(' · ')}</td>
+  </tr>`;
+};
+
+async function agents(current) {
+  const {body: rows} = await get('/api/agents');
+  if (current !== generation) return;
+  const routing = rows.filter(a => a.kind === 'routing').length;
+  ensurePage('agents');
+  swap($('page-summary'), summaryRow('<h2>Agents</h2><p class="dim">Every agent and routing phase, with the built-in prompts it runs with.</p>',
+    tally(count(rows.length - routing), 'agents') + tally(count(routing), 'routing phases')));
+  swap($('list-body'), `<table><thead><tr><th>Agent</th><th>Kind</th><th>Workflows</th><th>Prompts</th></tr></thead><tbody>${
+    rows.map(agentRow).join('') || '<tr><td colspan="4" class="dim">No agents configured.</td></tr>'}</tbody></table>`);
+
+  bar.textContent = `Agents · ${count(rows.length - routing)} agents · ${count(routing)} routing phases`;
+  done = true;
+}
+
+const PROMPT_LABEL = {system: 'System prompt', user: 'User prompt', instructions: 'Instructions'};
+// promptBox renders one prompt as read-only text, with its key, who shares it
+// and, for a user prompt, what is added to it at run time.
+function promptBox(p, repoInstructions) {
+  const id = 'prompt-' + p.role, body = p.body || '';
+  const hint = p.role !== 'user' ? '' : '<p class="dim"><code>{{request}}</code> is replaced by the request.'
+    + (repoInstructions ? ' The repo’s AGENTS.md is prepended on the first turn.' : '') + '</p>';
+  // The parser drops one newline straight after <textarea>, so lead with one
+  // to keep a body's own.
+  return `<div class="prompt"><label for="${esc(id)}">${esc(PROMPT_LABEL[p.role] || p.role)}</label>
+    <textarea id="${esc(id)}" readonly spellcheck="false" rows="${Math.min(40, body.split('\n').length + 1)}">\n${esc(body)}</textarea>
+    <p class="dim">Built-in <code>${esc(p.key)}</code></p>`
+    + (p.shared_with?.length ? `<p class="dim">Shared with ${agentLinks(p.shared_with)}</p>` : '') + hint + '</div>';
+}
+
+async function agent(current) {
+  let a;
+  try {
+    ({body: a} = await get('/api/agents/' + encodeURIComponent(view.name)));
+  } catch (e) {
+    if (current !== generation || e.status !== 404) throw e;
+    missing(`No agent named <code>${esc(view.name)}</code>.`, '<a href="#/agents">All agents</a>', 'Agent not found');
+    done = true;
+    return;
+  }
+  if (current !== generation) return;
+  const kind = a.kind === 'routing' ? `Routing phase for ${agentLinks([a.routes])}` : 'Agent';
+  ensurePage('agent');
+  swap($('agent-head'), summaryRow(`<a data-focus="all-agents" href="#/agents">&larr; all agents</a><h2>${esc(a.name)}</h2>
+    <p class="dim">${kind} · workflows: ${workflowNames(a.workflows)}</p>
+    <p class="dim">Read-only. Each run captures these prompts when it is submitted.</p>`, ''));
+  swap($('agent-prompts'), (a.prompts || []).map(p => promptBox(p, a.repo_instructions)).join('')
+    || '<p class="dim">No prompts.</p>');
+
+  bar.textContent = `Agents · ${a.name} · ${a.kind}`;
+  done = true;
 }
 
 const projectQuery = repo => 'repo=' + encodeURIComponent(repo);

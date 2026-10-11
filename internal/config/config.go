@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -115,11 +116,23 @@ type ProjectTier struct {
 	Thinking string `toml:"thinking"`
 }
 
-// routingPrompts is every agent that may have tiers, and the embedded Score
-// instructions its routing phase asks.
-var routingPrompts = map[string]string{
-	"planner": "prompts/routing/planner.md",
-	"builder": "prompts/routing/builder.md",
+// routingPrompts is every agent that may have tiers, in the order the graphs
+// route them: its routing phase, which is that phase's graph node name, and
+// the embedded Score instructions the phase asks.
+var routingPrompts = []struct{ agent, phase, key string }{
+	{"planner", "route-plan", "prompts/routing/planner.md"},
+	{"builder", "route-build", "prompts/routing/builder.md"},
+}
+
+// routingKey returns agent's routing instructions key, or "" when it cannot be
+// routed.
+func routingKey(agent string) string {
+	for _, r := range routingPrompts {
+		if r.agent == agent {
+			return r.key
+		}
+	}
+	return ""
 }
 
 // defaultFloor is the confidence floor when lathe.toml sets none.
@@ -244,7 +257,7 @@ func checkTiers(name string, tiers []ProjectTier) error {
 	if len(tiers) == 0 {
 		return nil
 	}
-	if _, ok := routingPrompts[name]; !ok {
+	if routingKey(name) == "" {
 		return errors.New("tiers are only allowed on planner and builder")
 	}
 	if len(tiers) < jev.MinLevels || len(tiers) > jev.MaxLevels {
@@ -327,6 +340,77 @@ func (c Config) readPrompt(key string) (string, error) {
 	}
 	b, err := fs.ReadFile(c.fsys, key)
 	return string(b), err
+}
+
+// AgentPrompts is one agent or routing phase and the prompts it runs with.
+// Routes is the agent a routing phase routes. RepoInstructions is the roster's
+// setting, before any lathe.toml, and always false for a routing phase.
+type AgentPrompts struct {
+	Name             string   `json:"name"`
+	Kind             string   `json:"kind"`
+	Routes           string   `json:"routes,omitempty"`
+	RepoInstructions bool     `json:"repo_instructions"`
+	Prompts          []Prompt `json:"prompts"`
+}
+
+// Prompt is one prompt by role: system, user or instructions. Key is its path
+// in the embedded FS. SharedWith is every other agent whose roster row names
+// the same key, in roster order.
+type Prompt struct {
+	Role       string   `json:"role"`
+	Key        string   `json:"key"`
+	Body       string   `json:"body,omitempty"`
+	SharedWith []string `json:"shared_with"`
+}
+
+// Prompts returns every roster agent in roster order, then every routing
+// phase, with prompt bodies read when bodies is set. An empty key is skipped;
+// a missing prompt file is an error naming the agent or phase.
+func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
+	byKey := map[string][]string{}
+	for _, a := range c.Agents {
+		for _, key := range []string{a.System, a.User} {
+			if key != "" && !slices.Contains(byKey[key], a.Name) {
+				byKey[key] = append(byKey[key], a.Name)
+			}
+		}
+	}
+	out := make([]AgentPrompts, 0, len(c.Agents)+len(routingPrompts))
+	for _, a := range c.Agents {
+		a.RepoInstructions = firstSet(a.RepoInstructions, c.Defaults.RepoInstructions)
+		ap := AgentPrompts{Name: a.Name, Kind: "agent", RepoInstructions: a.WantsRepoInstructions(), Prompts: []Prompt{}}
+		for _, p := range []Prompt{{Role: "system", Key: a.System}, {Role: "user", Key: a.User}} {
+			if p.Key == "" {
+				continue
+			}
+			var err error
+			if p.Body, err = c.prompt(p.Key, bodies); err != nil {
+				return nil, fmt.Errorf("agent %s: %w", a.Name, err)
+			}
+			p.SharedWith = slices.DeleteFunc(slices.Clone(byKey[p.Key]), func(n string) bool { return n == a.Name })
+			ap.Prompts = append(ap.Prompts, p)
+		}
+		out = append(out, ap)
+	}
+	for _, r := range routingPrompts {
+		p := Prompt{Role: "instructions", Key: r.key, SharedWith: []string{}}
+		var err error
+		if p.Body, err = c.prompt(r.key, bodies); err != nil {
+			return nil, fmt.Errorf("%s: %w", r.phase, err)
+		}
+		out = append(out, AgentPrompts{Name: r.phase, Kind: "routing", Routes: r.agent, Prompts: []Prompt{p}})
+	}
+	return out, nil
+}
+
+// prompt reads the prompt at key, or, when body is false, only checks that it
+// exists and returns "".
+func (c Config) prompt(key string, body bool) (string, error) {
+	if !body {
+		_, err := fs.Stat(c.fsys, key)
+		return "", err
+	}
+	return c.readPrompt(key)
 }
 
 // Prompt substitutes the request into the agent's user prompt. One placeholder
@@ -461,7 +545,7 @@ func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 			continue
 		}
 		rt := Routing{}
-		if rt.Instructions, err = c.readPrompt(routingPrompts[name]); err != nil {
+		if rt.Instructions, err = c.readPrompt(routingKey(name)); err != nil {
 			return Snapshot{}, fmt.Errorf("agent %s: routing: %w", name, err)
 		}
 		for i, t := range tiers {

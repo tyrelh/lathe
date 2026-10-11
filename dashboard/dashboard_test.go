@@ -7,12 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
 )
 
@@ -69,7 +73,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	h := handler(ro, "v0.2.0-test", Actions{})
+	h := handler(ro, "v0.2.0-test", Actions{}, Sources{})
 
 	get := func(path string) string {
 		w := httptest.NewRecorder()
@@ -178,7 +182,7 @@ func TestOverviewAndMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	h := handler(ro, "v0.2.0", Actions{})
+	h := handler(ro, "v0.2.0", Actions{}, Sources{})
 
 	do := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -273,7 +277,7 @@ func TestOverviewAndMeta(t *testing.T) {
 	}
 	defer fresh.Close()
 	w := httptest.NewRecorder()
-	handler(fresh, "dev", Actions{}).ServeHTTP(w, local("GET", "/api/overview", nil))
+	handler(fresh, "dev", Actions{}, Sources{}).ServeHTTP(w, local("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
 		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_providers":[]`) ||
 		!strings.Contains(body, `"top_projects":[]`) ||
@@ -309,7 +313,7 @@ func TestSubmitRun(t *testing.T) {
 			return "", result
 		}
 		return "20260923T120000Z_build_1", nil
-	}})
+	}}, Sources{})
 	post := func(h http.Handler, host, origin, contentType, body string) (int, map[string]string) {
 		r := local("POST", "/api/projects/runs", strings.NewReader(body))
 		r.Host = host
@@ -328,7 +332,7 @@ func TestSubmitRun(t *testing.T) {
 	}
 	build := `{"repo":"/repos/alpha","workflow":"build","prompt":"  add retries  "}`
 
-	if code, _ := post(handler(ro, "dev", Actions{}), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
+	if code, _ := post(handler(ro, "dev", Actions{}, Sources{}), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
 		t.Errorf("nil submit: %d, want the POST route unregistered (405)", code)
 	}
 
@@ -431,7 +435,7 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 			cancelled = append(cancelled, runID)
 			return "running", cancelErr
 		},
-	})
+	}, Sources{})
 	post := func(path, origin, contentType, body string) (int, map[string]any) {
 		r := local("POST", path, strings.NewReader(body))
 		if origin != "" {
@@ -514,7 +518,7 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 	}
 
 	// Without the actions, neither route exists.
-	bare := handler(ro, "dev", Actions{})
+	bare := handler(ro, "dev", Actions{}, Sources{})
 	for _, path := range []string{revise, cancel} {
 		r := local("POST", path, strings.NewReader(`{}`))
 		r.Header.Set("Origin", "http://"+Addr)
@@ -523,6 +527,173 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 		bare.ServeHTTP(w, r)
 		if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
 			t.Errorf("%s on a read-only dashboard: %d", path, w.Code)
+		}
+	}
+}
+
+// The Agents page's two reads, against the shipped roster and prompts: the
+// list is every agent then every routing phase with no bodies, and an agent's
+// page carries the bodies as they are on disk.
+func TestAgentRoutes(t *testing.T) {
+	root := t.TempDir()
+	if err := trace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ro, err := trace.OpenRO(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	assets := os.DirFS("..")
+	h := handler(ro, "dev", Actions{}, Sources{Roster: func() (config.Config, error) { return config.Load(assets) }})
+
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local("GET", path, nil))
+		return w
+	}
+	type prompt struct {
+		Role       string   `json:"role"`
+		Key        string   `json:"key"`
+		Body       *string  `json:"body"`
+		SharedWith []string `json:"shared_with"`
+	}
+	type agent struct {
+		Name             string   `json:"name"`
+		Kind             string   `json:"kind"`
+		Routes           string   `json:"routes"`
+		RepoInstructions bool     `json:"repo_instructions"`
+		Workflows        []string `json:"workflows"`
+		Prompts          []prompt `json:"prompts"`
+	}
+
+	w := get("/api/agents")
+	if w.Code != 200 {
+		t.Fatalf("GET /api/agents: %d %s", w.Code, w.Body)
+	}
+	var list []agent
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, a := range cfg.Agents {
+		names = append(names, a.Name)
+	}
+	names = append(names, "route-plan", "route-build")
+	var got []string
+	for _, a := range list {
+		got = append(got, a.Name)
+	}
+	if len(list) != 15 || !reflect.DeepEqual(got, names) {
+		t.Fatalf("agents = %v; want %v", got, names)
+	}
+	if strings.Contains(w.Body.String(), `"body"`) {
+		t.Error("the list carries prompt bodies")
+	}
+
+	byName := map[string]agent{}
+	for _, a := range list {
+		byName[a.Name] = a
+		if a.Workflows == nil {
+			t.Errorf("%s: workflows is null", a.Name)
+		}
+		for _, p := range a.Prompts {
+			if p.SharedWith == nil {
+				t.Errorf("%s %s: shared_with is null", a.Name, p.Role)
+			}
+		}
+	}
+	reviewers := []string{"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial"}
+	general := byName["code-review-general"]
+	if general.Kind != "agent" || !general.RepoInstructions || len(general.Prompts) != 2 ||
+		!reflect.DeepEqual(general.Workflows, []string{"implement", "build", "revise"}) {
+		t.Errorf("code-review-general = %+v", general)
+	}
+	for _, name := range reviewers {
+		a := byName[name]
+		if len(a.Prompts) != 2 || a.Prompts[0].Role != "system" || len(a.Prompts[0].SharedWith) != 0 {
+			t.Errorf("%s prompts = %+v", name, a.Prompts)
+			continue
+		}
+		user := a.Prompts[1]
+		var others []string
+		for _, r := range reviewers {
+			if r != name {
+				others = append(others, r)
+			}
+		}
+		if user.Role != "user" || user.Key != "prompts/code-review/user.md" || !reflect.DeepEqual(user.SharedWith, others) {
+			t.Errorf("%s user prompt = %+v; want shared with %v", name, user, others)
+		}
+	}
+	if byName["brancher"].RepoInstructions {
+		t.Error("brancher reports repo instructions on")
+	}
+	for name, want := range map[string]agent{
+		"route-plan":  {Routes: "planner", Workflows: []string{"plan", "implement", "build", "revise"}},
+		"route-build": {Routes: "builder", Workflows: []string{"implement", "build", "revise"}},
+	} {
+		a := byName[name]
+		if a.Kind != "routing" || a.Routes != want.Routes || a.RepoInstructions || !reflect.DeepEqual(a.Workflows, want.Workflows) ||
+			len(a.Prompts) != 1 || a.Prompts[0].Role != "instructions" || a.Prompts[0].Key != "prompts/routing/"+want.Routes+".md" {
+			t.Errorf("%s = %+v", name, a)
+		}
+	}
+
+	for _, name := range []string{"planner", "code-review-slop", "route-build"} {
+		w := get("/api/agents/" + name)
+		if w.Code != 200 {
+			t.Fatalf("GET /api/agents/%s: %d %s", name, w.Code, w.Body)
+		}
+		var d agent
+		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		for i, p := range d.Prompts {
+			b, err := os.ReadFile(filepath.Join("..", p.Key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Body == nil || *p.Body != string(b) {
+				t.Errorf("%s %s body does not match %s", name, p.Role, p.Key)
+			}
+			d.Prompts[i].Body = nil
+		}
+		if want := byName[name]; !reflect.DeepEqual(d, want) {
+			t.Errorf("%s detail = %+v; want the list row %+v plus bodies", name, d, want)
+		}
+	}
+
+	if w := get("/api/agents/nope"); w.Code != http.StatusNotFound {
+		t.Errorf("unknown agent: %d, want 404", w.Code)
+	}
+	r := local("GET", "/api/agents", nil)
+	r.Host = "evil.example:4700"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("foreign host: %d, want 403", w.Code)
+	}
+
+	broken := handler(ro, "dev", Actions{}, Sources{Roster: func() (config.Config, error) { return config.Config{}, errors.New("bad roster") }})
+	for _, path := range []string{"/api/agents", "/api/agents/planner"} {
+		w := httptest.NewRecorder()
+		broken.ServeHTTP(w, local("GET", path, nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("%s with a roster error: %d, want 500", path, w.Code)
+		}
+	}
+
+	bare := handler(ro, "dev", Actions{}, Sources{})
+	for _, path := range []string{"/api/agents", "/api/agents/planner"} {
+		w := httptest.NewRecorder()
+		bare.ServeHTTP(w, local("GET", path, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s without a roster: %d, want 404", path, w.Code)
 		}
 	}
 }

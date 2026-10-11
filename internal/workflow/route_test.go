@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -108,6 +109,25 @@ func TestImplementRoutesPlannerAndBuilder(t *testing.T) {
 	if len(*states) != 2 || (*states)[0] != `{"request":"greet the world"}` ||
 		!strings.Contains((*states)[1], `"files":["hello.txt"],"file_count":"one file"`) {
 		t.Fatalf("states = %q", *states)
+	}
+
+	// The routing phases the dashboard lists by name are the graph nodes that run.
+	prompts, err := cfg.Prompts(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routed := 0
+	for _, p := range prompts {
+		if p.Kind != "routing" {
+			continue
+		}
+		routed++
+		if !slices.Contains(names, p.Name) {
+			t.Errorf("routing phase %q (routes %s) is not a node of the routed graph: %v", p.Name, p.Routes, names)
+		}
+	}
+	if routed != 2 {
+		t.Fatalf("Prompts() reported %d routing phases; want 2", routed)
 	}
 }
 

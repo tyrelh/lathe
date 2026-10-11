@@ -21,6 +21,9 @@ var Graphs = map[string]func(*run.Run) int{
 	"revise":    Revise,
 }
 
+// Names is every workflow in Graphs, in the order they are listed.
+var Names = []string{"scout", "plan", "implement", "build", "revise"}
+
 // Writes is every workflow that changes the checkout it runs in. It is what
 // decides which runs need a clean tree, which own the checkout while they run,
 // and which exclude each other — so those three questions are asked of the

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/BurntSushi/toml"
 )
@@ -356,8 +358,8 @@ func TestDefaultTOMLRoundTrip(t *testing.T) {
 		t.Fatalf("confidence_floor = %v; want %v", p.Routing.ConfidenceFloor, defaultFloor)
 	}
 	routed := make([]string, 0, len(routingPrompts))
-	for name := range routingPrompts {
-		routed = append(routed, name)
+	for _, r := range routingPrompts {
+		routed = append(routed, r.agent)
 	}
 	s, err := loaded.Capture(routed, Overrides{})
 	if err != nil {
@@ -536,4 +538,89 @@ func projectErr(t *testing.T, body string) (bool, error) {
 	t.Helper()
 	_, loaded, err := project(t, body)
 	return loaded, err
+}
+
+const promptsRoster = `
+[defaults]
+repo_instructions = false
+
+[[agents]]
+name   = "alpha"
+system = "prompts/alpha/system.md"
+user   = "prompts/shared/user.md"
+repo_instructions = true
+
+[[agents]]
+name   = "beta"
+user   = "prompts/shared/user.md"
+
+[[agents]]
+name   = "gamma"
+system = "prompts/gamma/system.md"
+user   = "prompts/shared/user.md"
+`
+
+func promptsFS() fstest.MapFS {
+	return fstest.MapFS{
+		"roster.toml":                {Data: []byte(promptsRoster)},
+		"prompts/alpha/system.md":    {Data: []byte("alpha system")},
+		"prompts/gamma/system.md":    {Data: []byte("gamma system")},
+		"prompts/shared/user.md":     {Data: []byte("shared {{request}}")},
+		"prompts/routing/planner.md": {Data: []byte("plan routing")},
+		"prompts/routing/builder.md": {Data: []byte("build routing")},
+	}
+}
+
+func TestPrompts(t *testing.T) {
+	c, err := Load(promptsFS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Prompts(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []AgentPrompts{
+		{Name: "alpha", Kind: "agent", RepoInstructions: true, Prompts: []Prompt{
+			{Role: "system", Key: "prompts/alpha/system.md", Body: "alpha system", SharedWith: []string{}},
+			{Role: "user", Key: "prompts/shared/user.md", Body: "shared {{request}}", SharedWith: []string{"beta", "gamma"}},
+		}},
+		// No system key, so no system prompt; repo_instructions inherits the
+		// defaults' false.
+		{Name: "beta", Kind: "agent", Prompts: []Prompt{
+			{Role: "user", Key: "prompts/shared/user.md", Body: "shared {{request}}", SharedWith: []string{"alpha", "gamma"}},
+		}},
+		{Name: "gamma", Kind: "agent", Prompts: []Prompt{
+			{Role: "system", Key: "prompts/gamma/system.md", Body: "gamma system", SharedWith: []string{}},
+			{Role: "user", Key: "prompts/shared/user.md", Body: "shared {{request}}", SharedWith: []string{"alpha", "beta"}},
+		}},
+		{Name: "route-plan", Kind: "routing", Routes: "planner", Prompts: []Prompt{
+			{Role: "instructions", Key: "prompts/routing/planner.md", Body: "plan routing", SharedWith: []string{}},
+		}},
+		{Name: "route-build", Kind: "routing", Routes: "builder", Prompts: []Prompt{
+			{Role: "instructions", Key: "prompts/routing/builder.md", Body: "build routing", SharedWith: []string{}},
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Prompts() =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestPromptsMissingFile(t *testing.T) {
+	for _, tc := range []struct{ key, name string }{
+		{"prompts/gamma/system.md", "agent gamma"},
+		{"prompts/routing/builder.md", "route-build"},
+	} {
+		fsys := promptsFS()
+		delete(fsys, tc.key)
+		c, err := Load(fsys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bodies := range []bool{true, false} {
+			if _, err := c.Prompts(bodies); err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Errorf("without %s, bodies %v: err = %v; want one naming %s", tc.key, bodies, err, tc.name)
+			}
+		}
+	}
 }
