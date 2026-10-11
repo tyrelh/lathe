@@ -261,6 +261,36 @@ assert(/class="block[^"]*"[^>]*data-phase="c1"[^>]*data-tooltip="#1 plan/.test(h
   assert.equal(tip.textContent, track.dataset.tooltip, 'returning to the row restores its totals');
   call('tooltip.hide');
 }
+assert(html.includes('data-tooltip-at="pointer"'), 'row track is pointer-anchored');
+assert(!/class="block[^>]*data-tooltip-at/.test(html), 'blocks are not pointer-anchored');
+{
+  const track = new Element(), other = new Element(), blockEl = new Element();
+  track.dataset = {tooltip: 'plan\nInvocations: 2', tooltipKey: 'row-plan', tooltipAt: 'pointer'};
+  track.closest = () => track; other.closest = () => other;
+  track.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
+  listeners.get('pointerover')({target: track, pointerType: 'mouse', clientX: 200, clientY: 100});
+  assert.equal(tip.style.left, '212px'); assert.equal(tip.style.top, '118px');
+  listeners.get('pointermove')({target: track, pointerType: 'mouse', clientX: 300, clientY: 150});
+  assert.equal(tip.style.left, '312px'); assert.equal(tip.style.top, '168px');
+  listeners.get('pointermove')({target: track, pointerType: 'mouse', clientX: 700, clientY: 550});
+  assert.equal(tip.style.left, '492px'); assert.equal(tip.style.top, '424px');
+  listeners.get('pointermove')({target: other, pointerType: 'mouse', clientX: 50, clientY: 50});
+  assert.equal(tip.style.left, '492px', 'other targets do not move the tooltip');
+  const fresh = new Element();
+  fresh.dataset = {...track.dataset};
+  fresh.getBoundingClientRect = () => ({left: 0, top: 0, bottom: 5});
+  const reg = new Element();
+  reg.contains = el => el === track;
+  reg.querySelectorAll = () => [fresh];
+  call('swap', reg, '<i></i>');
+  assert.equal(tip.style.left, '492px'); assert.equal(tip.style.top, '424px', 'swap keeps pointer position');
+  blockEl.dataset = {tooltip: '#1 plan', tooltipKey: 'phase-c1'};
+  blockEl.closest = () => blockEl;
+  blockEl.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
+  listeners.get('pointerover')({target: blockEl, pointerType: 'mouse', clientX: 200, clientY: 100});
+  assert.equal(tip.style.left, '10px'); assert.equal(tip.style.top, '36px');
+  call('tooltip.hide');
+}
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
 assert(html.includes('<span class="piece" aria-hidden="true">✅</span>'), 'the block shows its status mark');
 assert(!html.includes('data-line='), 'all chart rows use a single line');

@@ -393,16 +393,24 @@ const app = $('app'), bar = $('status'), note = $('note');
 const followBox = $('follow-box'), followLabel = $('follow-label');
 // One shared tooltip outside scrolling panels. Delegation survives chart polling.
 const tooltip = {
-  target: null, timer: null,
-  show(target) {
+  target: null, timer: null, at: null,
+  // show displays target's text; a pointer-anchored target uses at {x, y}.
+  show(target, at) {
     clearTimeout(this.timer);
     if (this.target !== target) this.hide();
     this.target = target;
+    this.at = target.dataset.tooltipAt === 'pointer' && at ? at : null;
     const el = $('tooltip');
     el.textContent = target.dataset.tooltip;
     el.hidden = false;
     target.setAttribute('aria-describedby', 'tooltip');
-    const box = target.getBoundingClientRect(), tip = el.getBoundingClientRect();
+    this.place();
+  },
+  // place positions the visible tooltip at the pointer or the target.
+  place() {
+    const el = $('tooltip');
+    const box = this.at ? {left: this.at.x + 12, top: this.at.y, bottom: this.at.y + 12} : this.target.getBoundingClientRect();
+    const tip = el.getBoundingClientRect();
     const left = Math.max(8, Math.min(box.left, innerWidth - tip.width - 8));
     const below = box.bottom + 6;
     const top = Math.max(8, Math.min(below + tip.height <= innerHeight - 8 ? below : box.top - tip.height - 6,
@@ -414,6 +422,7 @@ const tooltip = {
     clearTimeout(this.timer);
     this.target?.removeAttribute('aria-describedby');
     this.target = null;
+    this.at = null;
     $('tooltip').hidden = true;
   },
   leave(next) {
@@ -425,7 +434,12 @@ addEventListener('pointerover', e => {
   if (e.pointerType === 'touch') return;
   if ($('tooltip').contains(e.target)) { clearTimeout(tooltip.timer); return; }
   const target = e.target.closest?.('[data-tooltip]');
-  if (target) tooltip.show(target);
+  if (target) tooltip.show(target, {x: e.clientX, y: e.clientY});
+});
+addEventListener('pointermove', e => {
+  if (e.pointerType === 'touch' || !tooltip.at || e.target.closest?.('[data-tooltip]') !== tooltip.target) return;
+  tooltip.at = {x: e.clientX, y: e.clientY};
+  tooltip.place();
 });
 addEventListener('pointerout', e => {
   if (tooltip.target) tooltip.leave(e.relatedTarget);
@@ -1666,10 +1680,11 @@ function swap(el, html) {
     if (anchor) { offset = anchor.getBoundingClientRect().top - edge; identity = anchor.dataset.row; }
   }
   const tipKey = tooltip.target && el.contains(tooltip.target) ? tooltip.target.dataset.tooltipKey : null;
+  const tipAt = tooltip.at;
   el.innerHTML = html;
   if (tipKey != null) {
     const target = [...el.querySelectorAll('[data-tooltip-key]')].find(x => x.dataset.tooltipKey === tipKey);
-    if (target) tooltip.show(target);
+    if (target) tooltip.show(target, tipAt);
     else tooltip.hide();
   }
   const replacement = identity === undefined ? null : [...el.querySelectorAll('[data-row]')].find(row => row.dataset.row === identity);
@@ -1785,7 +1800,7 @@ function gantt(r, phases, now) {
     + (rows.size ? `<div class="gantt"><svg class="flow-arrows" aria-hidden="true" focusable="false" data-links="${esc(JSON.stringify(links))}"></svg><span></span>
         <div class="axis"><span>${edge(ax.start)}</span><span>${ax.live ? 'now' : edge(ax.end)}</span></div>
         ${iterations}${[...rows].map(([name, blocks]) =>
-          `<div class="node" tabindex="0" data-focus="node-${esc(name)}" data-tooltip-key="node-${esc(name)}" data-tooltip="${esc(name)}">${esc(name)}</div><div class="track" data-tooltip-key="row-${esc(name)}" data-tooltip="${esc(rowTip(name, totals.get(name)))}">${breaks(false, name)}${blocks.join('')}</div>`).join('')}
+          `<div class="node" tabindex="0" data-focus="node-${esc(name)}" data-tooltip-key="node-${esc(name)}" data-tooltip="${esc(name)}">${esc(name)}</div><div class="track" data-tooltip-key="row-${esc(name)}" data-tooltip="${esc(rowTip(name, totals.get(name)))}" data-tooltip-at="pointer">${breaks(false, name)}${blocks.join('')}</div>`).join('')}
       </div>` : '')
     + (untimed.length ? `<p class="dim">Untimed · timestamps missing or invalid</p><div class="untimed">${untimed.join('')}</div>` : '');
 }
