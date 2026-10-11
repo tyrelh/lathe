@@ -210,10 +210,10 @@ func (a *AdjudicationOutput) fixes(findings []Finding) []Finding {
 
 // Adjudicated is the gate that makes an adjudication complete and honest: every
 // finding decided exactly once, no invented references, a scope that could be
-// granted, and no acceptance without a measured green suite. The last is here
-// rather than in the prompt because a waiver is exactly what an adjudicator
-// might be talked into, and the measurement is lathe's, not its.
-func Adjudicated(findings []Finding, tests *Measured, protected []string) run.Gate {
+// granted, and no acceptance without a green suite. The last is here rather
+// than in the prompt because a waiver is exactly what an adjudicator might be
+// talked into, and the result is the tester's, not its.
+func Adjudicated(findings []Finding, tests *TestOutput, protected []string) run.Gate {
 	return func(e run.Envelope, _ *run.Run) []string {
 		a, ok := e.(*AdjudicationOutput)
 		if !ok {
@@ -245,25 +245,16 @@ func Adjudicated(findings []Finding, tests *Measured, protected []string) run.Ga
 				v = append(v, problem)
 			}
 		}
-		if *a.Verdict == verdictAccept && (tests == nil || !tests.Green) {
-			v = append(v, "you cannot accept while the measured test suite is red: tests must pass, "+
+		if *a.Verdict == verdictAccept && !tests.Green() {
+			v = append(v, "you cannot accept while the test suite is red: tests must pass, "+
 				"even when the failures look unrelated or pre-existing; revise instead")
 		}
-		if *a.Verdict == verdictRevise && tests != nil && tests.Green && len(a.fixes(findings)) == 0 {
+		if *a.Verdict == verdictRevise && tests.Green() && len(a.fixes(findings)) == 0 {
 			v = append(v, "you sent the work back with a green suite and no finding to fix: accept, "+
 				"and list any check only a person can do in verification")
 		}
 		return v
 	}
-}
-
-// Measured is lathe's own run of the tester's command: the only evidence of
-// green or red that counts.
-type Measured struct {
-	Command string `json:"command"`
-	Green   bool   `json:"green"`
-	Result  string `json:"result"`
-	Tail    string `json:"tail"`
 }
 
 // WorkerFailure records a terminal environment failure or exhausted retries,
@@ -279,7 +270,6 @@ type WorkerFailure struct {
 type Round struct {
 	Round        int                          `json:"round"`
 	Tests        *TestOutput                  `json:"tester,omitempty"`
-	Measured     *Measured                    `json:"measured,omitempty"`
 	Reports      map[string]*CodeReviewOutput `json:"reports"`
 	Failures     []WorkerFailure              `json:"failures,omitempty"`
 	Mutated      []string                     `json:"mutated,omitempty"`
@@ -413,8 +403,8 @@ func testRequest(c *code) string {
 	b.WriteString(c.handoff)
 	evidence(&b, c)
 	if n := len(c.v.Rounds); n > 1 {
-		if prev := c.v.Rounds[n-2]; prev.Measured != nil {
-			fmt.Fprintf(&b, "\n## Previous measurement\n\nCommand: %s\nResult: %s\n", prev.Measured.Command, prev.Measured.Result)
+		if prev := c.v.Rounds[n-2].Tests; prev != nil {
+			fmt.Fprintf(&b, "\n## Previous test run\n\nCommand: %s\nResult: %s\n", *prev.Command, prev.Result())
 		}
 	}
 	previousDecision(&b, c)
@@ -423,7 +413,7 @@ func testRequest(c *code) string {
 }
 
 // adjudicationRequest is everything the adjudicator weighs: the request, the
-// plan as amended, the implementation, the measurement, every report, and
+// plan as amended, the implementation, the test run, every report, and
 // every earlier decision.
 func adjudicationRequest(c *code, request string, round, left int) string {
 	cur := c.v.current()
@@ -434,9 +424,9 @@ func adjudicationRequest(c *code, request string, round, left int) string {
 	b.WriteString(implementRequest(request, &c.plan, c.v.Amendments))
 	evidence(&b, c)
 
-	m := cur.Measured
-	fmt.Fprintf(&b, "\n## Measured tests\n\nCommand: %s\nResult: %s\n\n### Output (last 4KB)\n\n%s\n", m.Command, m.Result, m.Tail)
-	fmt.Fprintf(&b, "\n## Tester report\n\n%s\n\nCoverage: %s\n", *cur.Tests.Summary, *cur.Tests.Coverage)
+	t := cur.Tests
+	fmt.Fprintf(&b, "\n## Tests\n\nCommand: %s\nResult: %s\n\n### Output\n\n%s\n", *t.Command, t.Result(), *t.Output)
+	fmt.Fprintf(&b, "\n## Tester report\n\n%s\n\nCoverage: %s\n", *t.Summary, *t.Coverage)
 	section(&b, "### Observed failures", *cur.Tests.Failures)
 
 	b.WriteString("\n## Reviewer summaries\n")
@@ -536,8 +526,8 @@ func validationReport(v *Validation) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n\n## Validation not accepted\n\nThis is unfinished work. Automated validation stopped with the change unaccepted (%s): %s\n", v.Outcome, v.Reason)
 	cur := v.current()
-	if m := cur.Measured; m != nil {
-		fmt.Fprintf(&b, "\n### Tests\n\nCommand: `%s`\nResult: %s\n\n````\n%s\n````\n", m.Command, m.Result, m.Tail)
+	if t := cur.Tests; t != nil {
+		fmt.Fprintf(&b, "\n### Tests\n\nCommand: `%s`\nResult: %s\n\n````\n%s\n````\n", *t.Command, t.Result(), *t.Output)
 	}
 	if len(v.Unresolved) > 0 {
 		b.WriteString("\n### Unresolved findings\n")

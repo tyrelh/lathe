@@ -93,9 +93,9 @@ func TestBuildEnvironmentFailurePublishesNothing(t *testing.T) {
 			head := rev(t, repo, "HEAD")
 			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
 			if exit == 127 {
-				command = "echo artifact > test-output.tmp; " + command
+				write(t, filepath.Join(stub, "tester.sh"), "echo artifact > test-output.tmp\n")
 			}
-			write(t, filepath.Join(stub, "tester"), testerReply(t, command))
+			write(t, filepath.Join(stub, "tester"), testerReply(t, command, exit, "ENV-TAIL\n"))
 			if got := execute(t, cfg, "build", repo, "greet the world"); got != 1 {
 				t.Fatalf("exit = %d", got)
 			}

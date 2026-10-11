@@ -1,4 +1,4 @@
-# Weighs every report and the measured suite, and alone decides whether the
+# Weighs every report and the test result, and alone decides whether the
 # builder goes round again. The 1M context is for holding every round's
 # reports at once.
 provider: openai-codex

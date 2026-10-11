@@ -118,3 +118,13 @@ The dashboard's Agents page lists every agent and routing phase. On an agent's p
 - Each code reviewer has its own user prompt, so editing one doesn't change the others.
 - A user prompt has to keep `{{request}}`. That's where your request goes.
 - An edited prompt keeps shadowing its seed after you upgrade, even if the seed got better, so look over drift when you update.
+
+## Testing
+
+```sh
+make test                          # the whole suite, as CI runs it
+go test ./internal/workflow        # one package
+go test -count=1 ./...             # ignore cached results
+```
+
+`internal/workflow` runs whole workflows against stub agents and takes about two minutes uncached. Node is optional; the guard tests skip without it.

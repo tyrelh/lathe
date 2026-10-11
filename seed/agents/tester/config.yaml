@@ -1,6 +1,6 @@
-# Reassess and exercise the test command every validation round; lathe
-# independently verifies its exit.
+# Reassess and run the test command every validation round; its reported exit
+# code decides green or red.
 provider: openai-codex
 model: gpt-6-luna
 thinking: low
-timeout: 5m
+timeout: 30m

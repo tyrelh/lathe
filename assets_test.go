@@ -64,7 +64,7 @@ func TestEmbeddedSettings(t *testing.T) {
 	cfg := embedded(t)
 	for name, want := range map[string]string{
 		"scout": "openai-codex/gpt-6-sol/low/5m0s", "planner": "anthropic/claude-opus-5-5/medium/10m0s",
-		"builder": "anthropic/claude-opus-5-5/low/10m0s", "tester": "openai-codex/gpt-6-luna/low/5m0s",
+		"builder": "anthropic/claude-opus-5-5/low/10m0s", "tester": "openai-codex/gpt-6-luna/low/30m0s",
 		"plan-reviewer": "openai-codex/gpt-6-sol/medium/10m0s", "pr-author": "openai-codex/gpt-6-luna/low/5m0s",
 	} {
 		a, err := cfg.Resolve(name, config.Overrides{})
