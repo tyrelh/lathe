@@ -22,7 +22,6 @@ func submit(t *testing.T, db *DB, workflow, repo string) string {
 	t.Helper()
 	id, err := db.Submit(Request{
 		Workflow: workflow, Repo: repo, Request: "do a thing", Branch: "main",
-		Exclusive: writes(workflow),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -48,34 +47,32 @@ func dispatch(t *testing.T, db *DB, runID string) (attempt, token string) {
 	return attempt, token
 }
 
-// A second outstanding writing run for one checkout is refused while the first
-// is queued, while it is running, and accepted once it is finished. The
-// exclusion covers both writing workflows in both directions, because a build
-// and an implement in one checkout are the same collision. Reads and plans own
-// nothing and are never refused.
-func TestDuplicateWritingRunRejection(t *testing.T) {
+// Writing runs execute in worktrees of their own, so several may be
+// outstanding for one repository: queued alongside each other, alongside one
+// that is running, and after it finishes. Reads and plans are accepted too.
+func TestConcurrentWritingRunsAccepted(t *testing.T) {
 	for _, first := range []string{"build", "implement"} {
 		t.Run(first, func(t *testing.T) {
 			db := open(t)
 			id := submit(t, db, first, "/repo")
 
-			for _, second := range []string{"build", "implement"} {
-				if _, err := trySubmit(db, second, "/repo"); !errors.Is(err, ErrDuplicateBuild) {
-					t.Fatalf("queued %s alongside %s: %v; want ErrDuplicateBuild", second, first, err)
-				}
-			}
-			if _, err := trySubmit(db, "build", "/other"); err != nil {
-				t.Fatalf("a build in a different checkout was refused: %v", err)
-			}
-			for _, workflow := range []string{"scout", "plan"} {
-				if _, err := trySubmit(db, workflow, "/repo"); err != nil {
-					t.Fatalf("%s alongside a %s: %v", workflow, first, err)
+			for _, second := range []string{"build", "implement", "scout", "plan"} {
+				if _, err := trySubmit(db, second, "/repo"); err != nil {
+					t.Fatalf("queued %s alongside %s: %v", second, first, err)
 				}
 			}
 
 			attempt, token := dispatch(t, db, id)
-			if _, err := trySubmit(db, "implement", "/repo"); !errors.Is(err, ErrDuplicateBuild) {
-				t.Fatalf("second writing run while the first runs: %v; want ErrDuplicateBuild", err)
+			if _, err := trySubmit(db, "implement", "/repo"); err != nil {
+				t.Fatalf("a second writing run while the first runs: %v", err)
+			}
+			// The first is now running; the four queued beside it and the one
+			// queued while it runs all wait together.
+			if queued, _ := db.Queued(); len(queued) != 5 {
+				t.Fatalf("queued = %d runs; want 5", len(queued))
+			}
+			if active, _ := db.Active(); len(active) != 1 || active[0].ID != id {
+				t.Fatalf("active = %+v; want only %s", active, id)
 			}
 			if err := db.Complete(id, attempt, token, StatusOK, ""); err != nil {
 				t.Fatal(err)
@@ -88,7 +85,7 @@ func TestDuplicateWritingRunRejection(t *testing.T) {
 }
 
 func trySubmit(db *DB, workflow, repo string) (string, error) {
-	return db.Submit(Request{Workflow: workflow, Repo: repo, Exclusive: writes(workflow)})
+	return db.Submit(Request{Workflow: workflow, Repo: repo})
 }
 
 // Two workers launched for one attempt: exactly one claim succeeds, and the

@@ -6,6 +6,7 @@
 // no build step and nothing that can be stale against the file Pi loads.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -170,5 +171,58 @@ assert.equal(onResult(truncated).details.truncation.content, "main.go:1: ok\n[1 
 	"a truncated search's details are filtered too");
 assert.equal(onResult(leak).details, undefined, "a search with no truncation leaves details alone");
 delete process.env.LATHE_PERMIT;
+
+// A writing run's cwd is a detached worktree beside the source checkout and
+// other runs' worktrees. All share one object store; none may be written or
+// read from another, and the worktree's .git file is as protected as a .git
+// directory.
+const worktrees = mkdtempSync(join(tmpdir(), "lathe-worktrees-"));
+const source = join(worktrees, "source");
+mkdirSync(source);
+const git = (cwd: string, ...args: string[]) =>
+	execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd, stdio: "pipe" });
+writeFileSync(join(source, "main.go"), "package main\n");
+git(source, "init", "-q", "-b", "main");
+git(source, "add", "-A");
+git(source, "commit", "-qm", "init");
+const [wt, sibling] = ["wt", "sibling"].map((d) => join(worktrees, d));
+for (const d of [wt, sibling]) git(source, "worktree", "add", "-q", "--detach", d, "HEAD");
+assert.match(readFileSync(join(wt, ".git"), "utf8"), /^gitdir: /, "a worktree's .git is a file");
+symlinkSync(join(source, "main.go"), join(wt, "to-source.go"));
+symlinkSync(join(sibling, "main.go"), join(wt, "to-sibling.go"));
+const wtScope = { allow: ["main.go", "to-source.go", "to-sibling.go", ".git"], deny: shipped, bashDeny: [], readRoots: [] as string[] };
+for (
+	const [path, want] of [
+		["main.go", "allowed"],
+		[join(wt, "main.go"), "allowed"],
+		[".git", "protected"],
+		["../source/main.go", "outside"],
+		[join(source, "main.go"), "outside"],
+		[join(sibling, "main.go"), "outside"],
+		[join(source, ".git", "config"), "protected"],
+		["to-source.go", "outside"], // allowed by name, but it lands in the source checkout
+		["to-sibling.go", "outside"],
+	] as [string, string][]
+) {
+	const got = decide("write", { path }, wt, wtScope);
+	const kind = got === undefined ? "allowed" : /protected/.test(got.reason) ? "protected" : /outside the repository/.test(got.reason) ? "outside" : got.reason;
+	assert.equal(kind, want, `write(${path}) in a worktree`);
+}
+const gitdir = readFileSync(join(wt, ".git"), "utf8").slice("gitdir: ".length).trim();
+for (
+	const [path, want] of [
+		["main.go", "allowed"],
+		[".git", "protected"],
+		[gitdir, "outside"], // the worktree's real git directory is in the source checkout
+		[join(source, "main.go"), "outside"],
+		[join(sibling, "main.go"), "outside"],
+		["to-source.go", "outside"],
+		["../sibling", "outside"],
+	] as [string, string][]
+) {
+	const got = decide("read", { path }, wt, { ...wtScope, readRoots: [wt] });
+	const kind = got === undefined ? "allowed" : /protected/.test(got.reason) ? "protected" : /outside the folders/.test(got.reason) ? "outside" : got.reason;
+	assert.equal(kind, want, `read(${path}) in a worktree`);
+}
 
 console.log("guard.ts: ok");

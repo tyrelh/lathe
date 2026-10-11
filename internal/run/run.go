@@ -23,6 +23,7 @@ import (
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
+	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/web"
 )
@@ -115,7 +116,9 @@ type Run struct {
 	Out io.Writer
 
 	cfg       config.Snapshot
-	attempt   string // binds phase and publication writes to this worker's claim
+	runner    *process.Runner // launches Pi under supervision; nil launches it directly
+	base      string          // the commit the iteration started from, if recorded
+	attempt   string          // binds phase and publication writes to this worker's claim
 	ctx       context.Context
 	db        *trace.DB
 	raw       *os.File
@@ -171,6 +174,12 @@ type Options struct {
 	Iteration int
 	Attempt   string
 	Revision  *Revision
+	// Runner launches every Pi invocation under a gated supervisor. A worker
+	// executing in a managed worktree always sets it.
+	Runner *process.Runner
+	// Base is the commit the iteration started from, when it runs in a
+	// managed worktree.
+	Base string
 }
 
 // Revision is the run a revision extends, as the worker established it under
@@ -178,7 +187,7 @@ type Options struct {
 // and every earlier iteration.
 type Revision struct {
 	PR     string // the pull request URL
-	Branch string // its head branch, which is checked out
+	Branch string // its head branch; the revision runs detached at Head
 	Base   string // its base branch, what the branch diff is taken against
 	Head   string // the commit lathe last published; the push's expected remote head
 	Prior  []Prior
@@ -212,6 +221,8 @@ func Open(o Options) (*Run, error) {
 		Iteration: o.Iteration,
 		Revision:  o.Revision,
 		attempt:   o.Attempt,
+		runner:    o.Runner,
+		base:      o.Base,
 	}
 	if r.Out == nil {
 		r.Out = os.Stdout
@@ -222,11 +233,11 @@ func Open(o Options) (*Run, error) {
 	if r.Work == "" {
 		r.Work = r.Dir
 	}
-	if err := os.MkdirAll(r.Work, 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
-		return nil, err
+	// Owner-only: reports, raw streams and patches carry repository source.
+	for _, dir := range []string{r.Work, r.Dir} {
+		if err := trace.Private(dir); err != nil {
+			return nil, err
+		}
 	}
 	// Phase numbers carry on from earlier iterations: an ID embeds its
 	// number, and a later iteration must never reuse one.
@@ -415,6 +426,9 @@ func (r *Run) Evidence(commit, remote string) error {
 	return r.db.SetEvidence(r.ID, r.attempt, commit, remote)
 }
 
+// Base is the commit the iteration started from, or "" when not recorded.
+func (r *Run) Base() string { return r.base }
+
 // Protected is the roster's deny list, which the plan gate checks a file list
 // against before a builder is ever handed one.
 func (r *Run) Protected() []string { return r.cfg.Protected }
@@ -539,7 +553,7 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 		if ctx.Err() != nil {
 			break
 		}
-		err := check(ctx, pi.Options{Bin: r.PiBin, Dir: r.Repo, Provider: provider})
+		err := check(ctx, pi.Options{Bin: r.PiBin, Dir: r.Repo, Provider: provider, Runner: r.runner})
 		result := fmt.Sprintf("provider %q: ready", provider)
 		if err != nil {
 			result = fmt.Sprintf("provider %q: %s", provider, err)
@@ -728,6 +742,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		Extensions:   extensions,
 		Env:          []string{"LATHE_PERMIT=" + scopeFile, "LATHE_CONTEXT_SNAPSHOT=" + contextFile},
 		Raw:          r.rawW,
+		Runner:       r.runner,
 		OnStart: func(pid int) {
 			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
 		},

@@ -1,11 +1,11 @@
-// Package workspace is the coordination between a worker and the human whose
-// checkout it is borrowing: which directory, on which host, on which branch,
-// and who currently holds it.
+// Package workspace is where a run executes: the source checkout a run was
+// submitted from, on which host and branch, and the managed worktrees writing
+// runs execute in. It holds the locks that keep two lathe processes out of
+// one directory, and lathe's own git and gh calls.
 //
-// All of it exists because a local worker shares a mutable directory with a
-// person. A remote worker on a fresh clone needs none of it. Treat it as
-// deliberately throwaway: correct, not hardened, and expected to be deleted
-// when a git_ref workspace lands.
+// Commands that can change a managed worktree run through the process
+// package, so a worker that installed a supervised runner has every one of
+// them gated and stoppable.
 package workspace
 
 import (
@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 // KindLocalPath is the only workspace kind this release ships. A local path
@@ -79,11 +81,11 @@ func Branch(repo string) (string, error) {
 func git(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
-	out, err := cmd.Output()
+	out, err := process.Output(cmd)
 	return strings.TrimSpace(string(out)), err
 }
 
-// Lock is an OS lock on one checkout, held for the length of an execution. It
+// Lock is an OS lock on one checkout or managed worktree, held for the length of an execution. It
 // coordinates lathe processes only: an editor or any other tool can still
 // write to the directory while it is held.
 type Lock struct{ f *os.File }

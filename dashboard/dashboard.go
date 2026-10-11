@@ -306,32 +306,29 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 		switch body.Workflow {
 		case "scout", "plan", "implement", "build":
 		default:
-			submitError(w, http.StatusBadRequest, "unknown workflow "+strconv.Quote(body.Workflow), "")
+			submitError(w, http.StatusBadRequest, "unknown workflow "+strconv.Quote(body.Workflow))
 			return
 		}
 		switch {
 		case (prompt == "") == (issue == ""):
-			submitError(w, http.StatusBadRequest, "enter a prompt or an issue reference, not both", "")
+			submitError(w, http.StatusBadRequest, "enter a prompt or an issue reference, not both")
 			return
 		case body.Workflow == "scout" && issue != "":
-			submitError(w, http.StatusBadRequest, "scout takes a prompt, not an issue", "")
+			submitError(w, http.StatusBadRequest, "scout takes a prompt, not an issue")
 			return
 		}
 		if _, err := db.Project(body.Repo); errors.Is(err, sql.ErrNoRows) {
-			submitError(w, http.StatusBadRequest, "no recorded project at "+body.Repo, "")
+			submitError(w, http.StatusBadRequest, "no recorded project at "+body.Repo)
 			return
 		} else if err != nil {
-			submitError(w, http.StatusInternalServerError, err.Error(), "")
+			submitError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		id, err := submit(body.Workflow, body.Repo, prompt, issue)
-		if duplicate(w, err) {
-			return
-		}
 		// ponytail: every other failure is reported as the request's problem;
 		// split out 500s if database errors turn up here in practice.
 		if err != nil {
-			submitError(w, http.StatusBadRequest, err.Error(), "")
+			submitError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -353,20 +350,17 @@ func reviseRun(revise func(runID, request string) (int, error)) http.HandlerFunc
 		}
 		request := strings.TrimSpace(body.Request)
 		if request == "" {
-			submitError(w, http.StatusBadRequest, "describe the change to make", "")
+			submitError(w, http.StatusBadRequest, "describe the change to make")
 			return
 		}
 		id := r.PathValue("id")
 		n, err := revise(id, request)
-		if duplicate(w, err) {
-			return
-		}
 		switch {
 		case errors.Is(err, trace.ErrNotRevisable):
-			submitError(w, http.StatusConflict, err.Error(), "")
+			submitError(w, http.StatusConflict, err.Error())
 			return
 		case err != nil:
-			submitError(w, http.StatusBadRequest, err.Error(), "")
+			submitError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -385,13 +379,13 @@ func cancelRun(cancel func(runID string) (string, error)) http.HandlerFunc {
 		status, err := cancel(r.PathValue("id"))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			submitError(w, http.StatusNotFound, "no such run", "")
+			submitError(w, http.StatusNotFound, "no such run")
 			return
 		case errors.Is(err, trace.ErrAlreadyDone):
-			submitError(w, http.StatusConflict, "already finished: "+status, "")
+			submitError(w, http.StatusConflict, "already finished: "+status)
 			return
 		case err != nil:
-			submitError(w, http.StatusInternalServerError, err.Error(), "")
+			submitError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -406,39 +400,23 @@ func cancelRun(cancel func(runID string) (string, error)) http.HandlerFunc {
 func browserJSON(w http.ResponseWriter, r *http.Request, body any) bool {
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if r.Header.Get("Origin") != "http://"+r.Host || mediaType != "application/json" {
-		submitError(w, http.StatusForbidden, "forbidden", "")
+		submitError(w, http.StatusForbidden, "forbidden")
 		return false
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBody)).Decode(body); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			submitError(w, http.StatusRequestEntityTooLarge, "request is larger than 64 KiB", "")
+			submitError(w, http.StatusRequestEntityTooLarge, "request is larger than 64 KiB")
 			return false
 		}
-		submitError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "")
+		submitError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}
 	return true
 }
 
-// duplicate answers a submission another run's checkout ownership refused,
-// naming the holder, and reports whether it did.
-func duplicate(w http.ResponseWriter, err error) bool {
-	if !errors.Is(err, trace.ErrDuplicateBuild) {
-		return false
-	}
-	// Submit and Revise name the holder after the sentinel's text.
-	holder, _ := strings.CutPrefix(err.Error(), trace.ErrDuplicateBuild.Error()+": ")
-	submitError(w, http.StatusConflict, trace.ErrDuplicateBuild.Error(), holder)
-	return true
-}
-
-func submitError(w http.ResponseWriter, code int, msg, runID string) {
-	body := map[string]string{"error": msg}
-	if runID != "" {
-		body["run_id"] = runID
-	}
-	writeStatus(w, code, body)
+func submitError(w http.ResponseWriter, code int, msg string) {
+	writeStatus(w, code, map[string]string{"error": msg})
 }
 
 // writeStatus answers code with v as JSON.

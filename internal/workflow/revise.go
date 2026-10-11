@@ -24,10 +24,11 @@ const diffLimit = 20000
 // pushes it to the same pull request. The run keeps its ID, its pull request
 // and its history; this is one more iteration of it.
 //
-// Every revision enters at the planner, however small, and gets fresh plan
-// review and repair allowances. Only an accepted change is published: anything
-// else stops before the commit and leaves the work uncommitted in the tree,
-// with the pull request where it was. A plan that needs no code change is
+// It commits on HEAD as it stands, which may be detached, and moves no local
+// branch. Every revision enters at the planner, however small, and gets fresh
+// plan review and repair allowances. Only an accepted change is published:
+// anything else stops before the commit and leaves the work uncommitted, with
+// the pull request where it was. A plan that needs no code change is
 // validated as the branch stands and succeeds without a commit.
 //
 // Publication is lathe's own, as in build: the committer writes the message,
@@ -54,7 +55,7 @@ func Revise(r *run.Run) int {
 	g.Add(run.Node{Name: "commit", Owner: "committer"}, func(e *run.Entry) (string, error) {
 		if !c.v.Accepted() {
 			printOutcome(r.Out, &c.v)
-			return "", fmt.Errorf("validation %s: %s; the changes are left uncommitted and the pull request is unchanged",
+			return "", fmt.Errorf("validation %s: %s; the changes are left uncommitted (saved as the iteration's result patch) and the pull request is unchanged",
 				c.v.Outcome, c.v.Reason)
 		}
 		paths, err := permit.Changed(r.Repo)
@@ -101,7 +102,11 @@ func Revise(r *run.Run) int {
 // and the push, since git cannot see that — so it is read again afterwards,
 // and the iteration fails if it closed, saying whether the commit was pushed.
 func publish(e *run.Entry, r *run.Run, rev *run.Revision, sha string) error {
-	local := fmt.Sprintf("the change is committed locally on %s as %s", rev.Branch, short(sha))
+	local := fmt.Sprintf("the change is committed locally as %s on top of %s; lathe keeps it under %s",
+		short(sha), rev.Branch, workspace.RecoveryRef(r.ID, r.Iteration))
+	if err := publishable(r); err != nil {
+		return fmt.Errorf("%w, and %s", err, local)
+	}
 	pr, err := workspace.ViewPR(r.Repo, rev.PR)
 	if err != nil {
 		return fmt.Errorf("%w; nothing was pushed, and %s", err, local)

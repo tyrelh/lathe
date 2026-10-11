@@ -50,7 +50,8 @@ func codeStub(t *testing.T) string {
 
 	// gh pr view answers from gh-states, one state per view in order (the last
 	// repeats; OPEN without the file), so a test can close a pull request at a
-	// chosen moment. Every gh pr create is counted in gh-creates.
+	// chosen moment. Every gh pr create is counted in gh-creates and records
+	// the branch it was run on in gh-head, which views report as the head.
 	gh := fmt.Sprintf(`#!/bin/sh
 if [ "$1 $2" = "pr view" ]; then
   n=0; [ ! -f %[1]q/gh-views ] || n=$(cat %[1]q/gh-views); echo $((n+1)) > %[1]q/gh-views
@@ -59,10 +60,12 @@ if [ "$1 $2" = "pr view" ]; then
     state=$(sed -n "$((n+1))p" %[1]q/gh-states); [ -n "$state" ] || state=$(tail -n 1 %[1]q/gh-states)
   fi
   base=main; [ ! -f %[1]q/gh-base ] || base=$(cat %[1]q/gh-base)
-  printf '{"url":"%[2]s","state":"%%s","headRefName":"feat/greet-the-world","baseRefName":"%%s"}\n' "$state" "$base"
+  head=feat/greet-the-world; [ ! -f %[1]q/gh-head ] || head=$(cat %[1]q/gh-head)
+  printf '{"url":"%[2]s","state":"%%s","headRefName":"%%s","baseRefName":"%%s"}\n' "$state" "$head" "$base"
   exit 0
 fi
 echo created >> %[1]q/gh-creates
+git branch --show-current > %[1]q/gh-head
 printf '%%s\n' "$@" > %[1]q/gh-args
 for a in "$@"; do [ ! -f "$a" ] || cp "$a" %[1]q/gh-body; done
 if [ -f %[1]q/gh-fail ]; then echo "no git remote found" >&2; exit 1; fi
@@ -613,7 +616,7 @@ func TestBuildDraftsUnacceptedWork(t *testing.T) {
 					t.Errorf("draft body missing %q: %s", want, body)
 				}
 			}
-			if got := strings.TrimSpace(gitBuild(t, origin, "rev-parse", "feat/greet-the-world")); got != strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD")) {
+			if got := strings.TrimSpace(gitBuild(t, origin, "rev-parse", builtBranch(t))); got != strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD")) {
 				t.Fatalf("the draft's branch was not pushed: %s", got)
 			}
 			if !strings.Contains(stubFile(t, stub, "args.committer.0"), "do not describe it as tested") {

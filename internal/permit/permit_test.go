@@ -7,8 +7,20 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
+
+// TestMain lets this test binary serve as the supervisor helper, so the
+// supervised tests run git the way a writing run does.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == process.HelperArg {
+		os.Exit(process.Helper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
 
 // The shipped deny list, so the test is about the patterns lathe actually runs
 // with rather than fixtures that could drift away from them.
@@ -316,5 +328,194 @@ func TestEnforceTreatsBracketedPathsLiterally(t *testing.T) {
 	}
 	if got := read(t, repo, "pages/blog/[slug].tsx"); got != "route\n" {
 		t.Fatalf("[slug].tsx = %q", got)
+	}
+}
+
+// worktree adds a detached worktree of repo at HEAD, as a writing run gets.
+func worktree(t *testing.T, repo string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "wt")
+	gitIn(t, repo, "worktree", "add", "-q", "--detach", dir, "HEAD")
+	return dir
+}
+
+// Enforce in one worktree reverts only that worktree: the source checkout and
+// a sibling worktree share its object store and refs, and none of their dirt is
+// the run's.
+func TestEnforceStaysInsideItsWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	wt, sibling := worktree(t, repo), worktree(t, repo)
+	for _, dir := range []string{repo, sibling} {
+		write(t, dir, "tracked.txt", "someone else's edit\n")
+		write(t, dir, "theirs.go", "package main\n")
+	}
+	write(t, wt, "tracked.txt", "the agent's edit\n")
+	write(t, wt, "escaped.go", "package main\n")
+
+	kept, reverted, err := Enforce(wt, Scope{Allow: []string{"tracked.txt"}, Deny: shipped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(kept, []string{"tracked.txt"}) || !slices.Equal(reverted, []string{"escaped.go"}) {
+		t.Fatalf("kept %v, reverted %v", kept, reverted)
+	}
+	for _, dir := range []string{repo, sibling} {
+		if got := read(t, dir, "tracked.txt"); got != "someone else's edit\n" {
+			t.Fatalf("%s: tracked.txt = %q", dir, got)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "theirs.go")); err != nil {
+			t.Fatalf("%s: an untracked file outside the worktree was removed: %v", dir, err)
+		}
+	}
+	if err := Clean(repo); err == nil {
+		t.Fatal("the source checkout's dirt should be its own, not cleaned away")
+	}
+}
+
+// In a worktree .git is a file naming the real git directory. Protected paths
+// written beside it go, allowed or not, and the .git file itself is left alone.
+func TestEnforceRevertsProtectedPathsInAWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktree(t, repo)
+	pointer := read(t, wt, ".git")
+	if !strings.HasPrefix(pointer, "gitdir: ") {
+		t.Fatalf(".git in a worktree should be a gitdir file: %q", pointer)
+	}
+	protected := []string{".env", "config/.env.local", "certs/server.pem", "deploy/id.key"}
+	for _, p := range protected {
+		write(t, wt, p, "secret\n")
+	}
+
+	_, reverted, err := Enforce(wt, Scope{Allow: protected, Deny: shipped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(reverted)
+	want := slices.Clone(protected)
+	sort.Strings(want)
+	if !slices.Equal(reverted, want) {
+		t.Fatalf("reverted = %v; want %v", reverted, want)
+	}
+	if got := read(t, wt, ".git"); got != pointer {
+		t.Fatalf(".git changed: %q", got)
+	}
+	if err := Clean(wt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A symlink committed nowhere and pointing out of the worktree is untracked
+// dirt like any other: Enforce removes the link and never follows it.
+func TestEnforceRemovesASymlinkOutOfTheWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktree(t, repo)
+	if err := os.Symlink(filepath.Join(repo, "tracked.txt"), filepath.Join(wt, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	_, reverted, err := Enforce(wt, Scope{Deny: shipped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reverted, []string{"link.txt"}) {
+		t.Fatalf("reverted = %v", reverted)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, "link.txt")); !os.IsNotExist(err) {
+		t.Fatal("the link survived")
+	}
+	if got := read(t, repo, "tracked.txt"); got != "original\n" {
+		t.Fatalf("the link's target changed: %q", got)
+	}
+}
+
+// launches is a Registrar counting the supervised launches it saw.
+type launches struct {
+	mu                        sync.Mutex
+	intents, registered, done int
+}
+
+func (l *launches) Intent(string, []string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.intents++
+	return nil
+}
+
+func (l *launches) Register(string, process.Registration) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.registered++
+	return nil
+}
+
+func (l *launches) Drained(string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.done++
+	return nil
+}
+
+// With a runner installed, as a writing run installs one, every git command
+// the boundary runs is a supervised launch, and the answers are the same as
+// running git directly.
+func TestBoundaryRunsGitSupervised(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktree(t, repo)
+	l := &launches{}
+	defer process.Install(&process.Runner{Bin: os.Args[0], Registrar: l})()
+
+	if err := Clean(wt); err != nil {
+		t.Fatal(err)
+	}
+	before, err := Fingerprint(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, wt, "tracked.txt", "changed\n")
+	write(t, wt, "leavings.txt", "test output\n")
+	// tracked.txt is committed, so inHEAD has to answer through the runner for
+	// it to count; leavings.txt is not, so it must not.
+	changed, err := Mutations(wt, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(changed, []string{"tracked.txt"}) {
+		t.Fatalf("mutations = %v; want tracked.txt", changed)
+	}
+	_, reverted, err := Enforce(wt, Scope{Deny: shipped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(reverted)
+	if !slices.Equal(reverted, []string{"leavings.txt", "tracked.txt"}) {
+		t.Fatalf("reverted = %v", reverted)
+	}
+	if got := read(t, wt, "tracked.txt"); got != "original\n" {
+		t.Fatalf("tracked.txt = %q", got)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.intents == 0 || l.intents != l.registered || l.registered != l.done {
+		t.Fatalf("launches: %d intents, %d registered, %d drained; want every git command supervised and drained",
+			l.intents, l.registered, l.done)
+	}
+}
+
+// A failing git command through the runner is still an error naming where it
+// ran, not an empty status read as a clean tree.
+func TestStatusFailsSupervised(t *testing.T) {
+	defer process.Install(&process.Runner{Bin: os.Args[0], Registrar: &launches{}})()
+	dir := t.TempDir()
+	err := Clean(dir)
+	if err == nil || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("Clean outside a repository = %v", err)
+	}
+}
+
+// Partition keeps order, skips empty names and splits on the deny list.
+func TestPartition(t *testing.T) {
+	denied, kept := Partition([]string{"a.go", "", ".env", "x/.git/config", "b.go"}, []string{".env*", ".git/"})
+	if strings.Join(denied, ",") != ".env,x/.git/config" || strings.Join(kept, ",") != "a.go,b.go" {
+		t.Fatalf("denied %v kept %v", denied, kept)
 	}
 }

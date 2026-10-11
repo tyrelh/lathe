@@ -125,6 +125,15 @@ type code struct {
 	v        Validation
 }
 
+// patchNote says where a managed worktree's result is saved, or "" for a run
+// in the caller's tree.
+func patchNote(r *run.Run) string {
+	if r.Base() == "" {
+		return ""
+	}
+	return fmt.Sprintf("; lathe saves them as %s/result.patch, to apply from a checkout at %s", r.Dir, short(r.Base()))
+}
+
 // addRequestNode opens a writing workflow. The request is a phase so the trace
 // starts with what was asked, in the same table as everything that followed
 // from it, and the checkout is refused here if it is not clean.
@@ -305,10 +314,8 @@ func printOutcome(w io.Writer, v *Validation) {
 }
 
 // Implement plans, implements and validates a change. Reports live in the run
-// directory; the implementation stays in the target working tree for the user
-// to review, whether or not it was accepted. Implement never commits, pushes or
-// opens anything: an unaccepted change stays local. Build is this run plus the
-// three git phases that ship it.
+// directory. The implementation is left uncommitted in the tree it ran in,
+// accepted or not. Implement never commits, pushes or opens anything.
 func Implement(r *run.Run) int {
 	var c code
 
@@ -322,9 +329,12 @@ func Implement(r *run.Run) int {
 	}
 	fmt.Fprintf(r.Out, "\n%s\n", *c.out.Summary)
 	section(r.Out, "changed (uncommitted)", *c.out.Changed)
+	if note := patchNote(r); note != "" {
+		fmt.Fprintf(r.Out, "\n %s\n", strings.TrimPrefix(note, "; "))
+	}
 	if !c.v.Accepted() {
 		printOutcome(r.Out, &c.v)
-		return r.Finish(false, fmt.Sprintf("validation %s: %s; the changes are left uncommitted", c.v.Outcome, c.v.Reason))
+		return r.Finish(false, fmt.Sprintf("validation %s: %s; the changes are left uncommitted and unaccepted%s", c.v.Outcome, c.v.Reason, patchNote(r)))
 	}
 	return r.Finish(true, "")
 }

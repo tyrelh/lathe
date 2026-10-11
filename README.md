@@ -23,7 +23,7 @@ lathe scout "where is auth handled"      # investigate; writes nothing
 lathe plan "add retry to the client"     # plan; writes nothing
 lathe plan --issue 41                    # plan from an issue in this repo
 lathe implement --issue tyrelh/lathe#41   # implement from a GitHub issue
-lathe implement "add retry"              # plan, implement, test; leave it uncommitted
+lathe implement "add retry"              # plan, implement, test; save it as result.patch
 lathe build "add retry"                  # implement, then branch, commit and open a PR
 lathe build --detach "add retry"         # queue it and exit
 lathe revise <id> "log the retry count"  # push another change to that build's pull request
@@ -47,7 +47,10 @@ revise:    request → auth → [route-plan] → plan → review → [route-buil
 
 - Ctrl-C just detaches from a run. Use `lathe cancel` if you actually want to stop it.
 - Your first run starts a manager, and workers inherit its environment. So export your provider keys (like `MOONSHOT_API_KEY` or `TYPESAFE_API_KEY`) first, and restart the manager if you change them. `LATHE_CAPACITY` sets how many runs go at once (default 1).
-- `implement`, `build` and `revise` need a clean checkout. `build`, `revise` and `--issue` need `gh` logged in.
+- `implement`, `build` and `revise` run in a git worktree of their own under `~/.local/share/lathe/worktrees`, at the commit you were on when you submitted. Your checkout is never touched, so it can be dirty or on another branch, and several can run at once for one repo. Worktrees are removed when the run stops; the manager cleans up after lost runs when it starts. See [ADR 0009](docs/adr/0009-writing-runs-use-worktrees.md).
+- `implement` saves its change as `result.patch` in the run directory, and `lathe show <id>` prints where. Apply it from a checkout at the run's base commit with `git apply --index <patch>`. A failed or cancelled run saves its partial work the same way, marked unaccepted. Commits nothing else reaches are kept under `refs/lathe/runs/<id>/iteration-<n>`.
+- A fresh worktree has the shared Go caches but not `node_modules` or other ignored files, so the first test run can be slow, and each concurrent worktree is a full copy of the tree on disk. It is not a sandbox.
+- `build`, `revise` and `--issue` need `gh` logged in.
 - Every run checks auth for all the providers it'll use before any agent starts. If that fails, `pi auth check --provider <provider> --json` is the quickest way to see why.
 - The builder can only write the files its plan named. Agents with `web_read` can't read secrets or `.git/`, but repo source can still leave through a URL, so keep that in mind for private repos.
 - A test exit of 126 or 127 means something is wrong with the environment (missing executable, bad `PATH`), so the run stops there with no repairs and no commit.

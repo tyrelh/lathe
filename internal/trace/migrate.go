@@ -71,6 +71,36 @@ INSERT INTO iterations (run_id, iteration, request, spec, status, reason, submit
 CREATE INDEX IF NOT EXISTS runs_activity ON runs (COALESCE(activity_at, '') DESC, run_id DESC);
 CREATE INDEX IF NOT EXISTS runs_repo_activity ON runs (COALESCE(repo, ''), COALESCE(activity_at, '') DESC, run_id DESC);
 `,
+	// 5: managed worktrees and supervised launches. A writing iteration runs
+	// in its own worktree, recorded with its cleanup state and where its
+	// result was preserved. An attempt records how it executes; every attempt
+	// before this one ran in the checkout. A launch is one supervised
+	// subprocess: intent, then registration, then drained.
+	`
+ALTER TABLE iterations ADD COLUMN worktree_path TEXT;
+ALTER TABLE iterations ADD COLUMN worktree_state TEXT;
+ALTER TABLE iterations ADD COLUMN worktree_error TEXT;
+ALTER TABLE iterations ADD COLUMN patch_path TEXT;
+ALTER TABLE iterations ADD COLUMN recovery_ref TEXT;
+ALTER TABLE attempts ADD COLUMN mode TEXT NOT NULL DEFAULT 'checkout';
+CREATE TABLE IF NOT EXISTS launches (
+  launch_id     TEXT PRIMARY KEY,
+  run_id        TEXT NOT NULL,
+  attempt_id    TEXT NOT NULL,
+  state         TEXT NOT NULL,
+  argv          TEXT,
+  host          TEXT,
+  pid           INTEGER NOT NULL DEFAULT 0,
+  pgid          INTEGER NOT NULL DEFAULT 0,
+  endpoint      TEXT,
+  token         TEXT,
+  intent_at     TEXT,
+  registered_at TEXT,
+  drained_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS launches_attempt ON launches (attempt_id, state);
+CREATE INDEX IF NOT EXISTS iterations_worktree ON iterations (worktree_state);
+`,
 }
 
 // migrate applies every migration the database has not seen yet.

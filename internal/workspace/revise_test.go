@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeGH puts a gh on PATH that reports one pull request from the file pr.json
@@ -43,8 +44,10 @@ func shipped(t *testing.T) (repo, origin, sha string) {
 	return repo, origin, head
 }
 
-// Every way the checkout or the pull request can have moved on refuses the
-// revision and names what to restore; nothing is switched or repaired.
+// Every way the pull request or origin's branch can have moved on refuses the
+// revision and names what to restore; nothing is switched or repaired. The
+// local checkout's branch, HEAD and changes do not matter: a revision runs in
+// a worktree of its own.
 func TestCheckRevisable(t *testing.T) {
 	const open = `{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}`
 	commit := func(t *testing.T, repo string) {
@@ -56,9 +59,12 @@ func TestCheckRevisable(t *testing.T) {
 		change         func(t *testing.T, repo, origin, sha string)
 	}{
 		{"eligible", open, "", nil},
-		{"another branch", open, "check out feat/x", func(t *testing.T, repo, _, _ string) { run(t, repo, "checkout", "-q", "main") }},
-		{"a manual commit", open, "changed outside lathe", func(t *testing.T, repo, _, _ string) { commit(t, repo) }},
-		{"reset back", open, "changed outside lathe", func(t *testing.T, repo, _, _ string) { run(t, repo, "reset", "-q", "--hard", "HEAD^") }},
+		{"checkout on another branch", open, "", func(t *testing.T, repo, _, _ string) { run(t, repo, "checkout", "-q", "main") }},
+		{"an unpushed local commit", open, "", func(t *testing.T, repo, _, _ string) { commit(t, repo) }},
+		{"a dirty checkout", open, "", func(t *testing.T, repo, _, _ string) {
+			os.WriteFile(filepath.Join(repo, "a.txt"), []byte("dirty\n"), 0o644)
+		}},
+		{"local branch reset back", open, "", func(t *testing.T, repo, _, _ string) { run(t, repo, "reset", "-q", "--hard", "HEAD^") }},
 		{"a push to the pull request", open, "is at", func(t *testing.T, repo, _, sha string) {
 			commit(t, repo)
 			run(t, repo, "push", "-q", "origin", "feat/x")
@@ -92,6 +98,45 @@ func TestCheckRevisable(t *testing.T) {
 				t.Fatal("the check moved HEAD")
 			}
 		})
+	}
+}
+
+// FetchBranch brings origin's branch into the remote-tracking ref and names
+// its commit, leaving the checkout's branch and HEAD alone.
+func TestFetchBranch(t *testing.T) {
+	repo, origin, sha := shipped(t)
+	other := t.TempDir()
+	run(t, other, "clone", "-q", origin, ".")
+	run(t, other, "checkout", "-q", "feat/x")
+	os.WriteFile(filepath.Join(other, "a.txt"), []byte("theirs\n"), 0o644)
+	run(t, other, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "theirs")
+	run(t, other, "push", "-q", "origin", "feat/x")
+	theirs, _ := Head(other)
+
+	got, err := FetchBranch(repo, "feat/x")
+	if err != nil || got != theirs {
+		t.Fatalf("FetchBranch = %s, %v; want %s", got, err, theirs)
+	}
+	if head, _ := Head(repo); head != sha {
+		t.Fatalf("the fetch moved HEAD to %s", head)
+	}
+}
+
+// A fetch that finds its remote-tracking ref locked by another fetch waits
+// for it rather than failing.
+func TestFetchBranchWaitsForALockedRef(t *testing.T) {
+	repo, _, sha := shipped(t)
+	lock := filepath.Join(repo, ".git", "refs", "remotes", "origin", "feat", "x.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(300*time.Millisecond, func() { os.Remove(lock) })
+
+	if got, err := FetchBranch(repo, "feat/x"); err != nil || got != sha {
+		t.Fatalf("FetchBranch = %s, %v; want %s", got, err, sha)
 	}
 }
 

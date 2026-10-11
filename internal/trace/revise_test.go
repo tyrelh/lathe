@@ -154,20 +154,20 @@ func TestReviseRefuses(t *testing.T) {
 		})
 	}
 
-	// Another run holding the checkout blocks the revision, as it blocks a build.
+	// Other writing runs in the same repository do not block a revision, which
+	// runs in a worktree of its own; nor does a queued revision block a build.
+	// The same run still takes one revision at a time.
 	db := open(t)
 	id, _ := built(t, db, "/shared")
-	other := submit(t, db, "implement", "/shared")
-	if _, err := db.Revise(id, 0, "again", nil); !errors.Is(err, ErrDuplicateBuild) || !strings.Contains(err.Error(), other) {
-		t.Fatalf("err = %v; want ErrDuplicateBuild naming %s", err, other)
-	}
-	// And once accepted, the revision holds it against a new build.
-	db.RequestCancel(other)
+	submit(t, db, "implement", "/shared")
 	if _, err := db.Revise(id, 0, "again", nil); err != nil {
-		t.Fatal(err)
+		t.Fatalf("a revision beside another writing run: %v", err)
 	}
-	if _, err := trySubmit(db, "build", "/shared"); !errors.Is(err, ErrDuplicateBuild) {
-		t.Fatalf("a build was accepted into a checkout a queued revision owns: %v", err)
+	if _, err := trySubmit(db, "build", "/shared"); err != nil {
+		t.Fatalf("a build beside a queued revision: %v", err)
+	}
+	if _, err := db.Revise(id, 1, "and again", nil); !errors.Is(err, ErrNotRevisable) {
+		t.Fatalf("a second revision of a queued iteration: %v; want ErrNotRevisable", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite" // pure Go: cross-compiles without a C toolchain
@@ -115,8 +116,22 @@ type DB struct{ sql *sql.DB }
 // Open creates dataRoot if needed and opens lathe.db inside it, applying the
 // schema. Close it when the run ends.
 func Open(dataRoot string) (*DB, error) {
-	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
+	if err := Private(dataRoot); err != nil {
 		return nil, err
+	}
+	// Created private before SQLite opens it, and tightened if it exists:
+	// the database holds supervisor stop tokens and run history. SQLite
+	// gives the WAL sidecars it creates the database's mode.
+	path := filepath.Join(dataRoot, dbFile)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
 	// Transactions take the write lock when they begin. A deferred one that
 	// reads and then writes fails at once with SQLITE_BUSY if another process
@@ -149,6 +164,29 @@ func Open(dataRoot string) (*DB, error) {
 		return nil, err
 	}
 	return &DB{sql: db}, nil
+}
+
+// Private creates dir with owner-only access, or tightens an existing one to
+// it. A path that is a symlink or not owned by this user is refused rather
+// than tightened.
+func Private(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("%s belongs to another user; lathe will not keep its data there", dir)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		return os.Chmod(dir, 0o700)
+	}
+	return nil
 }
 
 // Init creates and migrates the database, then closes it. The dashboard calls

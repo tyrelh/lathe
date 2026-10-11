@@ -9,6 +9,7 @@ package trace
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -37,8 +38,6 @@ func Terminal(status string) bool {
 }
 
 var (
-	// ErrDuplicateBuild is a second outstanding writing run for one checkout.
-	ErrDuplicateBuild = errors.New("a run that owns this checkout is already outstanding")
 	// ErrClaimLost means another process owns this attempt now, or the run is
 	// already terminal. A worker that sees it stops without writing anything.
 	ErrClaimLost = errors.New("this attempt is no longer ours")
@@ -58,15 +57,9 @@ type Request struct {
 	Request  string
 	Branch   string
 	Spec     []byte
-	// Exclusive is a run that owns its checkout: at most one of them may be
-	// outstanding per repository. The submitter sets it from the workflow list,
-	// which is what keeps workflow names out of this package.
-	Exclusive bool
 }
 
-// Submit records a queued run and returns its ID. The exclusivity check and
-// the insert share one transaction, so two submitters cannot both see an empty
-// queue.
+// Submit records a queued run and returns its ID.
 func (d *DB) Submit(r Request) (string, error) {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -74,24 +67,11 @@ func (d *DB) Submit(r Request) (string, error) {
 	}
 	defer tx.Rollback()
 
-	if r.Exclusive {
-		var other string
-		err := tx.QueryRow(
-			`SELECT run_id FROM runs WHERE repo = ? AND exclusive = 1
-			   AND status IN ('queued', 'starting', 'running') LIMIT 1`, r.Repo).Scan(&other)
-		switch {
-		case err == nil:
-			return "", fmt.Errorf("%w: %s", ErrDuplicateBuild, other)
-		case !errors.Is(err, sql.ErrNoRows):
-			return "", err
-		}
-	}
-
 	id, at := NewRunID(r.Workflow), nowUTC()
 	if _, err := tx.Exec(
-		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, exclusive, submitted_at, activity_at)
-		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
-		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, r.Exclusive, at, at); err != nil {
+		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, submitted_at, activity_at)
+		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, at, at); err != nil {
 		return "", err
 	}
 	if _, err := tx.Exec(
@@ -104,9 +84,9 @@ func (d *DB) Submit(r Request) (string, error) {
 
 // Revise accepts another request against a finished run: it appends an
 // iteration and puts the same run back in the queue. expect is the iteration
-// the caller checked the checkout and pull request against; if another was
-// submitted since, those checks describe the wrong state and this refuses.
-// Eligibility, exclusivity, the append and the requeue share one transaction,
+// the caller checked the pull request against; if another was submitted
+// since, those checks describe the wrong state and this refuses.
+// Eligibility, the append and the requeue share one transaction,
 // so two submitters cannot both be accepted. The run keeps its ID, its totals,
 // its creation and first-start times; the new submission time is what the
 // queue orders it by.
@@ -117,26 +97,16 @@ func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int,
 	}
 	defer tx.Rollback()
 
-	var status, repo string
+	var status string
 	var n int
-	if err := tx.QueryRow(`SELECT status, COALESCE(repo, ''), iteration FROM runs WHERE run_id = ?`, runID).
-		Scan(&status, &repo, &n); err != nil {
+	if err := tx.QueryRow(`SELECT status, iteration FROM runs WHERE run_id = ?`, runID).
+		Scan(&status, &n); err != nil {
 		return 0, err
 	}
 	if n != expect {
 		return 0, fmt.Errorf("%w: iteration %d was submitted after this request was checked; inspect the run before retrying", ErrNotRevisable, n)
 	}
 	if err := Revisable(Row{Status: status, Iteration: n}); err != nil {
-		return 0, err
-	}
-	var other string
-	err = tx.QueryRow(
-		`SELECT run_id FROM runs WHERE repo = ? AND exclusive = 1 AND run_id != ?
-		   AND status IN ('queued', 'starting', 'running') LIMIT 1`, repo, runID).Scan(&other)
-	switch {
-	case err == nil:
-		return 0, fmt.Errorf("%w: %s", ErrDuplicateBuild, other)
-	case !errors.Is(err, sql.ErrNoRows):
 		return 0, err
 	}
 
@@ -217,7 +187,20 @@ type Attempt struct {
 	Heartbeat  string
 	LeaseUntil string
 	Outcome    string
+	// Mode is how the attempt executes: ModeCheckout, ModeWorktree or
+	// ModeReject. Attempts from before worktrees are ModeCheckout.
+	Mode string
 }
+
+// Execution modes an attempt is dispatched with.
+const (
+	// ModeCheckout runs in the source checkout, which it coordinates for.
+	ModeCheckout = "checkout"
+	// ModeWorktree runs in a managed worktree of its own.
+	ModeWorktree = "worktree"
+	// ModeReject only records a refusal; it touches no checkout.
+	ModeReject = "reject"
+)
 
 // NewAttemptID derives a dispatch identity from the run it belongs to, so a
 // log directory sorts beside its run and a stray file names its owner.
@@ -230,6 +213,11 @@ func NewClaimToken() string { return randomHex(16) }
 // manager that dies between this and the launch leaves a starting run with an
 // unclaimed attempt, which is exactly what reconciliation looks for.
 func (d *DB) Reserve(runID, attemptID, logPath string) error {
+	return d.ReserveMode(runID, attemptID, logPath, ModeCheckout)
+}
+
+// ReserveMode is Reserve recording the attempt's execution mode.
+func (d *DB) ReserveMode(runID, attemptID, logPath, mode string) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err
@@ -248,9 +236,9 @@ func (d *DB) Reserve(runID, attemptID, logPath string) error {
 		return ErrClaimLost
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO attempts (attempt_id, run_id, dispatched_at, log_path, iteration)
-		 VALUES (?, ?, ?, ?, (SELECT iteration FROM runs WHERE run_id = ?))`,
-		attemptID, runID, nowUTC(), logPath, runID); err != nil {
+		`INSERT INTO attempts (attempt_id, run_id, dispatched_at, log_path, iteration, mode)
+		 VALUES (?, ?, ?, ?, (SELECT iteration FROM runs WHERE run_id = ?), ?)`,
+		attemptID, runID, nowUTC(), logPath, runID, mode); err != nil {
 		return err
 	}
 	if err := mirror(tx, runID); err != nil {
@@ -528,7 +516,15 @@ type Iteration struct {
 	Base   string `json:"base_commit"`
 	Commit string `json:"commit"`
 	Remote string `json:"remote"`
-	Spec   []byte `json:"-"`
+	// Worktree is where a writing iteration executed, WorktreeState its
+	// cleanup state and CleanupError why cleanup is pending. Patch and
+	// RecoveryRef are where its result was preserved.
+	Worktree      string `json:"worktree"`
+	WorktreeState string `json:"worktree_state"`
+	CleanupError  string `json:"cleanup_error"`
+	Patch         string `json:"patch"`
+	RecoveryRef   string `json:"recovery_ref"`
+	Spec          []byte `json:"-"`
 }
 
 // Iterations is every iteration of a run, oldest first.
@@ -536,7 +532,9 @@ func (d *DB) Iterations(runID string) ([]Iteration, error) {
 	rows, err := d.sql.Query(
 		`SELECT iteration, COALESCE(request, ''), COALESCE(status, ''), COALESCE(reason, ''),
 		        COALESCE(submitted_at, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''),
-		        COALESCE(base_commit, ''), COALESCE(commit_sha, ''), COALESCE(remote_sha, ''), COALESCE(spec, '')
+		        COALESCE(base_commit, ''), COALESCE(commit_sha, ''), COALESCE(remote_sha, ''),
+		        COALESCE(worktree_path, ''), COALESCE(worktree_state, ''), COALESCE(worktree_error, ''),
+		        COALESCE(patch_path, ''), COALESCE(recovery_ref, ''), COALESCE(spec, '')
 		 FROM iterations WHERE run_id = ? ORDER BY iteration`, runID)
 	if err != nil {
 		return nil, err
@@ -547,7 +545,8 @@ func (d *DB) Iterations(runID string) ([]Iteration, error) {
 		var it Iteration
 		var spec string
 		if err := rows.Scan(&it.N, &it.Request, &it.Status, &it.Reason, &it.Submitted, &it.Started,
-			&it.Ended, &it.Base, &it.Commit, &it.Remote, &spec); err != nil {
+			&it.Ended, &it.Base, &it.Commit, &it.Remote, &it.Worktree, &it.WorktreeState,
+			&it.CleanupError, &it.Patch, &it.RecoveryRef, &spec); err != nil {
 			return nil, err
 		}
 		it.Spec = []byte(spec)
@@ -562,10 +561,10 @@ func (d *DB) GetAttempt(attemptID string) (Attempt, error) {
 	var claimed, host, handle, logPath, beat, lease, outcome, token sql.NullString
 	err := d.sql.QueryRow(
 		`SELECT attempt_id, run_id, dispatched_at, claimed_at, claim_token, worker_pid,
-		        worker_host, handle, log_path, heartbeat_at, lease_until, outcome
+		        worker_host, handle, log_path, heartbeat_at, lease_until, outcome, mode
 		 FROM attempts WHERE attempt_id = ?`, attemptID).
 		Scan(&a.ID, &a.RunID, &a.Dispatched, &claimed, &token, &a.PID,
-			&host, &handle, &logPath, &beat, &lease, &outcome)
+			&host, &handle, &logPath, &beat, &lease, &outcome, &a.Mode)
 	a.Claimed, a.Host, a.Handle = claimed.String, host.String, handle.String
 	a.LogPath, a.Heartbeat, a.LeaseUntil, a.Outcome = logPath.String, beat.String, lease.String, outcome.String
 	return a, err
@@ -619,6 +618,192 @@ func (d *DB) HeldCheckouts() (map[string]string, error) {
 		held[path] = runID
 	}
 	return held, rows.Err()
+}
+
+// Worktree cleanup states. creating and active belong to a worker; cleaning
+// and pending are cleanup started or failed, which the manager retries;
+// removed is done.
+const (
+	WorktreeCreating = "creating"
+	WorktreeActive   = "active"
+	WorktreeCleaning = "cleaning"
+	WorktreePending  = "pending"
+	WorktreeRemoved  = "removed"
+)
+
+// Worktree is one iteration's managed worktree, with what recovery needs to
+// preserve and remove it.
+type Worktree struct {
+	RunID     string
+	Iteration int
+	Repo      string // the source checkout
+	Path      string
+	Base      string
+	RunStatus string
+	// Current is whether this is the run's latest iteration.
+	Current bool
+	Spec    []byte
+}
+
+// SetWorktree records the attempt's iteration worktree, the base commit it
+// starts from and its state, in one write. It lands only while attemptID owns
+// the run.
+func (d *DB) SetWorktree(runID, attemptID, path, base, state string) error {
+	return d.guarded(runID, attemptID, "", nil,
+		`UPDATE iterations SET worktree_path = ?, base_commit = ?, worktree_state = ?, worktree_error = NULL`,
+		[]any{path, nullIfEmpty(base), state})
+}
+
+// SetWorktreeState records an iteration's worktree cleanup state and, for
+// pending, why. It is not bound to a claim.
+func (d *DB) SetWorktreeState(runID string, iteration int, state, errMsg string) error {
+	_, err := d.sql.Exec(
+		`UPDATE iterations SET worktree_state = ?, worktree_error = ? WHERE run_id = ? AND iteration = ?`,
+		state, nullIfEmpty(errMsg), runID, iteration)
+	return err
+}
+
+// SetPatch records the iteration's latest patch export; empty records that
+// the export found nothing, superseding any earlier one.
+func (d *DB) SetPatch(runID string, iteration int, patch string) error {
+	_, err := d.sql.Exec(`UPDATE iterations SET patch_path = ? WHERE run_id = ? AND iteration = ?`,
+		nullIfEmpty(patch), runID, iteration)
+	return err
+}
+
+// SetRecoveryRef records the ref an iteration's commits are kept under.
+func (d *DB) SetRecoveryRef(runID string, iteration int, ref string) error {
+	_, err := d.sql.Exec(`UPDATE iterations SET recovery_ref = ? WHERE run_id = ? AND iteration = ?`,
+		nullIfEmpty(ref), runID, iteration)
+	return err
+}
+
+// Worktrees returns every recorded worktree not yet removed, oldest first.
+func (d *DB) Worktrees() ([]Worktree, error) {
+	rows, err := d.sql.Query(
+		`SELECT i.run_id, i.iteration, COALESCE(r.repo, ''), i.worktree_path, COALESCE(i.base_commit, ''),
+		        COALESCE(r.status, ''), i.iteration = r.iteration, COALESCE(i.spec, '')
+		 FROM iterations i JOIN runs r ON r.run_id = i.run_id
+		 WHERE COALESCE(i.worktree_path, '') != '' AND COALESCE(i.worktree_state, '') != 'removed'
+		 ORDER BY i.submitted_at, i.run_id, i.iteration`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Worktree
+	for rows.Next() {
+		var w Worktree
+		var spec string
+		if err := rows.Scan(&w.RunID, &w.Iteration, &w.Repo, &w.Path, &w.Base,
+			&w.RunStatus, &w.Current, &spec); err != nil {
+			return nil, err
+		}
+		w.Spec = []byte(spec)
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// Launch states.
+const (
+	LaunchIntent     = "intent"
+	LaunchRegistered = "registered"
+	LaunchDrained    = "drained"
+	LaunchCancelled  = "cancelled"
+)
+
+// ErrLaunchRevoked is a registration the run no longer admits.
+var ErrLaunchRevoked = errors.New("the launch is no longer admitted")
+
+// Launch is one supervised subprocess as recovery reads it.
+type Launch struct {
+	ID        string
+	RunID     string
+	AttemptID string
+	State     string
+	Host      string
+	PID       int
+	PGID      int
+	Endpoint  string
+	Token     string
+}
+
+// LaunchIntent records that attemptID is about to start a supervised
+// subprocess. It lands only while the attempt owns the run.
+func (d *DB) LaunchIntent(runID, attemptID, launchID string, argv []string) error {
+	b, _ := json.Marshal(argv)
+	res, err := d.sql.Exec(
+		`INSERT INTO launches (launch_id, run_id, attempt_id, state, argv, intent_at)
+		 SELECT ?, ?, ?, 'intent', ?, ? WHERE `+owned,
+		launchID, runID, attemptID, string(b), nowUTC(), runID, attemptID)
+	if err != nil {
+		return err
+	}
+	return claimed(res)
+}
+
+// LaunchRegistered records a started, not yet admitted, supervisor. It lands
+// only for an intent whose attempt still owns its run, so a run settled or
+// an intent cancelled meanwhile is never admitted: that is ErrLaunchRevoked.
+func (d *DB) LaunchRegistered(launchID, host string, pid, pgid int, endpoint, token string) error {
+	res, err := d.sql.Exec(
+		`UPDATE launches SET state = 'registered', host = ?, pid = ?, pgid = ?, endpoint = ?, token = ?, registered_at = ?
+		 WHERE launch_id = ? AND state = 'intent'
+		   AND EXISTS (SELECT 1 FROM runs r WHERE r.run_id = launches.run_id
+		     AND r.attempt_id = launches.attempt_id AND r.status IN ('starting', 'running'))`,
+		host, pid, pgid, endpoint, token, nowUTC(), launchID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrLaunchRevoked
+	}
+	return nil
+}
+
+// LaunchDrainedAt records that a launch's process group has stopped.
+func (d *DB) LaunchDrainedAt(launchID string) error {
+	_, err := d.sql.Exec(
+		`UPDATE launches SET state = 'drained', drained_at = ? WHERE launch_id = ? AND state IN ('intent', 'registered')`,
+		nowUTC(), launchID)
+	return err
+}
+
+// CancelLaunch revokes an intent that was never registered, and reports
+// whether it did. A registered launch is left for its group to be stopped.
+func (d *DB) CancelLaunch(launchID string) (bool, error) {
+	res, err := d.sql.Exec(
+		`UPDATE launches SET state = 'cancelled', drained_at = ? WHERE launch_id = ? AND state = 'intent'`,
+		nowUTC(), launchID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// OpenLaunches is every launch of runID not yet drained or cancelled.
+func (d *DB) OpenLaunches(runID string) ([]Launch, error) {
+	rows, err := d.sql.Query(
+		`SELECT launch_id, run_id, attempt_id, state, COALESCE(host, ''), pid, pgid,
+		        COALESCE(endpoint, ''), COALESCE(token, '')
+		 FROM launches WHERE run_id = ? AND state IN ('intent', 'registered') ORDER BY intent_at`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Launch
+	for rows.Next() {
+		var l Launch
+		if err := rows.Scan(&l.ID, &l.RunID, &l.AttemptID, &l.State, &l.Host, &l.PID, &l.PGID,
+			&l.Endpoint, &l.Token); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 func until(d time.Duration) string { return time.Now().UTC().Add(d).Format(time.RFC3339) }

@@ -96,6 +96,10 @@ so, so the work is not lost. The checkout is left on the new branch either way.
 Both facts are in the banner `lathe build` prints about owning the checkout, and
 in `SKILL.md`.
 
+## Since 0009
+
+Build runs in a managed worktree at the commit HEAD was on at submission, not in the person's checkout, which is never changed and may be dirty or elsewhere meanwhile. The branch it creates is the brancher's proposal with the random part of the run ID appended, derived once and checked by the gate before it is created, so concurrent builds that propose the same name get distinct branches. lathe commits, pushes and opens the pull request from the worktree; the branch stays in the shared refs after the worktree is removed. A failure after the commit keeps the commit on that branch. No commit may carry a protected path: the commit and, before any push, everything since the base are checked.
+
 ## Since 0004
 
 `commit` and `pr` now sit after `adjudicate`, not `test`. An accepted change ships as before. An unaccepted one — findings unresolved after four repairs, or validation incomplete — is still committed and opened as a draft pull request carrying the validation report, and the run fails: the draft hands unfinished work to a person, it does not claim it passed. Cancellation, a source change during validation and any other error still end the run before anything is committed.

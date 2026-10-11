@@ -58,10 +58,7 @@ func BranchUsable(e run.Envelope, r *run.Run) []string {
 	if !ok {
 		return nil
 	}
-	name := b.Name()
-	if current, err := workspace.Branch(r.Repo); err == nil && current == name {
-		return []string{fmt.Sprintf("%q is the branch that is already checked out; the change needs its own", name)}
-	}
+	name := RunBranch(r, b.Name())
 	switch {
 	case !workspace.ValidBranch(r.Repo, name):
 		return []string{fmt.Sprintf("git will not accept %q as a branch name", name)}
@@ -216,7 +213,8 @@ func Build(r *run.Run) int {
 			run.ArtifactsExist, run.FilesNonEmpty, BranchUsable); err != nil {
 			return "", err
 		}
-		branch = out.Name()
+		// The exact name BranchUsable checked.
+		branch = RunBranch(r, out.Name())
 		return "", workspace.Checkout(r.Repo, branch)
 	})
 
@@ -247,6 +245,9 @@ func Build(r *run.Run) int {
 		// lathe pushes, so gh pr create never has to and the deny list that puts
 		// `git push` out of every agent's reach stays intact. It happens before
 		// the turn: a push that fails should not cost one.
+		if err := publishable(r); err != nil {
+			return "", err
+		}
 		if err := workspace.Push(r.Repo, branch); err != nil {
 			return "", err
 		}
@@ -261,7 +262,7 @@ func Build(r *run.Run) int {
 			body += validationReport(&c.v)
 		}
 		body += verificationCallout(&c.v)
-		created, err := workspace.CreatePR(r.Repo, *out.Title, body, draft)
+		created, err := workspace.CreatePR(r.Repo, branch, *out.Title, body, draft)
 		if err != nil {
 			return "", err
 		}
@@ -300,6 +301,9 @@ func commit(e *run.Entry, r *run.Run, c *code, paths []string) (sha, message str
 	if err != nil {
 		return "", "", err
 	}
+	if denied, _ := permit.Partition(paths, r.Protected()); len(denied) > 0 {
+		return "", "", fmt.Errorf("refusing to commit protected paths: %s", strings.Join(denied, ", "))
+	}
 	var out CommitOutput
 	if err := e.Call(&out, commitRequest(c, stat, paths), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 		return "", "", err
@@ -320,3 +324,31 @@ func commit(e *run.Entry, r *run.Run, c *code, paths []string) (sha, message str
 }
 
 func short(sha string) string { return workspace.Short(sha) }
+
+// RunBranch is the branch a build creates for proposal: the proposal with the
+// random part of the run's ID appended, so two runs proposing the same name
+// get distinct branches. A run without an ID uses the proposal as it is.
+func RunBranch(r *run.Run, proposal string) string {
+	if r.ID == "" {
+		return proposal
+	}
+	return proposal + "-" + r.ID[strings.LastIndex(r.ID, "_")+1:]
+}
+
+// publishable refuses a push whose commits carry a protected path, checked
+// against what HEAD holds beyond the iteration's base: the tree that would
+// be published, not only what the last commit staged.
+func publishable(r *run.Run) error {
+	base := r.Base()
+	if base == "" {
+		return nil
+	}
+	denied, err := workspace.PublishedProtected(r.Repo, base, r.Protected())
+	if err != nil {
+		return err
+	}
+	if len(denied) > 0 {
+		return fmt.Errorf("the commits to publish change protected paths (%s); nothing was pushed", strings.Join(denied, ", "))
+	}
+	return nil
+}

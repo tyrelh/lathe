@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 // maxLine caps a single JSONL record. Scanner's 64KB default truncates a run
@@ -140,6 +142,9 @@ type Options struct {
 	Env     []string
 	Raw     io.Writer     // verbatim JSONL, written before parsing
 	OnStart func(pid int) // child PID, so a hung agent is killable by run id
+	// Runner, when set, launches Pi under a gated supervisor; OnStart then
+	// receives the supervisor's PID, which is also its process group.
+	Runner *process.Runner
 }
 
 // CheckAuth checks one provider's credential readiness without an agent turn.
@@ -156,8 +161,10 @@ func CheckAuth(ctx context.Context, o Options) error {
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.Discard
-	err := cmd.Start()
-	if err == nil {
+	var err error
+	if o.Runner != nil {
+		err = o.Runner.Exec(ctx, cmd)
+	} else if err = cmd.Start(); err == nil {
 		err = cmd.Wait()
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
@@ -259,6 +266,9 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 	cmd.Stdin = nil
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	if o.Runner != nil {
+		return supervised(ctx, o, cmd, &stderr, onEvent)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -274,6 +284,33 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 	res, scanErr := Scan(stdout, o.Raw, onEvent)
 
 	if err := cmd.Wait(); err != nil {
+		return res, fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
+	}
+	return res, scanErr
+}
+
+// supervised is Run's launch through o.Runner. Stdout is a pipe the payload
+// inherits from the supervisor; the supervisor stopping its group closes it.
+func supervised(ctx context.Context, o Options, cmd *exec.Cmd, stderr *bytes.Buffer, onEvent Handler) (Result, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return Result{}, err
+	}
+	cmd.Stdout = w
+	p, err := o.Runner.Start(ctx, cmd)
+	w.Close()
+	if err != nil {
+		r.Close()
+		return Result{}, err
+	}
+	if o.OnStart != nil {
+		o.OnStart(p.PID())
+	}
+	res, scanErr := Scan(r, o.Raw, onEvent)
+	// A handler that stopped reading ends the turn: without a reader, the
+	// payload would block on a full pipe.
+	r.Close()
+	if err := p.Wait(); err != nil {
 		return res, fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
 	}
 	return res, scanErr

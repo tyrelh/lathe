@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 // Local launches workers as processes on this machine. Everything about a
@@ -53,23 +55,21 @@ func (l Local) Launch(j Job) (string, error) {
 	return strconv.Itoa(pid), nil
 }
 
-// Alive asks the OS whether that process is still there. Signal 0 checks for
-// existence without delivering anything; EPERM means it exists and is not
-// ours, which still counts as running.
+// Alive asks the OS whether that process is still there.
 func (l Local) Alive(handle string) (bool, error) {
 	pid, err := strconv.Atoi(handle)
 	if err != nil || pid <= 0 {
 		return false, fmt.Errorf("unusable worker handle %q", handle)
 	}
-	switch err := syscall.Kill(pid, 0); err {
-	case nil, syscall.EPERM:
-		return true, nil
-	case syscall.ESRCH:
-		return false, nil
-	default:
-		return false, err
-	}
+	return process.Alive(pid)
 }
+
+// GroupLive reports whether process group pgid on this host has a member
+// that is not a zombie.
+func (l Local) GroupLive(pgid int) (bool, error) { return process.GroupLive(pgid) }
+
+// Stop asks the supervisor at endpoint to stop its process group.
+func (l Local) Stop(endpoint, token string) error { return process.RequestStop(endpoint, token) }
 
 // Start makes sure a manager is running, starting a detached one if the data
 // directory lock is free. A submitter calls it because a blocking submission
@@ -108,4 +108,7 @@ func Start(dataRoot string) error {
 
 func logPath(dataRoot string) string { return filepath.Join(dataRoot, LogFile) }
 
-var _ Launcher = Local{}
+var (
+	_ Launcher    = Local{}
+	_ Supervisors = Local{}
+)
