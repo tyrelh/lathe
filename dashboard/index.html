@@ -393,16 +393,29 @@ const app = $('app'), bar = $('status'), note = $('note');
 const followBox = $('follow-box'), followLabel = $('follow-label');
 // One shared tooltip outside scrolling panels. Delegation survives chart polling.
 const tooltip = {
-  target: null, timer: null,
-  show(target) {
-    clearTimeout(this.timer);
+  target: null, timer: null, at: null, next: null, dismissed: null, quiet: false, size: null,
+  // key returns the identity a dismissal suppresses: target's data-tooltip-key, or target itself.
+  key: target => target.dataset.tooltipKey ?? target,
+  // cancel clears any pending hide or switch.
+  cancel() { clearTimeout(this.timer); this.timer = null; this.next = null; },
+  // show displays target's text; a pointer-anchored target uses at {x, y}.
+  show(target, at) {
+    this.cancel();
     if (this.target !== target) this.hide();
     this.target = target;
+    this.at = target.dataset.tooltipAt === 'pointer' && at ? at : null;
     const el = $('tooltip');
     el.textContent = target.dataset.tooltip;
     el.hidden = false;
+    el.style.pointerEvents = this.at ? 'none' : '';
     target.setAttribute('aria-describedby', 'tooltip');
-    const box = target.getBoundingClientRect(), tip = el.getBoundingClientRect();
+    this.size = el.getBoundingClientRect();
+    this.place();
+  },
+  // place positions the visible tooltip at the pointer or the target, using the size show measured.
+  place() {
+    const el = $('tooltip'), tip = this.size;
+    const box = this.at ? {left: this.at.x + 12, top: this.at.y, bottom: this.at.y + 12} : this.target.getBoundingClientRect();
     const left = Math.max(8, Math.min(box.left, innerWidth - tip.width - 8));
     const below = box.bottom + 6;
     const top = Math.max(8, Math.min(below + tip.height <= innerHeight - 8 ? below : box.top - tip.height - 6,
@@ -411,32 +424,77 @@ const tooltip = {
     el.style.top = top + 'px';
   },
   hide() {
-    clearTimeout(this.timer);
+    this.cancel();
     this.target?.removeAttribute('aria-describedby');
     this.target = null;
+    this.at = null;
     $('tooltip').hidden = true;
   },
   leave(next) {
     if (next && (this.target?.contains(next) || $('tooltip').contains(next))) return;
-    this.timer = setTimeout(() => this.hide(), 120);
+    this.cancel();
+    this.timer = setTimeout(() => this.settle(), 120);
+  },
+  // settle applies the pending switch, or hides when none is pending.
+  settle() {
+    const next = this.next;
+    this.cancel();
+    if (next) this.show(next.target, next.at); else this.hide();
+  },
+  // preserve runs render, then re-shows the tooltip on el's matching data-tooltip-key, or hides it.
+  preserve(el, render) {
+    const key = this.target && el.contains(this.target) ? this.target.dataset.tooltipKey : null;
+    const at = this.at;
+    this.quiet = true;
+    try {
+      render();
+      if (key == null) return;
+      const target = this.timer ? null : [...el.querySelectorAll('[data-tooltip-key]')].find(x => x.dataset.tooltipKey === key);
+      if (target) this.show(target, at); else this.hide();
+    } finally {
+      this.quiet = false;
+    }
+  },
+  // dismiss hides the tooltip and suppresses its target until the pointer moves elsewhere.
+  dismiss() {
+    this.dismissed = this.target ? this.key(this.target) : null;
+    this.hide();
+  },
+  // hover shows, moves or schedules a switch to target at pointer position at.
+  hover(target, at) {
+    if (this.key(target) === this.dismissed) return;
+    this.dismissed = null;
+    if (target === this.target) {
+      this.cancel();
+      if (this.at) { this.at = at; this.place(); }
+    } else if (this.target && !this.at && target.dataset.tooltipAt === 'pointer') {
+      this.next = {target, at};
+      if (!this.timer) this.timer = setTimeout(() => this.settle(), 120);
+    } else {
+      this.show(target, at);
+    }
   },
 };
-addEventListener('pointerover', e => {
+for (const type of ['pointerover', 'pointermove']) addEventListener(type, e => {
   if (e.pointerType === 'touch') return;
-  if ($('tooltip').contains(e.target)) { clearTimeout(tooltip.timer); return; }
+  if ($('tooltip').contains(e.target)) { tooltip.cancel(); return; }
   const target = e.target.closest?.('[data-tooltip]');
-  if (target) tooltip.show(target);
+  if (target) tooltip.hover(target, {x: e.clientX, y: e.clientY});
+  else tooltip.dismissed = null;
 });
 addEventListener('pointerout', e => {
   if (tooltip.target) tooltip.leave(e.relatedTarget);
 });
 addEventListener('focusin', e => {
+  if (tooltip.quiet) return;
   const target = e.target.closest?.('[data-tooltip]');
   if (target) tooltip.show(target);
   else tooltip.hide();
 });
-addEventListener('focusout', e => { if (tooltip.target) tooltip.leave(e.relatedTarget); });
-addEventListener('keydown', e => { if (e.key === 'Escape') tooltip.hide(); });
+addEventListener('focusout', e => {
+  if (!tooltip.quiet && tooltip.target && e.target.closest?.('[data-tooltip]') === tooltip.target) tooltip.leave(e.relatedTarget);
+});
+addEventListener('keydown', e => { if (e.key === 'Escape') tooltip.dismiss(); });
 addEventListener('scroll', e => { if (!$('tooltip').contains(e.target)) tooltip.hide(); }, true);
 addEventListener('resize', () => tooltip.hide());
 addEventListener('blur', () => tooltip.hide());
@@ -1665,17 +1723,13 @@ function swap(el, html) {
     const anchor = [...el.querySelectorAll('[data-row]')].find(row => row.getBoundingClientRect().bottom > edge);
     if (anchor) { offset = anchor.getBoundingClientRect().top - edge; identity = anchor.dataset.row; }
   }
-  const tipKey = tooltip.target && el.contains(tooltip.target) ? tooltip.target.dataset.tooltipKey : null;
-  el.innerHTML = html;
-  if (tipKey != null) {
-    const target = [...el.querySelectorAll('[data-tooltip-key]')].find(x => x.dataset.tooltipKey === tipKey);
-    if (target) tooltip.show(target);
-    else tooltip.hide();
-  }
-  const replacement = identity === undefined ? null : [...el.querySelectorAll('[data-row]')].find(row => row.dataset.row === identity);
-  el.scrollTop = replacement ? el.scrollTop + replacement.getBoundingClientRect().top - edge - offset : top;
-  el.scrollLeft = left;
-  if (key) focusTarget(el, key)?.focus({preventScroll: true});
+  tooltip.preserve(el, () => {
+    el.innerHTML = html;
+    const replacement = identity === undefined ? null : [...el.querySelectorAll('[data-row]')].find(row => row.dataset.row === identity);
+    el.scrollTop = replacement ? el.scrollTop + replacement.getBoundingClientRect().top - edge - offset : top;
+    el.scrollLeft = left;
+    if (key) focusTarget(el, key)?.focus({preventScroll: true});
+  });
 }
 
 // phaseTiming is the one reading of a phase's status and span the chart and
@@ -1758,10 +1812,15 @@ function gantt(r, phases, now) {
   const ax = axis(r, now);
   if (!phases.length) return `<p class="dim">${ax.note && live(r.status) ? ax.note : 'No phases recorded yet.'}</p>`;
   const tl = ax.note ? null : timeline(ax, r.iterations || [], now);
-  const rows = new Map(), untimed = [];
+  const rows = new Map(), untimed = [], totals = new Map();
   const links = phaseLinks(phases, r, now);
   for (const p of [...phases].sort((a, b) => a.seq - b.seq)) {
     const t = phaseTiming(p, r, now), g = ax.note ? null : geometry(t, ax, tl);
+    const sum = totals.get(p.name) ?? totals.set(p.name, {n: 0, ms: 0, cost: 0, costed: false}).get(p.name);
+    sum.n++;
+    if (t.end >= t.start) sum.ms += t.end - t.start;
+    const s = spend.get(p.phase_id);
+    if (s) { sum.cost += s.cost || 0; sum.costed = true; }
     if (!g) { untimed.push(block(p, t)); continue; }
     bucket(rows, p.name).push(block(p, t, g));
   }
@@ -1779,9 +1838,16 @@ function gantt(r, phases, now) {
     + (rows.size ? `<div class="gantt"><svg class="flow-arrows" aria-hidden="true" focusable="false" data-links="${esc(JSON.stringify(links))}"></svg><span></span>
         <div class="axis"><span>${edge(ax.start)}</span><span>${ax.live ? 'now' : edge(ax.end)}</span></div>
         ${iterations}${[...rows].map(([name, blocks]) =>
-          `<div class="node" tabindex="0" data-focus="node-${esc(name)}" data-tooltip-key="node-${esc(name)}" data-tooltip="${esc(name)}">${esc(name)}</div><div class="track">${breaks(false, name)}${blocks.join('')}</div>`).join('')}
+          `<div class="node" tabindex="0" data-focus="node-${esc(name)}" data-tooltip-key="node-${esc(name)}" data-tooltip="${esc(name)}">${esc(name)}</div><div class="track" data-tooltip-key="row-${esc(name)}" data-tooltip="${esc(rowTip(name, totals.get(name)))}" data-tooltip-at="pointer">${breaks(false, name)}${blocks.join('')}</div>`).join('')}
       </div>` : '')
     + (untimed.length ? `<p class="dim">Untimed · timestamps missing or invalid</p><div class="untimed">${untimed.join('')}</div>` : '');
+}
+
+// rowTip returns a phase row's tooltip text from its totals. Cost is omitted
+// when no invocation recorded usage.
+function rowTip(name, total) {
+  return [name, `Invocations: ${total.n}`, `Total runtime: ${dur(total.ms)}`,
+    total.costed && `Total cost: ${money(total.cost)}`].filter(Boolean).join('\n');
 }
 
 // Sequence records entry order, not dependency edges. Only connect adjacent
