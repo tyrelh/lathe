@@ -1533,7 +1533,6 @@ async function detail(current) {
   shown = {run: r, phases: d.phases};
   draw();
 
-  // The run card repeats the bottom bar, labelled, so it reads at the top too.
   const stat = (label, value, c = '') =>
     `<div><dt>${label}</dt><dd${c ? ` class="${c}"` : ''}>${value || '<span class="dim">—</span>'}</dd></div>`;
   $('summary').innerHTML = [
@@ -1545,9 +1544,11 @@ async function detail(current) {
     stat('run', esc(r.run_id)),
     ...(r.iterations.length > 1 ? [stat('active', active(r)), stat('iterations', count(r.iterations.length))] : []),
   ].join('');
-  bar.innerHTML = `${esc(r.workflow)} · <span class="${cls(r.status)}">${esc(r.status)}</span>`
-    + ` · ${count(r.tokens)} tok · <span class="cost">${money(r.cost)}</span>`
-    + ` · ${timings(r)}<span class="lo"> · ${esc(base(r.repo))} · ${esc(r.run_id)}</span>`;
+  // The bar names only what the page does not: where the latest iteration ran.
+  const latest = newestFirst(r.iterations)[0] || {};
+  const tree = latest.worktree, state = latest.worktree_state !== 'active' && latest.worktree_state;
+  const note = state ? ` <span class="dim">(${esc(state)})</span>` : '';
+  bar.innerHTML = tree ? `<span title="${esc(tree)}">worktree ${esc(tree)}${note}</span>` : '';
   stamp();
 
   // Follow the tail, but only for someone already at the bottom: measure
@@ -1669,12 +1670,7 @@ async function cancelRun() {
   }
 }
 
-// timings keeps waiting and working apart: a run that sat in the queue for a
-// minute is not a run that took a minute to do. The runs list shows only took().
-function timings(r) {
-  const queued = span(r.submitted_at, r.started_at);
-  return [queued && queued + ' queued', took(r)].filter(Boolean).join(' · ');
-}
+// took is how long the run has worked, leaving out its time in the queue.
 function took(r) {
   const ran = span(r.started_at, r.ended_at);
   return ran && ran + (r.ended_at ? '' : ' elapsed');
@@ -1764,7 +1760,7 @@ const tone = s => s === 'interrupted' ? 'interrupted' : cls(s);
 // include the status word, model, and cost.
 const MARK = {success: '', ok: '', fail: '❌', running: '⏳', interrupted: '⚠️'};
 
-// axis spans the run's own execution: queue time is left out, as in timings().
+// axis spans the run's own execution: queue time is left out.
 // A span of at least 1ms keeps a zero-duration run from dividing by zero.
 function axis(r, now) {
   const start = Date.parse(r.started_at);
