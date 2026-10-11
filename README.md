@@ -101,7 +101,7 @@ tiers:
     thinking: high
 ```
 
-- Below a confidence of 0.5 routing bumps up one tier.
+- Below a confidence of 0.5 routing picks the more capable of the two most probable tiers (the runner-up needs a probability above 0), and never goes past them.
 - You need 2 to 10 tiers with exactly one `default`. Anything a tier leaves out comes from the agent.
 - No `TYPESAFE_API_KEY`, or any error from Jev, and it falls back to the default tier. Passing `--provider`, `--model` or `--thinking` turns routing off for that run.
 - Your request and plan get sent to TypeSafe, and zero data retention is enterprise only. I'd think twice before turning this on for a private repo.

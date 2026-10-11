@@ -25,9 +25,18 @@ func TestChoose(t *testing.T) {
 	}{
 		{[]float64{0.7, 0.2, 0.1}, 0.8, 0, "routed", "top level"},
 		{[]float64{0.1, 0.45, 0.45}, 0.8, 2, "routed", "tie goes up"},
-		{[]float64{0.7, 0.2, 0.1}, 0.3, 1, "low-confidence", "low confidence moves up one"},
-		{[]float64{0.1, 0.2, 0.7}, 0.3, 2, "low-confidence", "capped at the top"},
 		{[]float64{0.6, 0.4}, 0.5, 0, "routed", "floor itself is enough"},
+		{[]float64{0.46, 0.54, 0.0}, 0.3, 1, "low-confidence", "stronger top stays"},
+		{[]float64{0.54, 0.46, 0.0}, 0.3, 1, "low-confidence", "stronger runner-up picked"},
+		{[]float64{0.5, 0.5, 0}, 0.3, 1, "low-confidence", "exact tie takes no extra step"},
+		{[]float64{0.7, 0.2, 0.1}, 0.3, 1, "low-confidence", "runner-up above top"},
+		{[]float64{0.1, 0.2, 0.7}, 0.3, 2, "low-confidence", "top above runner-up"},
+		{[]float64{0.6, 0.0, 0.4}, 0.3, 2, "low-confidence", "non-adjacent runner-up"},
+		{[]float64{0.5, 0.0, 0.0, 0.5, 0.0}, 0.3, 3, "low-confidence", "non-adjacent tie with five tiers"},
+		{[]float64{0.1, 0.5, 0.1, 0.3, 0.0}, 0.3, 3, "low-confidence", "non-adjacent with five tiers"},
+		{[]float64{0.4, 0.3, 0.2, 0.1}, 0.3, 1, "low-confidence", "adjacent with four tiers"},
+		{[]float64{1, 0, 0}, 0.3, 0, "low-confidence", "no runner-up with support"},
+		{[]float64{0.8, 0.1, 0.1}, 0.3, 1, "low-confidence", "runner-up tie goes low"},
 	} {
 		t.Run(tc.description, func(t *testing.T) {
 			tier, reason := choose(tc.p, tc.confidence, 0.5)
@@ -80,6 +89,8 @@ func TestRoute(t *testing.T) {
 	}{
 		{"routed", "k", answer(0.8, 0.1, 0.1, 0.9), 200, "luna", "routed", true},
 		{"low confidence", "k", answer(0.8, 0.1, 0.1, 0.2), 200, "sol", "low-confidence", true},
+		{"low confidence stronger top", "k", answer(0.46, 0.54, 0, 0.2), 200, "sol", "low-confidence", true},
+		{"low confidence highest top", "k", answer(0, 0.4, 0.6, 0.2), 200, "astra", "low-confidence", true},
 		{"bad response", "k", `{"model":"jev-1.12.0"}`, 200, "sol", "error", false},
 		{"api error", "k", "nope", 401, "sol", "error", false},
 		{"no key", "", answer(0.8, 0.1, 0.1, 0.9), 200, "sol", "error", false},

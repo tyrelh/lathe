@@ -2012,7 +2012,7 @@ function routeResult(d) {
   const name = l => `${l?.provider || 'unknown'}/${l?.model || 'unknown'}${l?.thinking ? ` · thinking ${l.thinking}` : ''}`;
   const why = {
     routed: 'the tier Jev found most likely',
-    'low-confidence': `confidence was under the ${d.floor} floor, so the pick moved up one tier`,
+    'low-confidence': `confidence was under the ${d.floor} floor, so the more capable of the two most likely tiers was picked`,
     error: 'Jev gave no usable answer, so the default tier was used',
   }[d.reason];
   const confidence = typeof d.confidence === 'number'
