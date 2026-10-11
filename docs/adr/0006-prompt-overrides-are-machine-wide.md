@@ -1,5 +1,7 @@
 # Prompt overrides are machine-wide
 
+Superseded by [0007](0007-agent-configuration-lives-in-dot-lathe.md).
+
 Every prompt is compiled into the binary. `assets.go` embeds `roster.toml` and `prompts/`, so changing what an agent is told meant editing the source and running `make build`. A prompt override replaces one built-in prompt without a rebuild. It lives in lathe's data root at the same path as the prompt's key, so `prompts/planner/system.md` is overridden by `~/.local/share/lathe/prompts/planner/system.md`, or `$XDG_DATA_HOME/lathe/prompts/planner/system.md` when that is set. There is one layer per machine, and it applies to every repo lathe runs against. The dashboard's Agents page saves and resets overrides; they are plain files, so editing them by hand works too.
 
 ## Not per repo, and not in the source tree
