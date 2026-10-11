@@ -62,6 +62,18 @@ How validation ended. Accepted needs a usable report from every worker and a mea
 A role assigned part of a workflow, with tools and instructions appropriate to
 that role.
 
+**Built-in prompt**:
+A prompt shipped with lathe, in effect wherever no prompt override replaces it.
+_Avoid_: default prompt
+
+**Prompt override**:
+A machine-wide replacement for one built-in prompt, used by every agent or routing phase that names that prompt. It is captured at submission like the rest of the configuration, so it only changes work submitted after it.
+_Avoid_: custom prompt, local prompt
+
+**Harness**:
+The coding-agent runtime an agent's phases run in; Pi today.
+_Avoid_: agent (for the runtime)
+
 **Tier**:
 One of an agent's engineer-configured model choices, ordered from cheapest to most capable, each described by the kind of task it suits. One tier per agent is the default, used whenever routing cannot decide.
 _Avoid_: route, model class
