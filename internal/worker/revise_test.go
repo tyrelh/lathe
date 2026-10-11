@@ -61,10 +61,7 @@ echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}'
 	git(t, dir, "push", "-q", "origin", "main", "feat/x")
 	sha := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
 
-	cfg, err := config.Load(os.DirFS(filepath.Join("..", "..")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := seeded(t)
 	roster, err := cfg.Capture([]string{"planner"}, config.Overrides{})
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,5 @@
+# OWASP Top 10 and whatever else crosses this application's trust boundaries.
+provider: moonshotai
+model: kimi-k3
+thinking: medium
+timeout: 10m

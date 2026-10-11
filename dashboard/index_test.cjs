@@ -30,7 +30,7 @@ const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', '
   'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
 const pageIDs = ['page-summary', 'average-spend', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
   'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status',
-  'agent-head', 'agent-prompts'];
+  'agent-head', 'agent-config', 'agent-prompts'];
 // The agent page redraws each prompt box's editor on its own, so those regions
 // register the IDs inside them, and each editor registers its own.
 const parsedIDs = new Map();
@@ -931,12 +931,15 @@ const costs = () => nodes.get('costs').innerHTML;
   const navOn = id => nodes.get(id).attrs.get('aria-current') === 'page';
   const agentRows = [
     {name:'planner', kind:'agent', repo_instructions:true, workflows:['plan','implement','build','revise'], prompts:[
-      {role:'system', key:'prompts/planner/system.md', shared_with:[]}, {role:'user', key:'prompts/planner/user.md', shared_with:[]}]},
-    {name:'code-review-general', kind:'agent', repo_instructions:true, workflows:['implement','build','revise'], prompts:[
-      {role:'system', key:'prompts/code-review-general/system.md', shared_with:[]},
-      {role:'user', key:'prompts/code-review/user.md', shared_with:['code-review-security','code-review-slop']}]},
+      {role:'system', key:'agents/planner/system.md'}, {role:'user', key:'agents/planner/user.md'}]},
+    {name:'code-review-general', kind:'agent', repo_instructions:true, workflows:['implement','build','revise'],
+      config:{key:'agents/code-review-general/config.yaml', path:'/home/me/.lathe/agents/code-review-general/config.yaml',
+        provider:'moonshotai', model:'kimi-k3', thinking:'medium', timeout:'10m', hash:'h-config', edited:false, drift:false},
+      prompts:[
+      {role:'system', key:'agents/code-review-general/system.md'},
+      {role:'user', key:'agents/code-review-general/user.md'}]},
     {name:'route-plan', kind:'routing', routes:'planner', repo_instructions:false, workflows:['plan','implement','build','revise'], prompts:[
-      {role:'instructions', key:'prompts/routing/planner.md', shared_with:[]}]},
+      {role:'instructions', key:'routing/planner.md'}]},
     {name:"o'<b>", kind:'agent', repo_instructions:false, workflows:[], prompts:[]},
   ];
   routeResponses = new Map([['/api/agents', json(agentRows)]]);
@@ -948,8 +951,8 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(agentList.includes('<th>Agent</th><th>Kind</th><th>Workflows</th><th>Prompts</th>'), agentList);
   assert(agentList.includes(`<tr class="agent" data-row="code-review-general" onclick="location.hash='#/agents/code-review-general'">`), agentList);
   assert(agentList.includes('<a data-focus="agent-route-plan" href="#/agents/route-plan">route-plan</a>'), agentList);
-  assert(agentList.includes('<td>system · user</td>'), 'an unshared prompt is unmarked');
-  assert(agentList.includes('system · user <span class="dim" title="Shared with code-review-security, code-review-slop">shared</span>'), agentList);
+  assert(agentList.includes('<td>system · user</td>'), agentList);
+  assert(!agentList.includes('shared') && !agentList.includes('Shared with'), 'prompts are no longer shared');
   assert(agentList.includes('<td>instructions</td>') && agentList.includes('<td class="dim">routing</td>'), agentList);
   assert(agentList.includes('<td>plan, implement, build, revise</td>'), agentList);
   assert(agentList.includes('href="#/agents/o%27%3Cb%3E"') && agentList.includes('>o&#39;&lt;b></a>') && !agentList.includes('<b>'),
@@ -976,12 +979,14 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(boxes.includes('&lt;/textarea>&lt;script>alert(1)&lt;/script> &amp; report</textarea>') && !boxes.includes('<script>'),
     'a prompt body is escaped');
   assert(/rows="4"[^>]*>\n\{\{request\}\}\n\nline 3<\/textarea>/.test(boxes), 'boxes size to their lines');
-  assert(boxes.includes('Built-in <code>prompts/code-review/user.md</code>'), boxes);
-  assert(boxes.includes('Shared with <a href="#/agents/code-review-security">code-review-security</a>, <a href="#/agents/code-review-slop">code-review-slop</a>'), boxes);
-  assert.equal(boxes.split('Shared with').length - 1, 1, 'only the shared prompt says so');
+  assert(boxes.includes('<code>agents/code-review-general/user.md</code> <span class="dim">(seed)</span>'), boxes);
+  assert(!boxes.includes('Shared with'), 'no prompt is shared');
+  const configHTML = nodes.get('agent-config').innerHTML;
+  assert(configHTML.includes('<input id="config-model" data-key="model" value="kimi-k3"') && configHTML.includes('<option selected>medium</option>'), configHTML);
+  assert(configHTML.includes('<code>/home/me/.lathe/agents/code-review-general/config.yaml</code>'), configHTML);
   assert.equal(boxes.split('is replaced by the request.').length - 1, 1, 'only the user box has the request hint');
   assert(boxes.includes('The repo’s AGENTS.md is prepended on the first turn.'), boxes);
-  assert(!call('promptInfo', {role:'user', key:'k', body:'x', shared_with:[]}, false).includes('AGENTS.md'),
+  assert(!call('promptInfo', {role:'user', key:'k', body:'x'}, false).includes('AGENTS.md'),
     'no AGENTS.md note without repo instructions');
   assert.equal(nodes.get('status').textContent, 'Agents · code-review-general · agent');
   assert.equal(evaluate('done'), true, 'an agent page is not polled');
@@ -1031,37 +1036,39 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(nodes.get('list-body').innerHTML.includes('route-plan'));
   assert.equal(evaluate('done'), true);
 
-  // Prompt overrides: the list marks edited agents.
-  const dataRoot = '/home/me/.local/share/lathe/';
-  routeResponses.set('/api/agents', json(agentRows.map((a, i) => ({...a, prompts: a.prompts.map(p => ({...p, overridden: i === 1 && p.role === 'system'}))}))));
+  // Edited files: the list marks edited agents, and drift over edits.
+  const home = '/home/me/.lathe/';
+  routeResponses.set('/api/agents', json(agentRows.map((a, i) => ({...a, prompts: a.prompts.map(p => ({...p, edited: i === 1 && p.role === 'system', drift: i === 0 && p.role === 'user'}))}))));
   context.location.hash = '#/agents';
   evaluate('navigate()');
   await new Promise(setImmediate);
   const editedList = nodes.get('list-body').innerHTML;
-  assert(editedList.includes('>code-review-general</a> <span class="badge" title="A prompt override is active">edited</span></td>'), editedList);
-  assert.equal(editedList.split('class="badge"').length - 1, 1, 'only an agent with an override is marked');
+  assert(editedList.includes('>code-review-general</a> <span class="badge" title="A file differs from its seed">edited</span></td>'), editedList);
+  assert(editedList.includes('>planner</a> <span class="badge" title="An edited file whose seed has changed since">drift</span></td>'), editedList);
+  assert.equal(editedList.split('class="badge"').length - 1, 2, 'only agents with edited files are marked');
 
-  // An agent page edits each prompt in place and shows where its override lives.
-  const reviewers = ['code-review-security', 'code-review-slop', 'code-review-adversarial'];
-  const prompt = (role, body, more) => ({role, key: `prompts/${role === 'user' ? 'code-review' : 'code-review-general'}/${role}.md`,
-    shared_with: role === 'user' ? reviewers : [], body, builtin: body, hash: 'h-' + role, overridden: false,
-    override_path: `${dataRoot}prompts/${role === 'user' ? 'code-review' : 'code-review-general'}/${role}.md`, ...more});
+  // An agent page edits each prompt in place and shows where its file lives.
+  const prompt = (role, body, more) => ({role, key: `agents/code-review-general/${role}.md`,
+    body, seed: body, hash: 'h-' + role, edited: false, drift: false,
+    path: `${home}agents/code-review-general/${role}.md`, ...more});
   const reviewer = prompts => ({...agentRows[1], prompts});
   routeResponses.set('/api/agents/code-review-general', json(reviewer([
-    prompt('system', 'Review </textarea><script>alert(1)</script>', {builtin: 'Review', overridden: true}),
+    prompt('system', 'Review </textarea><script>alert(1)</script>', {seed: 'Review', edited: true, drift: true}),
     prompt('user', '{{request}}')])));
   context.location.hash = '#/agents/code-review-general';
   evaluate('navigate()');
   await new Promise(setImmediate);
-  assert(nodes.get('agent-head').innerHTML.includes('Edits are saved as prompt overrides on this machine. Each run captures its prompts when it is submitted.'));
+  assert(nodes.get('agent-head').innerHTML.includes('Edits are saved to ~/.lathe on this machine. Each run captures its configuration when it is submitted.'));
   const boxHTML = role => ['edit', 'status', 'info'].map(part => deepHTML(nodes.get(`prompt-${role}-${part}`))).join('');
   const statusOf = role => nodes.get(`prompt-${role}-status`);
-  assert(boxHTML('system').includes(`Override: <code>${dataRoot}prompts/code-review-general/system.md</code> (active)`), boxHTML('system'));
-  assert(boxHTML('user').includes(`Override: <code>${dataRoot}prompts/code-review/user.md</code> (not set, using built-in <code>prompts/code-review/user.md</code>)`), boxHTML('user'));
+  assert(boxHTML('system').includes(`<code>${home}agents/code-review-general/system.md</code> <span class="badge" title="Edited, and its seed has changed since">drift</span>`), boxHTML('system'));
+  assert(boxHTML('system').includes('<summary>Changes from the seed</summary><pre class="diff">- Review\n+ Review &lt;/textarea>&lt;script>alert(1)&lt;/script></pre>'), boxHTML('system'));
+  assert(boxHTML('user').includes(`<code>${home}agents/code-review-general/user.md</code> <span class="dim">(seed)</span>`) && !boxHTML('user').includes('<details>'), boxHTML('user'));
+  assert.equal(call('lineDiff', 'a\nb\nc', 'a\nc\nd'), '  a\n- b\n  c\n+ d');
   assert(boxHTML('system').includes('&lt;/textarea>&lt;script>alert(1)&lt;/script></textarea>') && !promptsHTML().includes('<script>'),
     'an editable body is escaped');
-  assert(boxHTML('system').includes('>Reset to built-in</button>') && !boxHTML('user').includes('Reset to built-in'),
-    'only an active override can be reset');
+  assert(boxHTML('system').includes('>Reset to seed</button>') && !boxHTML('user').includes('Reset to seed'),
+    'only an edited file can be reset');
   const box = role => nodes.get('prompt-' + role);
   const disabled = role => box(role + '-save').disabled && box(role + '-discard').disabled;
   assert.equal(box('system').value, 'Review </textarea><script>alert(1)</script>');
@@ -1125,26 +1132,19 @@ const costs = () => nodes.get('costs').innerHTML;
   type('system', '  Review harder\n');
   const userBox = box('user'), live = statusOf('system');
   context.document.activeElement = Object.assign(box('system-save'), {dataset: {role: 'system'}});
-  writeReply = reply(200, reviewer([prompt('system', '  Review harder\n', {builtin: 'Review', hash: 'h-saved', overridden: true}), prompt('user', '{{request}}')]));
+  writeReply = reply(200, reviewer([prompt('system', '  Review harder\n', {seed: 'Review', hash: 'h-saved', edited: true}), prompt('user', '{{request}}')]));
   await call('savePrompt', 'system');
   assert.deepEqual({...box('system').focused}, {preventScroll: true}, 'focus moves from the disabled Save to the box');
   context.document.activeElement = null;
   assert(box('user') === userBox && statusOf('system') === live, 'a save rebuilds neither another draft nor the status line');
   assert.deepEqual(writes.pop(), {url: '/api/agents/code-review-general/prompts/system', method: 'PUT',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({body: '  Review harder\n', base_hash: 'h-system'})});
-  assert.equal(confirms.length, 0, 'an unshared prompt saves without asking');
+  assert.equal(confirms.length, 0, 'a prompt saves without asking');
   assert(statusOf('system').innerHTML === saved && statusOf('system').className === '' && disabled('system'), boxHTML('system'));
   assert(box('user').value === '{{request}} carefully' && !box('user-save').disabled, 'a save keeps other drafts');
 
-  // A shared prompt names every agent it changes; cancelling sends nothing.
-  confirmAnswer = false;
-  await call('savePrompt', 'user');
-  assert.equal(confirms.pop(), 'Saving changes this prompt for code-review-general, code-review-security, code-review-slop and code-review-adversarial.');
-  assert.equal(writes.length, 0, 'a cancelled save sends nothing');
-  confirmAnswer = true;
-
   // A conflict offers the current version and keeps the draft until asked.
-  writeReply = reply(409, {error: 'this prompt changed since you loaded it', body: '{{request}} from <elsewhere>', hash: 'h-other', overridden: true});
+  writeReply = reply(409, {error: 'this prompt changed since you loaded it', body: '{{request}} from <elsewhere>', hash: 'h-other', edited: true});
   await call('savePrompt', 'user');
   confirms.length = 0;
   assert.equal(JSON.parse(writes.pop().body).base_hash, 'h-user');
@@ -1154,7 +1154,7 @@ const costs = () => nodes.get('costs').innerHTML;
   call('loadCurrent', 'user');
   assert(box('user').value === '{{request}} from <elsewhere>' && disabled('user'), 'loading the current version replaces the text');
   assert(boxHTML('user').includes('{{request}} from &lt;elsewhere></textarea>') && !boxHTML('user').includes('Load current version'));
-  assert(boxHTML('user').includes('(active)'), 'a current version other than the built-in is an override');
+  assert(boxHTML('user').includes('>edited</span>'), 'a current version other than the seed is edited');
 
   // A refusal shows the server's reason; the next save uses the loaded hash.
   type('user', 'no placeholder');
@@ -1173,19 +1173,34 @@ const costs = () => nodes.get('costs').innerHTML;
   type('system', 'half-written');
   confirmAnswer = false;
   await call('resetPrompt', 'system');
-  assert.equal(confirms.pop(), 'Reset to the built-in? Your unsaved edits to this prompt will be lost.');
+  assert.equal(confirms.pop(), 'Reset to the seed? Your unsaved edits to this prompt will be lost.');
   assert(writes.length === 0 && box('system').value === 'half-written', 'a declined reset keeps the draft');
   confirmAnswer = true;
 
-  // Reset deletes the override and redraws on the built-in.
-  writeReply = reply(200, reviewer([prompt('system', 'Review', {hash: 'h-builtin'}), prompt('user', '{{request}}')]));
+  // Reset restores the seed and redraws on it.
+  writeReply = reply(200, reviewer([prompt('system', 'Review', {hash: 'h-seed'}), prompt('user', '{{request}}')]));
   await call('resetPrompt', 'system');
   confirms.length = 0;
   assert.deepEqual(writes.pop(), {url: '/api/agents/code-review-general/prompts/system', method: 'DELETE',
-    headers: {'Content-Type': 'application/json'}, body: '{}'});
-  assert(boxHTML('system').includes('Reset to the built-in. Applies to runs and revisions submitted from now on.'), boxHTML('system'));
-  assert(boxHTML('system').includes('(not set, using built-in') && !boxHTML('system').includes('>Reset to built-in</button>'));
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({base_hash: 'h-saved'})});
+  assert(boxHTML('system').includes('Reset to the seed. Applies to runs and revisions submitted from now on.'), boxHTML('system'));
+  assert(boxHTML('system').includes('(seed)') && !boxHTML('system').includes('>Reset to seed</button>'));
   assert(box('system').value === 'Review' && box('user').value === 'no placeholder', 'a reset keeps other drafts');
+
+  // A configuration save sends the draft with the file's hash; a conflict
+  // reloads the file's hash and keeps the draft.
+  call('configInput', {dataset: {key: 'model'}, value: 'kimi-k2.6'});
+  call('configInput', {dataset: {key: 'thinking'}, value: 'high'});
+  writeReply = reply(409, {error: 'this configuration changed since you loaded it', config: {...agentRows[1].config, hash: 'h-config-2'}});
+  await call('saveConfig');
+  assert.deepEqual(writes.pop(), {url: '/api/agents/code-review-general/config', method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider: 'moonshotai', model: 'kimi-k2.6', thinking: 'high', base_hash: 'h-config'})});
+  assert(nodes.get('agent-config').innerHTML.includes('this configuration changed since you loaded it'));
+  writeReply = reply(200, {...reviewer([prompt('system', 'Review'), prompt('user', '{{request}}')]),
+    config: {...agentRows[1].config, model: 'kimi-k2.6', thinking: 'high', hash: 'h-config-3', edited: true}});
+  await call('saveConfig');
+  assert.equal(JSON.parse(writes.pop().body).base_hash, 'h-config-2');
+  assert(nodes.get('agent-config').innerHTML.includes('value="kimi-k2.6"') && nodes.get('agent-config').innerHTML.includes('<option selected>high</option>'));
   context.fetch = readFetch;
 
   // Confirming the leave navigates and drops the draft.

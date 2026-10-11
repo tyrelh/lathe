@@ -1,0 +1,5 @@
+# Correctness, the request and plan, repository conventions and tests.
+provider: moonshotai
+model: kimi-k3
+thinking: medium
+timeout: 10m

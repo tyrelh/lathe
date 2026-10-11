@@ -1,0 +1,1 @@
+How demanding is implementing this plan? The state is the request and the accepted plan a coding agent must carry out: its summary, steps, the files it may write, roughly how many there are, and the risks the planner saw. Judge how much judgment about existing code the implementation needs beyond following the steps as written.

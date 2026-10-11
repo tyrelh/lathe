@@ -1,0 +1,5 @@
+# Unneeded complexity, with the same authority as the other three reviewers.
+provider: moonshotai
+model: kimi-k3
+thinking: medium
+timeout: 10m

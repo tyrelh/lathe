@@ -1,9 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,51 +17,80 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
-func TestInit(t *testing.T) {
-	t.Run("creates roster defaults outside a Git repository", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		if code := dispatch([]string{"init"}); code != 0 {
-			t.Fatalf("init exited %d", code)
+// init is gone with lathe.toml.
+func TestInitIsRemoved(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if code := dispatch([]string{"init"}); code != 2 {
+		t.Fatalf("init exited %d", code)
+	}
+	if _, err := os.Stat("lathe.toml"); !os.IsNotExist(err) {
+		t.Fatalf("lathe.toml was created: %v", err)
+	}
+}
+
+// Capture seeds ~/.lathe and freezes what is there now. An edit there reaches
+// the next capture and not an earlier one; a repository's lathe.toml and a
+// data-root prompt override reach neither; a broken file refuses capture with
+// the file named.
+func TestCaptureReadsDotLathe(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	repo := gitRepo(t, "provider = \"anthropic\"\nmodel = \"from-lathe-toml\"\n[agents.builder]\nmodel = \"also-ignored\"\n")
+	override := filepath.Join(home, "data", "lathe", "prompts", "builder", "system.md")
+	os.MkdirAll(filepath.Dir(override), 0o755)
+	os.WriteFile(override, []byte("You build by override.\n"), 0o644)
+
+	seeded, err := fs.ReadFile(Seed, "agents/builder/system.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := capture("build", repo, config.Overrides{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := first.Agents["builder"]
+	if b.SystemPrompt != string(seeded) || b.Provider != "moonshotai" || b.Model != "kimi-k2.7-code" {
+		t.Fatalf("builder = %s/%s %q", b.Provider, b.Model, b.SystemPrompt)
+	}
+	if len(first.Routing["builder"].Tiers) != 3 || len(first.Routing["planner"].Tiers) != 3 {
+		t.Fatalf("routing = %+v", first.Routing)
+	}
+
+	system := filepath.Join(home, ".lathe", "agents", "builder", "system.md")
+	if err := os.WriteFile(system, []byte("You build by edit.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := capture("build", repo, config.Overrides{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Agents["builder"].SystemPrompt; got != "You build by edit.\n" {
+		t.Fatalf("captured after the edit: %q", got)
+	}
+	if got := first.Agents["builder"].SystemPrompt; got != string(seeded) {
+		t.Fatalf("an earlier capture changed: %q", got)
+	}
+
+	flagged, err := capture("build", repo, config.Overrides{Model: "m"}, io.Discard)
+	if err != nil || flagged.Agents["builder"].Model != "m" || !flagged.RoutingOff || len(flagged.Routing) != 0 {
+		t.Fatalf("flagged capture: %+v %v", flagged.Agents["builder"], err)
+	}
+
+	for _, tc := range []struct{ file, body string }{
+		{"system.md", " \n"},
+		{"config.yaml", "provider: ["},
+		{"config.yaml", "provider: moonshotai\nmodel: kimi-k2.7-code\nthinking: medium\ntimeout: 10m\n---\nmodel: hidden\n"},
+	} {
+		file, body := tc.file, tc.body
+		path := filepath.Join(home, ".lathe", "agents", "builder", file)
+		good, _ := os.ReadFile(path)
+		os.WriteFile(path, []byte(body), 0o644)
+		if _, err := capture("build", repo, config.Overrides{}, io.Discard); err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("broken %s: %v", file, err)
 		}
-		body, err := os.ReadFile("lathe.toml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		roster, err := config.Load(Assets)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want, err := roster.DefaultTOML()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(body, want) {
-			t.Fatalf("lathe.toml differs from embedded roster defaults:\n%s", body)
-		}
-	})
-	t.Run("refuses to replace an existing file", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		original := []byte("custom config\n")
-		if err := os.WriteFile("lathe.toml", original, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if code := dispatch([]string{"init"}); code == 0 {
-			t.Fatal("init replaced an existing file")
-		}
-		got, err := os.ReadFile("lathe.toml")
-		if err != nil || string(got) != string(original) {
-			t.Fatalf("existing file changed: %q, %v", got, err)
-		}
-	})
-	t.Run("rejects arguments", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		if code := dispatch([]string{"init", "extra"}); code != 2 {
-			t.Fatalf("init exited %d", code)
-		}
-		if _, err := os.Stat("lathe.toml"); !os.IsNotExist(err) {
-			t.Fatalf("lathe.toml was created: %v", err)
-		}
-	})
+		os.WriteFile(path, good, 0o644)
+	}
 }
 
 // TestEndToEnd is the one test that uses real processes: a submitter that
@@ -88,7 +118,7 @@ func TestEndToEnd(t *testing.T) {
 
 	repo := gitRepo(t, "")
 	// Submissions run from a repository with a lathe.toml of its own, which
-	// must never reach a run pointed elsewhere with --repo.
+	// lathe no longer reads.
 	invokedFrom := gitRepo(t, `model = "from-the-invocation-directory"`)
 
 	// A fake agent on PATH: the worker resolves pi the way production does,
@@ -206,7 +236,9 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	if len(phases) != 5 || phases[1].Name != "auth" || phases[2].Name != "issue" || phases[2].Status != "success" {
+	// The seeded planner has tiers, so the plan is routed: without a Typesafe
+	// key it lands on the default tier, and the routing phase is recorded.
+	if len(phases) != 6 || phases[1].Name != "auth" || phases[2].Name != "issue" || phases[2].Status != "success" {
 		t.Fatalf("phases: %+v", phases)
 	}
 	if _, err := os.Stat(filepath.Join(home, "data", "lathe", "runs", issueRunID, "issue.json")); err != nil {
@@ -226,57 +258,36 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("planner ran after failed lookup")
 	}
 
-	// The target's own lathe.toml is loaded, announced, and frozen into the
-	// run's roster.
+	// A repository's lathe.toml has no effect; a flag still applies.
 	configured := gitRepo(t, "provider = \"anthropic\"\n[agents.scout]\nmodel = \"claude-sonnet-5\"\n")
-	out, code = lathe(t, "scout", "--detach", "--repo", configured, "what is configured")
-	// The temporary directory can sit behind a symlink (/var on macOS), and
-	// lathe names the path git reports.
-	resolved, err := filepath.EvalSymlinks(configured)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code != 0 || !strings.Contains(out, "lathe: loaded "+filepath.Join(resolved, "lathe.toml")) {
+	out, code = lathe(t, "scout", "--detach", "--repo", configured, "--thinking", "high", "what is configured")
+	if code != 0 || strings.Contains(out, "lathe.toml") {
 		t.Fatalf("configured submission exited %d:\n%s", code, out)
-	}
-	if a := capturedScout(t, home, out); a.Provider != "anthropic" || a.Model != "claude-sonnet-5" {
-		t.Fatalf("captured scout: %+v", a)
-	}
-
-	// A malformed one is a warning, and the run goes ahead on the roster and
-	// the flags.
-	broken := gitRepo(t, "modle = \"typo\"\n")
-	out, code = lathe(t, "scout", "--detach", "--repo", broken, "--thinking", "high", "what is broken")
-	if code != 0 || !strings.Contains(out, "lathe: ignoring lathe.toml: unknown keys: modle") {
-		t.Fatalf("broken submission exited %d:\n%s", code, out)
 	}
 	if a := capturedScout(t, home, out); a.Provider != "moonshotai" || a.Model != "kimi-k2.7-code" || a.Thinking != "high" {
 		t.Fatalf("captured scout: %+v", a)
 	}
 
-	// A prompt override in the data root is frozen into runs submitted after
-	// it is written, and a run captured before keeps the built-in.
-	builtin, err := Assets.ReadFile("prompts/scout/system.md")
+	// An edit in ~/.lathe is frozen into runs submitted after it is written,
+	// and a run captured before keeps the seed.
+	seeded, err := fs.ReadFile(Seed, "agents/scout/system.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := out
-	override := filepath.Join(home, "data", "lathe", "prompts", "scout", "system.md")
-	if err := os.MkdirAll(filepath.Dir(override), 0o755); err != nil {
+	edited := filepath.Join(home, ".lathe", "agents", "scout", "system.md")
+	if err := os.WriteFile(edited, []byte("You scout by edit.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(override, []byte("You scout by override.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out, code = lathe(t, "scout", "--detach", "--repo", repo, "what is overridden")
+	out, code = lathe(t, "scout", "--detach", "--repo", repo, "what is edited")
 	if code != 0 {
-		t.Fatalf("overridden submission exited %d:\n%s", code, out)
+		t.Fatalf("edited submission exited %d:\n%s", code, out)
 	}
-	if a := capturedScout(t, home, out); a.SystemPrompt != "You scout by override.\n" {
+	if a := capturedScout(t, home, out); a.SystemPrompt != "You scout by edit.\n" {
 		t.Fatalf("captured scout system prompt: %q", a.SystemPrompt)
 	}
-	if a := capturedScout(t, home, before); a.SystemPrompt != string(builtin) {
-		t.Fatalf("a run captured before the override has %q", a.SystemPrompt)
+	if a := capturedScout(t, home, before); a.SystemPrompt != string(seeded) {
+		t.Fatalf("a run captured before the edit has %q", a.SystemPrompt)
 	}
 }
 

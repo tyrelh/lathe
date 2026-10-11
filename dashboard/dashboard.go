@@ -1,7 +1,7 @@
 // Package dashboard serves a view of the trace database and the roster's
 // prompts through an embedded page and JSON endpoints, plus routes that write
 // through paths handed in by the CLI: queue a run for a project, revise a run,
-// cancel one, and save or reset a prompt override.
+// cancel one, save or reset a prompt, and edit an agent's model choice.
 package dashboard
 
 import (
@@ -42,15 +42,17 @@ type Submit func(workflow, repo, prompt, issue string) (string, error)
 // Actions are the dashboard's writes, each the CLI's own path handed in by the
 // manager: Submit queues a run, Revise appends an iteration to one and returns
 // its number, Cancel asks one to stop and returns its status. SavePrompt writes
-// a prompt override for a roster key unless baseHash is stale, and ResetPrompt
-// removes one. A nil action registers no route, which is what keeps a
-// read-only dashboard read-only.
+// the configuration file at key unless baseHash is stale, ResetPrompt restores
+// it to its seed unless baseHash is stale, and SaveConfig sets an agent's provider, model and thinking
+// unless baseHash is stale. A nil action registers no route, which is what
+// keeps a read-only dashboard read-only.
 type Actions struct {
 	Submit      Submit
 	Revise      func(runID, request string) (int, error)
 	Cancel      func(runID string) (string, error)
 	SavePrompt  func(key, body, baseHash string) error
-	ResetPrompt func(key string) error
+	ResetPrompt func(key, baseHash string) error
+	SaveConfig  func(agent, provider, model, thinking, baseHash string) error
 }
 
 // Sources are the dashboard's reads from outside the trace database, each
@@ -105,7 +107,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 			}
 			writeJSON(w, a, err)
 		})
-		// One lock for both writes: a save checks the hash it was loaded
+		// One lock for every write: a save checks the hash it was loaded
 		// against, and nothing else from this page may land in between.
 		var mu sync.Mutex
 		if actions.SavePrompt != nil {
@@ -113,6 +115,9 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		if actions.ResetPrompt != nil {
 			mux.HandleFunc("DELETE /api/agents/{name}/prompts/{role}", resetPrompt(&mu, sources.Roster, actions.ResetPrompt))
+		}
+		if actions.SaveConfig != nil {
+			mux.HandleFunc("PUT /api/agents/{name}/config", saveConfig(&mu, sources.Roster, actions.SaveConfig))
 		}
 	}
 	if actions.Submit != nil {

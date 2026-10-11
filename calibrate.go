@@ -49,7 +49,7 @@ func routeCalibrate(args []string) int {
 }
 
 // calibrate asks Jev about up to limit of dir's repo's past runs exactly as
-// agent's routing phase would, using the tiers in its lathe.toml, and writes a
+// agent's routing phase would, using the tiers in its agent configuration, and writes a
 // table of each pick beside the run's plan send-backs and builder repairs,
 // with a blank column for a hand label. Only each run's first iteration is
 // asked about, and a builder sample needs that iteration's plan.json.
@@ -68,7 +68,7 @@ func calibrate(ctx context.Context, w io.Writer, db *trace.DB, dataRoot, dir, ag
 	}
 	rt, ok := snap.Routing[agent]
 	if !ok {
-		return fmt.Errorf("%s gives %s no tiers", filepath.Join(root, "lathe.toml"), agent)
+		return fmt.Errorf("~/.lathe/%s gives %s no tiers", config.AgentFile(agent, "config.yaml"), agent)
 	}
 	ws, err := workspace.Local(root)
 	if err != nil {

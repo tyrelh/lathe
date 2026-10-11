@@ -1,0 +1,7 @@
+# Write the commit message for the implemented change.
+provider: moonshotai
+model: kimi-k2.6
+thinking: medium
+timeout: 10m
+# Reads AGENTS.md itself with the rest of its convention sources.
+repo_instructions: false

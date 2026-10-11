@@ -34,8 +34,9 @@ const maxCorrections = 2
 
 // toolBudget is how many tool calls one agent turn may make before lathe ends
 // the turn and asks for the report. It is the backstop, deliberately above the
-// largest number a prompt asks an agent to keep to (50, in prompts/planner and
-// prompts/code-review), so a well-behaved agent lands on its own and only a
+// largest number a seeded prompt asks an agent to keep to (50, in
+// seed/agents/planner/user.md and each seed/agents/code-review-*/user.md), so a
+// well-behaved agent lands on its own and only a
 // spiralling one ever meets this. A slow agent may meet its deadline first,
 // which ends the turn the same way.
 const toolBudget = 80

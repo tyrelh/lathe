@@ -5,38 +5,26 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/jev"
 )
 
-const routedProject = `
-[[agents.planner.tiers]]
-when    = "Small, well-specified change"
-model   = "p-cheap"
-default = true
-
-[[agents.planner.tiers]]
-when  = "Open-ended change"
-model = "p-top"
-
-[[agents.builder.tiers]]
-when  = "Mechanical change"
-model = "b-cheap"
-
-[[agents.builder.tiers]]
-when    = "Behaviour change"
-model   = "b-mid"
-default = true
-
-[[agents.builder.tiers]]
-when  = "Cross-cutting change"
-model = "b-top"
-`
+var routedTiers = map[string][]config.TierConfig{
+	"planner": {
+		{When: "Small, well-specified change", Model: "p-cheap", Default: true},
+		{When: "Open-ended change", Model: "p-top"},
+	},
+	"builder": {
+		{When: "Mechanical change", Model: "b-cheap"},
+		{When: "Behaviour change", Model: "b-mid", Default: true},
+		{When: "Cross-cutting change", Model: "b-top"},
+	},
+}
 
 // jevStub answers every Score question with its top level, confidently, and
 // keeps each request's state.
@@ -78,12 +66,7 @@ func jevStub(t *testing.T) *[]string {
 
 func TestImplementRoutesPlannerAndBuilder(t *testing.T) {
 	cfg, repo := buildRepo(t)
-	// Outside the repo, which implement needs clean.
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "lathe.toml"), routedProject)
-	if _, err := cfg.LoadProject(dir); err != nil {
-		t.Fatal(err)
-	}
+	cfg.Tiers = routedTiers
 	states := jevStub(t)
 	stub := codeStub(t)
 	if got := execute(t, cfg, "implement", repo, "greet the world"); got != 0 {

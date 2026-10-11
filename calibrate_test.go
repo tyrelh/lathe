@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/jev"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
@@ -18,24 +19,33 @@ import (
 )
 
 func TestCalibrate(t *testing.T) {
-	repo := gitRepo(t, `
-[routing]
-confidence_floor = 0.6
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A repository's lathe.toml configures nothing, tiers included.
+	repo := gitRepo(t, "[[agents.planner.tiers]]\nwhen = \"x\"\ndefault = true\n")
+	dot := filepath.Join(home, ".lathe")
+	if _, err := agentconfig.Seed(dot, Seed, version); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dot, "agents", "builder", "config.yaml"), []byte(`provider: moonshotai
+model: kimi-k2.7-code
+thinking: medium
+timeout: 10m
+tiers:
+  - when: Mechanical change
+    model: b-cheap
+    default: true
+  - when: Behaviour change
+    model: b-top
+`), 0o644)
+	os.WriteFile(filepath.Join(dot, "agents", "planner", "config.yaml"),
+		[]byte("provider: moonshotai\nmodel: kimi-k3\nthinking: medium\ntimeout: 10m\n"), 0o644)
 
-[[agents.builder.tiers]]
-when    = "Mechanical change"
-model   = "b-cheap"
-default = true
-
-[[agents.builder.tiers]]
-when  = "Behaviour change"
-model = "b-top"
-`)
 	var states []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		states = append(states, string(b))
-		w.Write([]byte(`{"model":"jev-1.13.0","answers":{"level":{"type":"score","score":0.4,"confidence":0.5,
+		w.Write([]byte(`{"model":"jev-1.13.0","answers":{"level":{"type":"score","score":0.4,"confidence":0.4,
 			"probabilities":{"0":0.6,"1":0.4}}},"usage":{"input_tokens":1000,"output_tokens":1}}`))
 	}))
 	defer srv.Close()
@@ -82,7 +92,8 @@ model = "b-top"
 	if err := calibrate(context.Background(), &out, db, dataRoot, repo, "builder", 30); err != nil {
 		t.Fatal(err)
 	}
-	// Low confidence moves the top level up one; only the run with a plan is asked about.
+	// Confidence under the floor moves the top level up one; only the run with
+	// a plan is asked about.
 	if len(states) != 1 || !strings.Contains(states[0], `"file_count":"a few files"`) {
 		t.Fatalf("requests = %q", states)
 	}
@@ -92,7 +103,7 @@ model = "b-top"
 			row = strings.Join(strings.Fields(line), " ")
 		}
 	}
-	if want := built + " build 1 b-top 0.50 low-confidence 1 2 add retry"; row != want {
+	if want := built + " build 1 b-top 0.40 low-confidence 1 2 add retry"; row != want {
 		t.Fatalf("row = %q, want %q\n%s", row, want, out.String())
 	}
 	if !strings.Contains(out.String(), "\n1 runs, $0.00004") {

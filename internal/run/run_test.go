@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
@@ -111,10 +113,16 @@ func stubPi(t *testing.T, replies ...string) (bin, argsFile string) {
 func newRun(t *testing.T, bin string) *Run {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	cfg, err := config.Load(os.DirFS(filepath.Join("..", "..")))
+	seed, err := fs.Sub(os.DirFS(filepath.Join("..", "..")), "seed")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := agentconfig.Open(t.TempDir(), seed, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Routing is exercised on its own; these runs are unrouted.
+	cfg.Tiers = nil
 	roster, err := cfg.Capture([]string{"scout", "planner", "builder", "tester"}, config.Overrides{})
 	if err != nil {
 		t.Fatal(err)

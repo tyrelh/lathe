@@ -27,7 +27,6 @@ lathe implement "add retry"              # plan, implement, test; leave it uncom
 lathe build "add retry"                  # implement, then branch, commit and open a PR
 lathe build --detach "add retry"         # queue it and exit
 lathe revise <id> "log the retry count"  # push another change to that build's pull request
-lathe init                               # create lathe.toml in the current directory
 
 lathe runs                               # recent runs, every repo
 lathe show <id>                          # outcome, iterations and reports (--json, --iteration n)
@@ -54,54 +53,55 @@ revise:    request → auth → [route-plan] → plan → review → [route-buil
 - A test exit of 126 or 127 means something is wrong with the environment (missing executable, bad `PATH`), so the run stops there with no repairs and no commit.
 - Traces live in `~/.local/share/lathe/lathe.db`.
 
-## Project config
+## Agent configuration
 
-Run `lathe init` in your project and you'll get a `lathe.toml` with every option filled in, routing included. Then change whatever you want:
+Everything an agent is told and runs on lives in plain files under `~/.lathe`, one directory per agent:
 
-```toml
-provider = "anthropic"
-model    = "claude-sonnet-5"
-
-[agents.planner]
-model = "claude-opus-5-5"
-
-[agents.tester]
-provider          = "openai-codex"
-model             = "gpt-6-luna"
-thinking          = "low"
-repo_instructions = false   # don't send AGENTS.md / CLAUDE.md to this agent
+```
+~/.lathe/
+  agents/<name>/config.yaml   # provider, model, thinking, timeout; optional tiers and repo_instructions
+  agents/<name>/system.md
+  agents/<name>/user.md       # must keep {{request}}
+  routing/planner.md          # what routing asks about the planner's task
+  routing/builder.md
+  .seed.yaml                  # which seed lathe wrote for each file
 ```
 
-Flags win, then `[agents.<name>]`, then the top level, then the built-in roster. If the file is invalid lathe ignores it and prints a warning.
+```yaml
+provider: moonshotai
+model: kimi-k2.6
+thinking: low               # off, minimal, low, medium, high or xhigh
+timeout: 10m
+repo_instructions: false    # don't send AGENTS.md / CLAUDE.md to this agent
+```
+
+- These files are the only source. There is no defaults layer: every `config.yaml` names provider, model, thinking and timeout, so what you read is what the agent runs with. Changing a provider everywhere means editing every agent.
+- lathe writes them from the copy in the binary when a file is missing. After an upgrade to a newer release it replaces files you never edited; files you edited stay as they are, and if their seed has changed since, the dashboard flags them as drift and shows the diff. Development builds (`dev`) never replace anything.
+- A missing or invalid file refuses the submission with an error naming the file. lathe never falls back to its own copy.
+- Configuration is captured when work is submitted, so an edit only applies to runs and revisions submitted after it.
+- `--provider`, `--model` and `--thinking` override every agent for one run. A repository's own `lathe.toml` is no longer read, and there is no per-repository configuration.
+- Tools, protected paths and the shell deny list are compiled into lathe and can't be changed from these files.
+- Files are written owner-only. Directories for agents lathe doesn't know are ignored. Prompt overrides from older versions in `~/.local/share/lathe/prompts/` are not migrated.
 
 The agents you can configure are `scout`, `planner`, `plan-reviewer`, `builder`, `tester`, `code-review-general`, `code-review-security`, `code-review-slop`, `code-review-adversarial`, `adjudicator`, `brancher`, `committer` and `pr-author`.
 
 ## Model routing
 
-Give the planner or builder a few tiers, cheapest first, and TypeSafe's Jev model will pick one each iteration based on the task:
+The planner and builder ship with tiers, cheapest first, in their `config.yaml`, and TypeSafe's Jev model picks one each iteration based on the task. Routing runs whenever an agent's config has tiers; delete them to turn it off.
 
-```toml
-[routing]
-confidence_floor = 0.5   # below this, bump up one tier
-
-[agents.builder]
-provider = "openai-codex"
-
-[[agents.builder.tiers]]
-when  = "Mechanical change in one or two files; the plan spells out every edit"
-model = "gpt-6-luna"
-
-[[agents.builder.tiers]]
-when    = "Behaviour change within one area; some judgment about existing code needed"
-model   = "gpt-6-sol"
-default = true
-
-[[agents.builder.tiers]]
-when     = "Cross-cutting change, concurrency, migrations, or an under-specified plan"
-model    = "gpt-6-astra"
-thinking = "high"
+```yaml
+tiers:
+  - when: Mechanical change in one or two files; the plan spells out every edit
+    model: gpt-6-luna
+  - when: Behaviour change within one area; some judgment about existing code needed
+    model: gpt-6-sol
+    default: true
+  - when: Cross-cutting change, concurrency, migrations, or an under-specified plan
+    model: gpt-6-astra
+    thinking: high
 ```
 
+- Below a confidence of 0.5 routing bumps up one tier.
 - You need 2 to 10 tiers with exactly one `default`. Anything a tier leaves out comes from the agent.
 - No `TYPESAFE_API_KEY`, or any error from Jev, and it falls back to the default tier. Passing `--provider`, `--model` or `--thinking` turns routing off for that run.
 - Your request and plan get sent to TypeSafe, and zero data retention is enterprise only. I'd think twice before turning this on for a private repo.
@@ -110,13 +110,11 @@ thinking = "high"
 
 ## Prompts
 
-The dashboard's Agents page lists every agent and routing phase and shows the prompts each one runs with. Save an edit there and it becomes a prompt override, which replaces the built-in prompt for every repo on this machine without a rebuild.
+The dashboard's Agents page lists every agent and routing phase. On an agent's page you can edit its prompts and its provider, model and thinking, one agent at a time; saves go straight to its files in `~/.lathe`.
 
-- Overrides live in `~/.local/share/lathe/prompts/` (or `$XDG_DATA_HOME/lathe/prompts/`), at the same path as the prompt's key, so `prompts/planner/system.md` is overridden by `~/.local/share/lathe/prompts/planner/system.md`. Each prompt on the page shows its override path and whether it's active.
-- Prompts are captured when work is submitted, so an edit only applies to runs and revisions submitted after it. Queued and running work keeps what it had.
-- Some prompts are shared. The four code reviewers all use `prompts/code-review/user.md`, so saving it changes all four.
+- Each file shows its path, whether you've edited it, and drift when its seed has changed since. An edited file shows its diff from the seed.
+- A save or reset is refused if the file changed since the page loaded it, whether in another tab or by hand. Saving the configuration keeps the comments in `config.yaml`.
+- Reset to seed writes back the copy this binary ships.
+- Each code reviewer has its own user prompt, so editing one doesn't change the others.
 - A user prompt has to keep `{{request}}`. That's where your request goes.
-- Reset to built-in deletes the override, and so does saving text identical to the built-in.
-- They're plain files, so editing one by hand works too. Delete it to go back to the built-in.
-- `lathe.toml` can't touch prompts, and `roster.toml` is never overridden, so tools, protected paths and the shell deny list stay what the binary shipped with.
-- An override keeps shadowing its built-in after you upgrade lathe, even if the built-in got better, so look over yours when you update. If a prompt's key is renamed, its old override is silently ignored.
+- An edited prompt keeps shadowing its seed after you upgrade, even if the seed got better, so look over drift when you update.

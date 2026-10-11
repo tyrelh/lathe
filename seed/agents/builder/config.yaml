@@ -1,0 +1,17 @@
+# Implement the accepted plan, with no shell.
+provider: moonshotai
+model: kimi-k2.7-code
+thinking: medium
+timeout: 10m
+# Routing tiers, cheapest first. A tier sets only what differs from the agent's
+# own configuration. The default tier matches the model above, so a routing
+# failure lands where an unrouted run would.
+tiers:
+  - when: Mechanical change in one or two files; the plan spells out every edit
+    model: kimi-k2.6
+  - when: Behaviour change within one area; some judgment about existing code needed
+    model: kimi-k2.7-code
+    default: true
+  - when: Cross-cutting change, concurrency, migrations, or an under-specified plan
+    model: kimi-k3
+    thinking: high

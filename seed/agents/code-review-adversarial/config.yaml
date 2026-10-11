@@ -1,0 +1,7 @@
+# Tries to break the change: failure paths, partial failure, races, stale state
+# and degraded dependencies. Its system prompt is adapted from OpenAI's
+# adversarial-review.md in openai/codex-plugin-cc (Apache-2.0).
+provider: moonshotai
+model: kimi-k3
+thinking: medium
+timeout: 10m

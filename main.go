@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/dashboard"
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/install"
 	"github.com/tyrelh/lathe/internal/manager"
@@ -47,7 +48,6 @@ commands:
   wait <id>           block until a run is terminal; exit with its outcome
                       (--iteration <n> waits for that iteration instead)
   cancel <id>         ask a run's current iteration to stop
-  init                create lathe.toml with built-in defaults in the current directory
   install             link this repo into each agent's skills directory
   version             print the version of this binary
   help                show this message
@@ -63,7 +63,11 @@ flags (before the request, as Go's flag package stops at the first argument):
 Workflow commands record a run and block until it finishes. The work happens
 in a worker process, so interrupting the wait detaches from the run rather than
 cancelling it; use lathe cancel for that. A manager is started automatically if
-none is running, and serves the dashboard. init only writes a local file.
+none is running, and serves the dashboard.
+
+Agent configuration lives in ~/.lathe: agents/<name>/config.yaml, system.md
+and user.md, and routing/<agent>.md. Missing files are seeded from this binary
+when a run is submitted.
 
 implement and build need a clean checkout and own it until they stop. build
 leaves the checkout on the branch it created, and a failure after its commit
@@ -79,7 +83,7 @@ environment:
   MOONSHOT_API_KEY, PATH, test settings. An auto-started manager takes the
   environment of the submission that started it; restart it to change that.
   LATHE_CAPACITY      how many runs may execute at once (default 1)
-  TYPESAFE_API_KEY    lets routing pick tiers set in lathe.toml; without it,
+  TYPESAFE_API_KEY    lets routing pick tiers set in ~/.lathe; without it,
                       routed agents use their default tier
 
 Run install from a checkout of the lathe repo; it links the checkout itself,
@@ -114,8 +118,6 @@ func dispatch(args []string) int {
 		return waitCmd(args[1:])
 	case "cancel":
 		return cancel(args[1:])
-	case "init":
-		return initCmd(args[1:])
 	case "install":
 		return installCmd()
 	// Hidden: a tuning tool for whoever configures routing, not a workflow.
@@ -213,9 +215,8 @@ func submit(name string, args []string) int {
 }
 
 // prepare turns a submission into the row that records it: the checkout
-// resolved from dir, the project's configuration and the agent roster frozen
-// into a spec. It writes nothing; the caller submits the request. Warnings go
-// to warn, since a broken lathe.toml is not a reason to refuse the run.
+// resolved from dir and the agent roster frozen into a spec. It writes nothing
+// to the database; the caller submits the request.
 func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.Writer) (trace.Request, error) {
 	root, err := config.TargetRoot(dir)
 	if err != nil {
@@ -255,34 +256,40 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 }
 
 // capture resolves the configuration a workflow's agents run with, as it is
-// now. The target's lathe.toml and any prompt overrides are read here, at
-// submission, so their values are frozen into the snapshot with everything
-// else. A broken file is a warning, not a failure: the run goes ahead on the
-// roster. Resolving now turns an unknown agent, a bad timeout or a missing
-// prompt into an error before anything is recorded — and the resolved roster
-// is what the worker executes from, so editing a prompt cannot change queued
-// work.
+// now in ~/.lathe, and freezes it, prompt text included. A missing or invalid
+// file refuses the capture with an error naming it. Edited files whose seed has
+// changed are reported to warn. root is unused: a repository configures
+// nothing.
 func capture(name, root string, ov config.Overrides, warn io.Writer) (config.Snapshot, error) {
-	cfg, err := loadRoster()
+	cfg, err := loadRosterWarn(warn)
 	if err != nil {
 		return config.Snapshot{}, err
-	}
-	if loaded, err := cfg.LoadProject(root); err != nil {
-		fmt.Fprintln(warn, "lathe: ignoring", err)
-	} else if loaded {
-		fmt.Fprintln(warn, "lathe: loaded", filepath.Join(root, "lathe.toml"))
 	}
 	return cfg.Capture(workflow.Agents[name], ov)
 }
 
-// loadRoster loads the roster with the prompt overrides in the data root laid
-// over the built-in prompts.
+// loadRoster seeds ~/.lathe and loads it.
 func loadRoster() (config.Config, error) {
-	dataRoot, err := trace.DataRoot()
+	return loadRosterWarn(io.Discard)
+}
+
+// loadRosterWarn seeds ~/.lathe, loads it, and names each drifted file on
+// warn.
+func loadRosterWarn(warn io.Writer) (config.Config, error) {
+	home, err := agentconfig.Home()
 	if err != nil {
 		return config.Config{}, err
 	}
-	return config.Load(config.Overlay(dataRoot, Assets))
+	cfg, err := agentconfig.Open(home, Seed, version)
+	if err != nil {
+		return config.Config{}, err
+	}
+	for _, f := range cfg.Files {
+		if f.Drift {
+			fmt.Fprintln(warn, "lathe: edited, and its seed has changed since:", f.Path)
+		}
+	}
+	return cfg, nil
 }
 
 // submitRevision is the one revision submission; the CLI and the dashboard
@@ -611,9 +618,26 @@ func managerCmd() int {
 	actions := dashboard.Actions{
 		Submit: prepareAndSubmit, Revise: dashboardRevise, Cancel: dashboardCancel,
 		SavePrompt: func(key, body, baseHash string) error {
-			return config.SavePrompt(dataRoot, Assets, key, body, baseHash)
+			home, err := agentconfig.Home()
+			if err != nil {
+				return err
+			}
+			return agentconfig.SaveFile(home, key, body, baseHash)
 		},
-		ResetPrompt: func(key string) error { return config.ResetPrompt(dataRoot, key) },
+		ResetPrompt: func(key, baseHash string) error {
+			home, err := agentconfig.Home()
+			if err != nil {
+				return err
+			}
+			return agentconfig.ResetFile(home, Seed, version, key, baseHash)
+		},
+		SaveConfig: func(agent, provider, model, thinking, baseHash string) error {
+			home, err := agentconfig.Home()
+			if err != nil {
+				return err
+			}
+			return agentconfig.SaveSettings(home, agent, agentconfig.Settings{Provider: provider, Model: model, Thinking: thinking}, baseHash)
+		},
 	}
 	sources := dashboard.Sources{Roster: loadRoster}
 	if err := manager.Run(ctx, dataRoot, version, os.Stdout, actions, sources); err != nil {
@@ -794,37 +818,6 @@ func flush(w *tabwriter.Writer) int {
 	if err := w.Flush(); err != nil {
 		return fail(err)
 	}
-	return 0
-}
-
-// initCmd creates lathe.toml in the current directory without replacing it.
-func initCmd(args []string) int {
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	fs.Parse(args)
-	if fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "lathe init: takes no arguments")
-		return 2
-	}
-	cfg, err := config.Load(Assets)
-	if err != nil {
-		return fail(fmt.Errorf("loading roster: %w", err))
-	}
-	body, err := cfg.DefaultTOML()
-	if err != nil {
-		return fail(fmt.Errorf("generating lathe.toml: %w", err))
-	}
-	f, err := os.OpenFile("lathe.toml", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return fail(fmt.Errorf("creating lathe.toml: %w", err))
-	}
-	_, err = f.Write(body)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return fail(fmt.Errorf("writing lathe.toml: %w", err))
-	}
-	fmt.Println("created lathe.toml")
 	return 0
 }
 

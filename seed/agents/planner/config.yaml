@@ -1,0 +1,19 @@
+# Read the repo and produce the plan the builder implements; change nothing.
+# kimi-k3 for the 1M context: a plan is only as good as how much of the repo
+# the planner got to read, and planning is the cheap phase to spend that on.
+provider: moonshotai
+model: kimi-k3
+thinking: medium
+timeout: 10m
+# Routing tiers, cheapest first. A tier sets only what differs from the agent's
+# own configuration. The default tier matches the model above, so a routing
+# failure lands where an unrouted run would.
+tiers:
+  - when: Small, well-specified request; the files to change and the approach are obvious
+    model: kimi-k2.7-code
+  - when: Typical fix or feature in one area; the planner has to read around to choose an approach
+    model: kimi-k3
+    default: true
+  - when: Cross-cutting or open-ended request, design decisions, or an issue that leaves the approach unclear
+    model: kimi-k3
+    thinking: high

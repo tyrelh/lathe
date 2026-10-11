@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
@@ -138,10 +140,16 @@ func executeWith(t *testing.T, cfg config.Config, name, repo, request string, ct
 func load(t *testing.T) (config.Config, string) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	cfg, err := config.Load(os.DirFS(filepath.Join("..", "..")))
+	seed, err := fs.Sub(os.DirFS(filepath.Join("..", "..")), "seed")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := agentconfig.Open(t.TempDir(), seed, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A test that wants routing sets its own tiers.
+	cfg.Tiers = nil
 	return cfg, t.TempDir()
 }
 
