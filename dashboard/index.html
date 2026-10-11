@@ -595,14 +595,14 @@ function turnPage(key, direction) {
   renderSide();
 }
 function renderCosts(r) {
-  const list = (rows, key) => {
+  const list = (rows, key, maxRows) => {
     const visible = pageRows(key, rows, row => row.name);
-    return rows.length ? `<div class="cost-list" data-cost-list="${key}" style="--rows:${Math.min(key === 'providers' ? 4 : 2, rows.length)}"><div class="cost-list-heading"><h3 class="dim">${key}</h3>${pageControls(key)}</div><div class="paged-body" data-page-body="${key}"><ul class="model-costs">${visible.map(m => `<li style="--model-color:${m.colour}" title="${esc(m.name)}">
+    return rows.length ? `<div class="cost-list" data-cost-list="${key}"${maxRows ? ` style="--rows:${Math.min(maxRows, rows.length)}"` : ''}><div class="cost-list-heading"><h3 class="dim">${key}</h3>${pageControls(key)}</div><div class="paged-body" data-page-body="${key}"><ul class="model-costs">${visible.map(m => `<li style="--model-color:${m.colour}" title="${esc(m.name)}">
       <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span><span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div></div>` : '';
   };
   const providers = providerCosts(), models = modelSpend();
   return `<div class="cost-lists">`
-    + list(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers')
+    + list(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers', 4)
     + list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models') + '</div>'
     + (draining ? '<p class="dim">Loading usage…</p>' : !providers.length && !models.length
       ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '');
