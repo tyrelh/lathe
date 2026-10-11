@@ -132,7 +132,7 @@
   .node { color: var(--fg); font-weight: 600; line-height: var(--phase-row); white-space: nowrap; }
   .axis { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; }
   .track { position: relative; height: var(--phase-row); background: var(--track); border-radius: 3px; }
-  /* Fill identifies the model; border and emoji identify the outcome. */
+  /* Fill identifies the model; border and emoji identify the outcome (success has no emoji). */
   .block {
     --hue: var(--dim);
     position: absolute; top: 1px; height: calc(var(--phase-row) - 2px); min-width: 0; padding: 0; margin: 0;
@@ -155,7 +155,7 @@
          background: var(--bg); color: var(--dim); font-size: 11px; line-height: calc(var(--phase-row) - 2px);
          text-align: center; overflow: hidden; white-space: nowrap; }
   .untimed { display: flex; flex-wrap: wrap; gap: 4px; }
-  .untimed .block { position: static; height: auto; padding: 1px 4px; }
+  .untimed .block { position: static; height: auto; padding: 1px 4px; min-width: 24px; min-height: 20px; }
   .untimed .block .piece { position: static; transform: none; }
   .tooltip {
     position: fixed; z-index: 100; margin: 0; padding: 10px 12px;
@@ -1748,9 +1748,9 @@ function phaseTiming(p, r, now) {
   return {status: 'interrupted', start, end: Date.parse(owner.ended_at), bound: true, by: it ? 'iteration' : 'run'};
 }
 const tone = s => s === 'interrupted' ? 'interrupted' : cls(s);
-// The chart shows only the status mark; the tooltip and accessible name
+// Successful phases show no mark; the tooltip and accessible name
 // include the status word, model, and cost.
-const MARK = {success: '✅', ok: '✅', fail: '❌', running: '⏳', interrupted: '⚠️'};
+const MARK = {success: '', ok: '', fail: '❌', running: '⏳', interrupted: '⚠️'};
 
 // axis spans the run's own execution: queue time is left out, as in timings().
 // A span of at least 1ms keeps a zero-duration run from dividing by zero.
@@ -1916,7 +1916,7 @@ function block(p, t, g) {
   return `<button type="button" class="block ${tone(t.status)}"${at} data-owner="${esc(p.owner)}" data-phase="${esc(p.phase_id)}"`
     + ` data-focus="${esc('block-' + p.phase_id)}" aria-pressed="${selected === p.phase_id}"`
     + ` aria-label="${esc(name)}" data-tooltip-key="phase-${esc(p.phase_id)}" data-tooltip="${esc(description)}" onclick="pick(this.dataset.phase)">`
-    + `<span class="piece" aria-hidden="true">${MARK[t.status] || '❔'}</span>`
+    + `<span class="piece" aria-hidden="true">${MARK[t.status] ?? '❔'}</span>`
     + '</button>';
 }
 

@@ -399,7 +399,7 @@ assert(!/class="block[^>]*data-tooltip-at/.test(html), 'blocks are not pointer-a
   evaluate('tooltip.dismissed = null');
 }
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
-assert(html.includes('<span class="piece" aria-hidden="true">✅</span>'), 'the block shows its status mark');
+assert(html.includes('<span class="piece" aria-hidden="true"></span>') && !html.includes('✅'), 'a successful block shows no mark');
 assert(!html.includes('data-line='), 'all chart rows use a single line');
 assert(html.includes('class="block ok" style="--hue:var(--dim);'), 'a phase with no model fills dim, border the status');
 assert.equal(call('modelColour', 'claude-fable-5.1'), 'color-mix(in srgb, #D57355 100%, var(--card))', 'dotted names match');
@@ -479,6 +479,13 @@ assert(call('gantt', cut, [open], ms(100)).includes('class="block interrupted"')
 assert(call('gantt', cut, [open], ms(100)).includes('>⚠️</span>'), 'interrupted is marked');
 assert.equal(call('gantt', settled, [ph(1,'t',T(0),T(9),{status:'fail'}), ph(2,'u',T(0),T(9),{status:'odd'})], 0)
   .match(/>(❌|❔)</g).join(''), '>❌<>❔<', 'failures and unknown statuses are marked');
+for (const status of ['success', 'ok']) {
+  const g = call('gantt', settled, [ph(1,'t',T(0),T(9),{status})], 0);
+  assert(g.includes('<span class="piece" aria-hidden="true"></span>'), status + ' has an empty mark');
+  assert(!g.includes('✅') && !g.includes('❔'), status + ' shows neither ✅ nor ❔');
+  assert(g.includes('t · ' + status + '"'), status + ' keeps its accessible status');
+  assert(g.includes('Status: ' + status), status + ' keeps its tooltip status');
+}
 const card = call('details', open, cut, ms(900));
 assert(card.includes('interrupted') && card.includes('40s · bounded by the run’s end') && card.includes('Not recorded'), card);
 assert(call('gantt', settled, [ph(1,'test',T(0),T(9),{status:'fail'})], 0).includes('test · fail'), 'finished failures keep their status');
@@ -575,8 +582,8 @@ const costs = () => nodes.get('costs').innerHTML;
     'block tooltip rounds the snapshot to one decimal');
   assert(!chart().match(/data-phase="p2"[^>]*data-tooltip="[^"]*Context \(estimated\)/),
     'a phase without a snapshot has no context in its tooltip');
-  assert(chart().includes('<span class="piece" aria-hidden="true">✅</span></button>'),
-    'only the status is visible; model and cost remain in the tooltip');
+  assert(chart().includes('<span class="piece" aria-hidden="true"></span></button>') && !chart().includes('✅'),
+    'no mark is visible; model and cost remain in the tooltip');
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
   assert.equal(chart().split('class="node"').length - 1, 1, 'both entries share a row');
   assert.equal(rowTip(chart(), 'fix'), 'fix\nInvocations: 2\nTotal runtime: 1m05s\nTotal cost: $0.10', chart());
