@@ -133,7 +133,7 @@ func TestPayloadStatusAndStreams(t *testing.T) {
 // Neither control descriptor reaches the payload.
 func TestControlDescriptorsAreNotInherited(t *testing.T) {
 	var stdout bytes.Buffer
-	cmd := sh(`for fd in 3 4; do if { : >&$fd; } 2>/dev/null; then echo "$fd open"; else echo "$fd closed"; fi; done`)
+	cmd := sh(`for fd in 3 4; do if { true >&$fd; } 2>/dev/null; then echo "$fd open"; else echo "$fd closed"; fi; done`)
 	cmd.Stdout = &stdout
 	if err := runner(&recorder{}).Exec(context.Background(), cmd); err != nil {
 		t.Fatal(err)
