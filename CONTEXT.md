@@ -62,13 +62,23 @@ How validation ended. Accepted needs a usable report from every worker and a mea
 A role assigned part of a workflow, with tools and instructions appropriate to
 that role.
 
-**Built-in prompt**:
-A prompt shipped with lathe, in effect wherever no prompt override replaces it.
-_Avoid_: default prompt
+**Agent configuration**:
+What one agent is told and runs on, held per machine and owned by the engineer: its system and user prompts, provider, model, thinking, timeout, tiers and whether it receives the repository's instructions. It is the only source of these, captured at submission, so an edit only changes work submitted after it. Every agent's configuration is complete on its own; there is no shared defaults layer and no per-repository layer.
+_Avoid_: prompt override, custom prompt, defaults
 
-**Prompt override**:
-A machine-wide replacement for one built-in prompt, used by every agent or routing phase that names that prompt. It is captured at submission like the rest of the configuration, so it only changes work submitted after it.
-_Avoid_: custom prompt, local prompt
+**Seed**:
+The agent configuration shipped with lathe. It is written on first start, fills in anything missing after an upgrade, and replaces files the engineer never edited. It never overwrites an edit.
+_Avoid_: built-in prompt, default prompt
+
+**Drift**:
+An agent configuration file the engineer edited whose seed has changed since. Lathe flags it and leaves the edit in place.
+
+**Agent permissions**:
+What an agent may do: its tools, protected paths and denied commands. Shipped with lathe and not part of agent configuration, so editing configuration never widens what an agent can do.
+
+**Thinking**:
+How much reasoning an agent's model is asked to spend.
+_Avoid_: effort
 
 **Harness**:
 The coding-agent runtime an agent's phases run in; Pi today.
