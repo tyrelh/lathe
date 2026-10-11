@@ -253,6 +253,31 @@ func TestEndToEnd(t *testing.T) {
 	if a := capturedScout(t, home, out); a.Provider != "moonshotai" || a.Model != "kimi-k2.7-code" || a.Thinking != "high" {
 		t.Fatalf("captured scout: %+v", a)
 	}
+
+	// A prompt override in the data root is frozen into runs submitted after
+	// it is written, and a run captured before keeps the built-in.
+	builtin, err := Assets.ReadFile("prompts/scout/system.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := out
+	override := filepath.Join(home, "data", "lathe", "prompts", "scout", "system.md")
+	if err := os.MkdirAll(filepath.Dir(override), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(override, []byte("You scout by override.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = lathe(t, "scout", "--detach", "--repo", repo, "what is overridden")
+	if code != 0 {
+		t.Fatalf("overridden submission exited %d:\n%s", code, out)
+	}
+	if a := capturedScout(t, home, out); a.SystemPrompt != "You scout by override.\n" {
+		t.Fatalf("captured scout system prompt: %q", a.SystemPrompt)
+	}
+	if a := capturedScout(t, home, before); a.SystemPrompt != string(builtin) {
+		t.Fatalf("a run captured before the override has %q", a.SystemPrompt)
+	}
 }
 
 // gitRepo makes a committed repository, with project as its lathe.toml unless

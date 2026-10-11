@@ -5,6 +5,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -355,17 +358,24 @@ type AgentPrompts struct {
 
 // Prompt is one prompt by role: system, user or instructions. Key is its path
 // in the embedded FS. SharedWith is every other agent whose roster row names
-// the same key, in roster order.
+// the same key, in roster order. Body is the effective prompt and Builtin the
+// embedded one; they differ only while an override is active. OverridePath is
+// "" when the Config was not loaded through Overlay.
 type Prompt struct {
-	Role       string   `json:"role"`
-	Key        string   `json:"key"`
-	Body       string   `json:"body,omitempty"`
-	SharedWith []string `json:"shared_with"`
+	Role         string   `json:"role"`
+	Key          string   `json:"key"`
+	Body         string   `json:"body,omitempty"`
+	Builtin      string   `json:"builtin,omitempty"`
+	Hash         string   `json:"hash,omitempty"`
+	OverridePath string   `json:"override_path,omitempty"`
+	Overridden   bool     `json:"overridden"`
+	SharedWith   []string `json:"shared_with"`
 }
 
 // Prompts returns every roster agent in roster order, then every routing
-// phase, with prompt bodies read when bodies is set. An empty key is skipped;
-// a missing prompt file is an error naming the agent or phase.
+// phase, with each prompt's override state. Body, Builtin and Hash are filled
+// only when bodies is set. An empty key is skipped; a missing prompt file is an
+// error naming the agent or phase.
 func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 	byKey := map[string][]string{}
 	for _, a := range c.Agents {
@@ -383,8 +393,7 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 			if p.Key == "" {
 				continue
 			}
-			var err error
-			if p.Body, err = c.prompt(p.Key, bodies); err != nil {
+			if err := c.fill(&p, bodies); err != nil {
 				return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 			}
 			p.SharedWith = slices.DeleteFunc(slices.Clone(byKey[p.Key]), func(n string) bool { return n == a.Name })
@@ -394,8 +403,7 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 	}
 	for _, r := range routingPrompts {
 		p := Prompt{Role: "instructions", Key: r.key, SharedWith: []string{}}
-		var err error
-		if p.Body, err = c.prompt(r.key, bodies); err != nil {
+		if err := c.fill(&p, bodies); err != nil {
 			return nil, fmt.Errorf("%s: %w", r.phase, err)
 		}
 		out = append(out, AgentPrompts{Name: r.phase, Kind: "routing", Routes: r.agent, Prompts: []Prompt{p}})
@@ -411,6 +419,187 @@ func (c Config) prompt(key string, body bool) (string, error) {
 		return "", err
 	}
 	return c.readPrompt(key)
+}
+
+// fill sets p's body, built-in, hash and override state from p.Key.
+func (c Config) fill(p *Prompt, bodies bool) error {
+	var err error
+	if p.Body, err = c.prompt(p.Key, bodies); err != nil {
+		return err
+	}
+	o, overlaid := c.fsys.(overlay)
+	if overlaid {
+		if path, err := OverridePath(o.dir, p.Key); err == nil {
+			p.OverridePath = path
+			st, err := os.Stat(path)
+			p.Overridden = err == nil && st.Mode().IsRegular()
+		}
+	}
+	if !bodies {
+		return nil
+	}
+	p.Hash = PromptHash(p.Body)
+	p.Builtin = p.Body
+	if p.Overridden {
+		b, err := fs.ReadFile(o.base, p.Key)
+		if err != nil {
+			return err
+		}
+		p.Builtin = string(b)
+	}
+	return nil
+}
+
+// overlay is the FS Overlay returns.
+type overlay struct {
+	dir  string
+	base fs.FS
+}
+
+// Overlay returns base with each file under prompts/ served from dir/<name>
+// when that file exists. Everything else, roster.toml included, comes from base.
+func Overlay(dir string, base fs.FS) fs.FS {
+	return overlay{dir: dir, base: base}
+}
+
+// Open returns dir/<name> for a regular file under prompts/, and base's file
+// when there is none, a file stands where one of its directories would be, or
+// it is a directory. Any other error opening the override is returned.
+func (o overlay) Open(name string) (fs.File, error) {
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
+	}
+	if strings.HasPrefix(name, "prompts/") {
+		f, err := os.Open(filepath.Join(o.dir, filepath.FromSlash(name)))
+		switch {
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		case err != nil:
+			return nil, err
+		default:
+			st, err := f.Stat()
+			if err != nil {
+				f.Close()
+				return nil, err
+			}
+			if st.Mode().IsRegular() {
+				return f, nil
+			}
+			f.Close()
+		}
+	}
+	return o.base.Open(name)
+}
+
+// ErrPromptConflict is a save whose base hash no longer matches the effective
+// prompt.
+var ErrPromptConflict = errors.New("the prompt changed since it was loaded")
+
+// PromptHash returns the hex sha256 of body.
+func PromptHash(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// OverridePath returns the absolute path of key's prompt override under dir.
+// It errors unless key is a valid path under prompts/ that stays under dir.
+func OverridePath(dir, key string) (string, error) {
+	if !fs.ValidPath(key) || !strings.HasPrefix(key, "prompts/") {
+		return "", fmt.Errorf("%q is not a prompt key", key)
+	}
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, filepath.FromSlash(key))
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%q is not a prompt key", key)
+	}
+	return path, nil
+}
+
+// SavePrompt writes body as key's prompt override under dir, atomically and
+// creating directories as needed. A body equal to the built-in in base removes
+// the override instead. It writes nothing and returns an error wrapping
+// ErrPromptConflict when baseHash is not the hash of the effective prompt.
+func SavePrompt(dir string, base fs.FS, key, body, baseHash string) error {
+	path, err := OverridePath(dir, key)
+	if err != nil {
+		return err
+	}
+	builtin, err := fs.ReadFile(base, key)
+	if err != nil {
+		return err
+	}
+	current, err := fs.ReadFile(Overlay(dir, base), key)
+	if err != nil {
+		return err
+	}
+	if PromptHash(string(current)) != baseHash {
+		return fmt.Errorf("%s: %w", key, ErrPromptConflict)
+	}
+	if body == string(builtin) {
+		return removeOverride(path)
+	}
+	return writeAtomic(path, body)
+}
+
+// ResetPrompt removes key's prompt override under dir. A missing override is
+// not an error.
+func ResetPrompt(dir, key string) error {
+	path, err := OverridePath(dir, key)
+	if err != nil {
+		return err
+	}
+	return removeOverride(path)
+}
+
+// removeOverride removes the file at path. Nothing there, or a directory, is
+// left alone.
+func removeOverride(path string) error {
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+// writeAtomic replaces path with body through a temp file in the same
+// directory, which is removed on failure.
+func writeAtomic(path, body string) (err error) {
+	parent := filepath.Dir(path)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(parent, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
+	if _, err = f.WriteString(body); err != nil {
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(f.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // Prompt substitutes the request into the agent's user prompt. One placeholder
