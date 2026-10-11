@@ -9,10 +9,16 @@ for the engineer to inspect.
 One execution of a workflow for an engineer's request against a repository.
 
 **Iteration**:
-One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteration 0; each revision adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
+One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteration 0; each revision or recovery adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
 
 **Revision**:
 A further change requested against a build whose latest iteration succeeded and whose pull request is still open. It is the next iteration of the same run, not a new run: planned, validated and published to the same pull request, and published only if accepted.
+
+**Recovery**:
+An engineer-requested continuation of a failed, cancelled, or lost run as a new iteration of the same run. The unsuccessful iteration remains inspectable; the recovery has its own request, captured agent configuration, and bounded allowances.
+
+**Restart**:
+An engineer-requested recovery from a verified base when the previous iteration's expected work cannot be restored. The new iteration records which prior work is unavailable rather than silently treating it as recovered.
 
 **Workflow**:
 The sequence of work needed to investigate, plan, implement or ship a requested change. `implement` ends at validated code in the working tree; `build` is the same run plus the branch, commit and pull request that ship it.
@@ -101,6 +107,9 @@ write and its known risks.
 **File list / write scope**:
 The exact repository files the plan permits the builder to write. Listing a
 file grants permission; it does not require a change to that file.
+
+**Scope request**:
+A builder's report that the current plan omits files needed to complete the request. It asks the planner to reconsider the plan; the planner may choose another approach instead of granting the requested files.
 
 **Branch**:
 The branch a build creates for its change before anything is written, named to
