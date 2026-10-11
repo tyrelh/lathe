@@ -14,6 +14,4 @@ End with one fenced json block and nothing after it:
 }
 ```
 
-All five keys are required. command must be nonempty. Use [] for an empty list.
-Do not report a passed key. Do not create report files in the repository.
-Test-generated files outside the plan are cleaned up once every reviewer has finished.
+All five keys are required. command must be nonempty. Use [] for an empty list. Do not report a passed key. Do not create report files in the repository. Test-generated files outside the plan are cleaned up once every reviewer has finished.

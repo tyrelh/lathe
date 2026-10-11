@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -88,13 +89,7 @@ func New(agents []Agent, tiers map[string][]TierConfig, files map[string]File) (
 		Files:          files,
 	}
 	for _, p := range Permissions {
-		i := -1
-		for j, a := range agents {
-			if a.Name == p.Name {
-				i = j
-				break
-			}
-		}
+		i := slices.IndexFunc(agents, func(a Agent) bool { return a.Name == p.Name })
 		if i < 0 {
 			return Config{}, fmt.Errorf("agent %s: no configuration", p.Name)
 		}

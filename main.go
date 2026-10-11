@@ -222,7 +222,7 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 	if err != nil {
 		return trace.Request{}, err
 	}
-	roster, err := capture(name, root, ov, warn)
+	roster, err := capture(name, ov, warn)
 	if err != nil {
 		return trace.Request{}, err
 	}
@@ -258,9 +258,8 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 // capture resolves the configuration a workflow's agents run with, as it is
 // now in ~/.lathe, and freezes it, prompt text included. A missing or invalid
 // file refuses the capture with an error naming it. Edited files whose seed has
-// changed are reported to warn. root is unused: a repository configures
-// nothing.
-func capture(name, root string, ov config.Overrides, warn io.Writer) (config.Snapshot, error) {
+// changed are reported to warn.
+func capture(name string, ov config.Overrides, warn io.Writer) (config.Snapshot, error) {
 	cfg, err := loadRosterWarn(warn)
 	if err != nil {
 		return config.Snapshot{}, err
@@ -331,7 +330,7 @@ func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Ove
 	if _, err := workspace.CheckRevisable(ws.Path, ev); err != nil {
 		return 0, err
 	}
-	roster, err := capture("revise", ws.Path, ov, warn)
+	roster, err := capture("revise", ov, warn)
 	if err != nil {
 		return 0, err
 	}

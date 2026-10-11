@@ -1010,8 +1010,14 @@ function fileInfo(f) {
   const state = f.drift ? ' <span class="badge" title="Edited, and its seed has changed since">drift</span>'
     : f.edited ? ' <span class="badge" title="Differs from its seed">edited</span>' : ' <span class="dim">(seed)</span>';
   const diff = f.edited && f.seed !== undefined && f.body !== undefined
-    ? `<details><summary>Changes from the seed</summary><pre class="diff">${esc(lineDiff(lf(f.seed), lf(f.body)))}</pre></details>` : '';
+    ? `<details data-seed="${esc(lf(f.seed))}" data-body="${esc(lf(f.body))}" ontoggle="seedDiff(this)"><summary>Changes from the seed</summary><pre class="diff"></pre></details>` : '';
   return `<p class="dim"><code>${esc(f.path || f.key)}</code>${state}</p>${diff}`;
+}
+// seedDiff fills an opened panel once with its changes from the seed.
+function seedDiff(panel) {
+  if (!panel.open) return;
+  panel.querySelector('pre').textContent = lineDiff(panel.dataset.seed, panel.dataset.body);
+  panel.ontoggle = null;
 }
 // promptInfo renders where prompt p lives, its drift and, for a user prompt,
 // what is added to it at run time.

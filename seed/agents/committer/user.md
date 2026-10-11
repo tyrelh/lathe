@@ -12,7 +12,4 @@ End with one fenced json block and nothing after it:
 }
 ```
 
-All three keys are required. `message` is used verbatim, so it carries its own
-line breaks and no surrounding quotes or fences. Omit the body only if the
-repository's history omits it. Do not sign off as anyone, and do not mention
-lathe, the agents, or the phases. Use [] for artifacts: you write no files.
+All three keys are required. `message` is used verbatim, so it carries its own line breaks and no surrounding quotes or fences. Omit the body only if the repository's history omits it. Do not sign off as anyone, and do not mention lathe, the agents, or the phases. Use [] for artifacts: you write no files.

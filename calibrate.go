@@ -62,7 +62,7 @@ func calibrate(ctx context.Context, w io.Writer, db *trace.DB, dataRoot, dir, ag
 	if err != nil {
 		return err
 	}
-	snap, err := capture("build", root, config.Overrides{}, io.Discard)
+	snap, err := capture("build", config.Overrides{}, io.Discard)
 	if err != nil {
 		return err
 	}

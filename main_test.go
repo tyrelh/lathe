@@ -36,7 +36,7 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
-	repo := gitRepo(t, "provider = \"anthropic\"\nmodel = \"from-lathe-toml\"\n[agents.builder]\nmodel = \"also-ignored\"\n")
+	t.Chdir(gitRepo(t, "provider = \"anthropic\"\nmodel = \"from-lathe-toml\"\n[agents.builder]\nmodel = \"also-ignored\"\n"))
 	override := filepath.Join(home, "data", "lathe", "prompts", "builder", "system.md")
 	os.MkdirAll(filepath.Dir(override), 0o755)
 	os.WriteFile(override, []byte("You build by override.\n"), 0o644)
@@ -45,7 +45,7 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := capture("build", repo, config.Overrides{}, io.Discard)
+	first, err := capture("build", config.Overrides{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 	if err := os.WriteFile(system, []byte("You build by edit.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	second, err := capture("build", repo, config.Overrides{}, io.Discard)
+	second, err := capture("build", config.Overrides{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 		t.Fatalf("an earlier capture changed: %q", got)
 	}
 
-	flagged, err := capture("build", repo, config.Overrides{Model: "m"}, io.Discard)
+	flagged, err := capture("build", config.Overrides{Model: "m"}, io.Discard)
 	if err != nil || flagged.Agents["builder"].Model != "m" || !flagged.RoutingOff || len(flagged.Routing) != 0 {
 		t.Fatalf("flagged capture: %+v %v", flagged.Agents["builder"], err)
 	}
@@ -86,7 +86,7 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 		path := filepath.Join(home, ".lathe", "agents", "builder", file)
 		good, _ := os.ReadFile(path)
 		os.WriteFile(path, []byte(body), 0o644)
-		if _, err := capture("build", repo, config.Overrides{}, io.Discard); err == nil || !strings.Contains(err.Error(), path) {
+		if _, err := capture("build", config.Overrides{}, io.Discard); err == nil || !strings.Contains(err.Error(), path) {
 			t.Errorf("broken %s: %v", file, err)
 		}
 		os.WriteFile(path, good, 0o644)

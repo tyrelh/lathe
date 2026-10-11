@@ -1,5 +1,7 @@
 package config
 
+import "slices"
+
 // Agent permissions are compiled in and never written to disk: agent
 // configuration can change what an agent is told and which model runs it,
 // never what it may do.
@@ -91,10 +93,5 @@ var Thinking = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
 
 // ValidThinking reports whether level is one of Thinking.
 func ValidThinking(level string) bool {
-	for _, t := range Thinking {
-		if t == level {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(Thinking, level)
 }

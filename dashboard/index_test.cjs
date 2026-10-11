@@ -1062,7 +1062,16 @@ const costs = () => nodes.get('costs').innerHTML;
   const boxHTML = role => ['edit', 'status', 'info'].map(part => deepHTML(nodes.get(`prompt-${role}-${part}`))).join('');
   const statusOf = role => nodes.get(`prompt-${role}-status`);
   assert(boxHTML('system').includes(`<code>${home}agents/code-review-general/system.md</code> <span class="badge" title="Edited, and its seed has changed since">drift</span>`), boxHTML('system'));
-  assert(boxHTML('system').includes('<summary>Changes from the seed</summary><pre class="diff">- Review\n+ Review &lt;/textarea>&lt;script>alert(1)&lt;/script></pre>'), boxHTML('system'));
+  assert(boxHTML('system').includes('<summary>Changes from the seed</summary><pre class="diff"></pre>'), boxHTML('system'));
+  const diffPre = {textContent: ''};
+  const diffPanel = {open: false, dataset: {seed: 'Review', body: 'Review </textarea><script>alert(1)</script>'},
+    querySelector: () => diffPre, ontoggle: () => {}};
+  call('seedDiff', diffPanel);
+  assert.equal(diffPre.textContent, '', 'closed panels defer the diff');
+  diffPanel.open = true;
+  call('seedDiff', diffPanel);
+  assert.equal(diffPre.textContent, '- Review\n+ Review </textarea><script>alert(1)</script>');
+  assert.equal(diffPanel.ontoggle, null, 'the diff is computed once per panel');
   assert(boxHTML('user').includes(`<code>${home}agents/code-review-general/user.md</code> <span class="dim">(seed)</span>`) && !boxHTML('user').includes('<details>'), boxHTML('user'));
   assert.equal(call('lineDiff', 'a\nb\nc', 'a\nc\nd'), '  a\n- b\n  c\n+ d');
   assert(boxHTML('system').includes('&lt;/textarea>&lt;script>alert(1)&lt;/script></textarea>') && !promptsHTML().includes('<script>'),

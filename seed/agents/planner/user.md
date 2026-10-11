@@ -17,8 +17,7 @@ If the request above looks like a well-formed plan already just review it for co
 So alongside the source files you expect to change, list:
 
 - the test file for every source file you change, whether or not it exists yet
-- any dependency manifest a new import would touch — `go.mod`, `go.sum`,
-  `package.json`, lockfiles
+- any dependency manifest a new import would touch — `go.mod`, `go.sum`, `package.json`, lockfiles
 
 Prefer listing a file the builder may not need over omitting one it does.
 

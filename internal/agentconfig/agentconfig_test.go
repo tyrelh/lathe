@@ -188,7 +188,6 @@ func TestSeedReplacesOnlyForNewerVersions(t *testing.T) {
 func TestWritesAreSerialized(t *testing.T) {
 	home := t.TempDir()
 	key := "agents/scout/system.md"
-	path := filepath.Join(home, key)
 	old := fstest.MapFS{key: {Data: []byte("old")}}
 	if _, err := Seed(home, old, "v1.0.0"); err != nil {
 		t.Fatal(err)
@@ -238,7 +237,6 @@ func TestWritesAreSerialized(t *testing.T) {
 			t.Fatal(saveErr)
 		}
 	}
-	_ = path
 }
 
 // Seeded files and the manifest are owner-only, in owner-only directories.

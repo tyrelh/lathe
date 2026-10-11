@@ -13,6 +13,4 @@ End with one fenced json block and nothing after it:
 }
 ```
 
-All four keys are required. `body` is used verbatim, so it carries its own line
-breaks and no surrounding quotes or fences. Do not mention lathe, the agents, or
-the phases. Use [] for artifacts: you write no files.
+All four keys are required. `body` is used verbatim, so it carries its own line breaks and no surrounding quotes or fences. Do not mention lathe, the agents, or the phases. Use [] for artifacts: you write no files.

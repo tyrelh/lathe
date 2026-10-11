@@ -13,8 +13,4 @@ End with one fenced json block and nothing after it:
 }
 ```
 
-All four keys are required. Use [] for an empty list. changed must exactly match
-the uncommitted changes, including changes from earlier turns. List any file the
-plan missed in needed; a nonempty needed list ends the run as a failure. Do not
-list deleted or intentionally empty files in artifacts. Do not create report
-files in the repository: lathe saves your report in its run directory.
+All four keys are required. Use [] for an empty list. changed must exactly match the uncommitted changes, including changes from earlier turns. List any file the plan missed in needed; a nonempty needed list ends the run as a failure. Do not list deleted or intentionally empty files in artifacts. Do not create report files in the repository: lathe saves your report in its run directory.
