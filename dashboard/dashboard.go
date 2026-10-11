@@ -25,6 +25,9 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
+//go:embed favicon.ico
+var faviconICO []byte
+
 // Addr is a literal rather than a setting: the server has no authentication
 // and serves prompts and source. Remote viewing is an SSH tunnel.
 const Addr = "127.0.0.1:4700"
@@ -174,6 +177,10 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
+	})
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/vnd.microsoft.icon")
+		w.Write(faviconICO)
 	})
 	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Recent(intParam(r, "n", 50))

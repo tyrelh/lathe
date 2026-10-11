@@ -1,9 +1,12 @@
 package dashboard
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"io/fs"
 	"net/http"
@@ -40,6 +43,55 @@ func local(method, path string, body io.Reader) *http.Request {
 	r := httptest.NewRequest(method, path, body)
 	r.Host = Addr
 	return r
+}
+
+func TestFavicon(t *testing.T) {
+	h := Handler(t.TempDir(), "test", Actions{}, Sources{})
+	page := httptest.NewRecorder()
+	h.ServeHTTP(page, local("GET", "/", nil))
+	if !strings.Contains(page.Body.String(), `<link rel="icon" href="/favicon.ico?v=1"`) {
+		t.Fatal("page does not reference favicon")
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, local("GET", "/favicon.ico?v=1", nil))
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/vnd.microsoft.icon" {
+		t.Fatalf("favicon response: %d %v", w.Code, w.Header())
+	}
+	b := w.Body.Bytes()
+	if len(b) < 54 || binary.LittleEndian.Uint16(b[0:2]) != 0 || binary.LittleEndian.Uint16(b[2:4]) != 1 || binary.LittleEndian.Uint16(b[4:6]) != 3 {
+		t.Fatal("favicon must be an ICO with three sizes")
+	}
+	for i, size := range []int{16, 32, 48} {
+		entry := b[6+i*16 : 6+(i+1)*16]
+		length, offset := int(binary.LittleEndian.Uint32(entry[8:12])), int(binary.LittleEndian.Uint32(entry[12:16]))
+		if offset < 54 || offset > len(b) || length > len(b)-offset {
+			t.Fatalf("invalid ICO entry for %d", size)
+		}
+		img, err := png.Decode(bytes.NewReader(b[offset : offset+length]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int(entry[0]) != size || int(entry[1]) != size || img.Bounds().Dx() != size || img.Bounds().Dy() != size {
+			t.Fatalf("incorrect dimensions for %d", size)
+		}
+		if _, _, _, a := img.At(0, 0).RGBA(); a != 0 {
+			t.Fatalf("favicon %d lacks transparent padding", size)
+		}
+	}
+	for _, method := range []string{"GET", "HEAD"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local(method, "/favicon.ico", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("reload %s: %d", method, w.Code)
+		}
+	}
+	r := local("GET", "/favicon.ico", nil)
+	r.Host = "evil.example"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("favicon bypassed host guard: %d", w.Code)
+	}
 }
 
 // claimed submits a run and takes it through dispatch and claim the way the
