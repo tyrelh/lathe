@@ -255,14 +255,15 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 }
 
 // capture resolves the configuration a workflow's agents run with, as it is
-// now. The target's lathe.toml is read here, at submission, so its values are
-// frozen into the snapshot with everything else. A broken file is a warning,
-// not a failure: the run goes ahead on the roster. Resolving now turns an
-// unknown agent, a bad timeout or a missing prompt into an error before
-// anything is recorded — and the resolved roster is what the worker executes
-// from, so editing a prompt cannot change queued work.
+// now. The target's lathe.toml and any prompt overrides are read here, at
+// submission, so their values are frozen into the snapshot with everything
+// else. A broken file is a warning, not a failure: the run goes ahead on the
+// roster. Resolving now turns an unknown agent, a bad timeout or a missing
+// prompt into an error before anything is recorded — and the resolved roster
+// is what the worker executes from, so editing a prompt cannot change queued
+// work.
 func capture(name, root string, ov config.Overrides, warn io.Writer) (config.Snapshot, error) {
-	cfg, err := config.Load(Assets)
+	cfg, err := loadRoster()
 	if err != nil {
 		return config.Snapshot{}, err
 	}
@@ -272,6 +273,16 @@ func capture(name, root string, ov config.Overrides, warn io.Writer) (config.Sna
 		fmt.Fprintln(warn, "lathe: loaded", filepath.Join(root, "lathe.toml"))
 	}
 	return cfg.Capture(workflow.Agents[name], ov)
+}
+
+// loadRoster loads the roster with the prompt overrides in the data root laid
+// over the built-in prompts.
+func loadRoster() (config.Config, error) {
+	dataRoot, err := trace.DataRoot()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(config.Overlay(dataRoot, Assets))
 }
 
 // submitRevision is the one revision submission; the CLI and the dashboard
@@ -597,8 +608,14 @@ func managerCmd() int {
 	// that calls os.Exit cannot be reused by a second command.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	actions := dashboard.Actions{Submit: prepareAndSubmit, Revise: dashboardRevise, Cancel: dashboardCancel}
-	sources := dashboard.Sources{Roster: func() (config.Config, error) { return config.Load(Assets) }}
+	actions := dashboard.Actions{
+		Submit: prepareAndSubmit, Revise: dashboardRevise, Cancel: dashboardCancel,
+		SavePrompt: func(key, body, baseHash string) error {
+			return config.SavePrompt(dataRoot, Assets, key, body, baseHash)
+		},
+		ResetPrompt: func(key string) error { return config.ResetPrompt(dataRoot, key) },
+	}
+	sources := dashboard.Sources{Roster: loadRoster}
 	if err := manager.Run(ctx, dataRoot, version, os.Stdout, actions, sources); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe manager:", err)
 		return 1

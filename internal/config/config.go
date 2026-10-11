@@ -355,17 +355,24 @@ type AgentPrompts struct {
 
 // Prompt is one prompt by role: system, user or instructions. Key is its path
 // in the embedded FS. SharedWith is every other agent whose roster row names
-// the same key, in roster order.
+// the same key, in roster order. Body is the effective prompt and Builtin the
+// embedded one; they differ only while an override is active. OverridePath is
+// "" when the Config was not loaded through Overlay.
 type Prompt struct {
-	Role       string   `json:"role"`
-	Key        string   `json:"key"`
-	Body       string   `json:"body,omitempty"`
-	SharedWith []string `json:"shared_with"`
+	Role         string   `json:"role"`
+	Key          string   `json:"key"`
+	Body         string   `json:"body,omitempty"`
+	Builtin      string   `json:"builtin,omitempty"`
+	Hash         string   `json:"hash,omitempty"`
+	OverridePath string   `json:"override_path,omitempty"`
+	Overridden   bool     `json:"overridden"`
+	SharedWith   []string `json:"shared_with"`
 }
 
 // Prompts returns every roster agent in roster order, then every routing
-// phase, with prompt bodies read when bodies is set. An empty key is skipped;
-// a missing prompt file is an error naming the agent or phase.
+// phase, with each prompt's override state. Body, Builtin and Hash are filled
+// only when bodies is set. An empty key is skipped; a missing prompt file is an
+// error naming the agent or phase.
 func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 	byKey := map[string][]string{}
 	for _, a := range c.Agents {
@@ -383,8 +390,7 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 			if p.Key == "" {
 				continue
 			}
-			var err error
-			if p.Body, err = c.prompt(p.Key, bodies); err != nil {
+			if err := c.fill(&p, bodies); err != nil {
 				return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 			}
 			p.SharedWith = slices.DeleteFunc(slices.Clone(byKey[p.Key]), func(n string) bool { return n == a.Name })
@@ -394,8 +400,7 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 	}
 	for _, r := range routingPrompts {
 		p := Prompt{Role: "instructions", Key: r.key, SharedWith: []string{}}
-		var err error
-		if p.Body, err = c.prompt(r.key, bodies); err != nil {
+		if err := c.fill(&p, bodies); err != nil {
 			return nil, fmt.Errorf("%s: %w", r.phase, err)
 		}
 		out = append(out, AgentPrompts{Name: r.phase, Kind: "routing", Routes: r.agent, Prompts: []Prompt{p}})
@@ -411,6 +416,35 @@ func (c Config) prompt(key string, body bool) (string, error) {
 		return "", err
 	}
 	return c.readPrompt(key)
+}
+
+// fill sets p's body, built-in, hash and override state from p.Key.
+func (c Config) fill(p *Prompt, bodies bool) error {
+	var err error
+	if p.Body, err = c.prompt(p.Key, bodies); err != nil {
+		return err
+	}
+	o, overlaid := c.fsys.(overlay)
+	if overlaid {
+		if path, err := OverridePath(o.dir, p.Key); err == nil {
+			p.OverridePath = path
+			st, err := os.Stat(path)
+			p.Overridden = err == nil && st.Mode().IsRegular()
+		}
+	}
+	if !bodies {
+		return nil
+	}
+	p.Hash = PromptHash(p.Body)
+	p.Builtin = p.Body
+	if p.Overridden {
+		b, err := fs.ReadFile(o.base, p.Key)
+		if err != nil {
+			return err
+		}
+		p.Builtin = string(b)
+	}
+	return nil
 }
 
 // Prompt substitutes the request into the agent's user prompt. One placeholder

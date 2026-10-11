@@ -307,6 +307,8 @@
     font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: 6px 8px; white-space: pre-wrap; tab-size: 2; }
   .prompt p { margin: 4px 0 0; overflow-wrap: anywhere; }
+  .prompt .actions { margin-top: 6px; }
+  .badge { color: var(--run); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; font-size: 11px; }
   @media (max-width: 1100px), (max-height: 850px) {
     body { --rail: 46px; }
     nav .label { display: none; }
@@ -465,7 +467,7 @@ let projectRows = [], projectMore = false, projectLoaded = false, projectLoading
 // lives in its own DOM, which polling never rewrites.
 let runSubmitting = false, reviseSubmitting = false;
 let generation = 0, polling = false, fresh = 0, failure = '';
-let view = route();
+let view = route(), viewHash = '', viewAt = 0;
 
 const esc = s => String(s ?? '').replace(/[<&"']/g, c => ({'<':'&lt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
 // queued and starting are live states, not failures: a run that has not
@@ -722,6 +724,12 @@ function route() {
 function navigate() {
   tooltip.hide();
   view = route();
+  viewHash = location.hash;
+  // Each history entry is stamped with its position, so a declined leave can
+  // travel back to this one.
+  viewAt = history.state?.at ?? viewAt + 1;
+  history.replaceState({at: viewAt}, '');
+  agentShown = null; promptBoxes.clear();
   generation++;
   after = 0; done = false; failure = '';
   spend.clear(); contexts.clear(); inputs.clear(); outputs.clear(); responses.clear();
@@ -750,7 +758,22 @@ function navigate() {
   }
   tick();
 }
-addEventListener('hashchange', navigate);
+// Leaving an agent page with unsaved edits asks first. Declining steps back
+// over a new entry, or travels back to this page's own one, without a redraw,
+// so the drafts and the rest of the history stay.
+addEventListener('hashchange', () => {
+  if (location.hash === viewHash) return;
+  if (unsaved() && !confirm('Leave this page? Unsaved prompt edits will be lost.')) {
+    history.go(viewAt - (history.state?.at ?? viewAt + 1));
+    return;
+  }
+  navigate();
+});
+addEventListener('beforeunload', e => {
+  if (!unsaved()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 async function tick() {
   if (done || polling) return;
@@ -899,8 +922,10 @@ const agentLinks = names => names.map(n => `<a href="${esc(agentHref(n))}">${esc
 const workflowNames = ws => ws?.length ? esc(ws.join(', ')) : '<span class="dim">none</span>';
 const agentRow = a => {
   const href = esc(agentHref(a.name));
+  const badge = (a.prompts || []).some(p => p.overridden)
+    ? ' <span class="badge" title="A prompt override is active">edited</span>' : '';
   return `<tr class="agent" data-row="${esc(a.name)}" onclick="location.hash='${href}'">
-    <td><a data-focus="${esc('agent-' + a.name)}" href="${href}">${esc(a.name)}</a></td>
+    <td><a data-focus="${esc('agent-' + a.name)}" href="${href}">${esc(a.name)}</a>${badge}</td>
     <td class="dim">${esc(a.kind)}</td>
     <td>${workflowNames(a.workflows)}</td>
     <td>${(a.prompts || []).map(p => esc(p.role) + (p.shared_with?.length
@@ -913,7 +938,7 @@ async function agents(current) {
   if (current !== generation) return;
   const routing = rows.filter(a => a.kind === 'routing').length;
   ensurePage('agents');
-  swap($('page-summary'), summaryRow('<h2>Agents</h2><p class="dim">Every agent and routing phase, with the built-in prompts it runs with.</p>',
+  swap($('page-summary'), summaryRow('<h2>Agents</h2><p class="dim">Every agent and routing phase, with the prompts it runs with.</p>',
     tally(count(rows.length - routing), 'agents') + tally(count(routing), 'routing phases')));
   swap($('list-body'), `<table><thead><tr><th>Agent</th><th>Kind</th><th>Workflows</th><th>Prompts</th></tr></thead><tbody>${
     rows.map(agentRow).join('') || '<tr><td colspan="4" class="dim">No agents configured.</td></tr>'}</tbody></table>`);
@@ -923,18 +948,159 @@ async function agents(current) {
 }
 
 const PROMPT_LABEL = {system: 'System prompt', user: 'User prompt', instructions: 'Instructions'};
-// promptBox renders one prompt as read-only text, with its key, who shares it
-// and, for a user prompt, what is added to it at run time.
-function promptBox(p, repoInstructions) {
-  const id = 'prompt-' + p.role, body = p.body || '';
-  const hint = p.role !== 'user' ? '' : '<p class="dim"><code>{{request}}</code> is replaced by the request.'
-    + (repoInstructions ? ' The repo’s AGENTS.md is prepended on the first turn.' : '') + '</p>';
+// agentShown is the open agent page's agent. promptBoxes maps each of its
+// roles to {p, text, saving, status, error, conflict}: the prompt as loaded,
+// the box's current text, and the last write's outcome. A draft lives in text,
+// so a redraw never loses it.
+let agentShown = null;
+const promptBoxes = new Map();
+// A textarea's value has LF line endings whatever the body had.
+const lf = s => (s || '').replace(/\r\n?/g, '\n');
+const edited = b => b.text !== lf(b.p.body);
+const unsaved = () => [...promptBoxes.values()].some(edited);
+// andList joins names as "a, b and c".
+const andList = xs => xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
+
+// promptEditor returns prompt p's label, textarea and write controls, from p
+// alone.
+function promptEditor(p) {
+  const id = 'prompt-' + p.role, role = `data-role="${esc(p.role)}"`, body = lf(p.body);
+  const button = (part, fn, label) => `<button id="${esc(id + '-' + part)}" type="button" ${role} data-focus="${esc(id + '-' + part)}" onclick="${fn}(this.dataset.role)">${label}</button>`;
   // The parser drops one newline straight after <textarea>, so lead with one
   // to keep a body's own.
-  return `<div class="prompt"><label for="${esc(id)}">${esc(PROMPT_LABEL[p.role] || p.role)}</label>
-    <textarea id="${esc(id)}" readonly spellcheck="false" rows="${Math.min(40, body.split('\n').length + 1)}">\n${esc(body)}</textarea>
-    <p class="dim">Built-in <code>${esc(p.key)}</code></p>`
-    + (p.shared_with?.length ? `<p class="dim">Shared with ${agentLinks(p.shared_with)}</p>` : '') + hint + '</div>';
+  return `<label for="${esc(id)}">${esc(PROMPT_LABEL[p.role] || p.role)}</label>
+    <textarea id="${esc(id)}" ${role} data-focus="${esc(id)}" spellcheck="false" rows="${Math.min(40, body.split('\n').length + 1)}" oninput="promptInput(this)">\n${esc(body)}</textarea>
+    <div class="actions">${button('save', 'savePrompt', 'Save')}
+      ${button('discard', 'discardPrompt', 'Discard')}${p.overridden ? button('reset', 'resetPrompt', 'Reset to built-in') : ''}</div>`;
+}
+// promptStatus renders box b's last write outcome, with the current version
+// to load after a conflict.
+const promptStatus = b => (b.status || '') + (!b.conflict ? ''
+  : ` <button type="button" data-role="${esc(b.p.role)}" data-focus="${esc('prompt-' + b.p.role + '-load')}" onclick="loadCurrent(this.dataset.role)">Load current version</button>`);
+// promptInfo renders where prompt p's override lives, who shares it and, for
+// a user prompt, what is added to it at run time.
+function promptInfo(p, repoInstructions) {
+  const where = !p.override_path ? `Built-in <code>${esc(p.key)}</code>`
+    : `Override: <code>${esc(p.override_path)}</code> ` + (p.overridden ? '(active)' : `(not set, using built-in <code>${esc(p.key)}</code>)`);
+  const hint = p.role !== 'user' ? '' : '<p class="dim"><code>{{request}}</code> is replaced by the request.'
+    + (repoInstructions ? ' The repo’s AGENTS.md is prepended on the first turn.' : '') + '</p>';
+  return `<p class="dim">${where}</p>`
+    + (p.shared_with?.length ? `<p class="dim">Shared with ${agentLinks(p.shared_with)}</p>` : '') + hint;
+}
+
+// drawPrompts renders every box, keeping the boxes and their status lines
+// when the roles are unchanged.
+function drawPrompts() {
+  const roles = [...promptBoxes.keys()];
+  swap($('agent-prompts'), roles.map(r => {
+    const id = esc('prompt-' + r);
+    return `<div class="prompt" id="${id}-box"><div id="${id}-edit"></div><p id="${id}-status" role="status"></p><div id="${id}-info"></div></div>`;
+  }).join('') || '<p class="dim">No prompts.</p>');
+  for (const r of roles) drawBox(r);
+}
+// drawBox redraws role's box from its state. A part whose markup is unchanged
+// is left alone, so an untouched draft keeps its undo history and scroll.
+function drawBox(role) {
+  const b = promptBoxes.get(role), id = 'prompt-' + role, status = $(id + '-status'), focused = document.activeElement;
+  swap($(id + '-edit'), promptEditor(b.p));
+  status.className = b.error ? 'fail' : '';
+  swap(status, promptStatus(b));
+  swap($(id + '-info'), promptInfo(b.p, agentShown.repo_instructions));
+  syncBox(role, focused);
+}
+// syncBox sets role's text and control states in place. If focused was one of
+// role's controls and focus is now on nothing usable, it focuses the textarea.
+function syncBox(role, focused = document.activeElement) {
+  const b = promptBoxes.get(role), id = 'prompt-' + role, box = $(id);
+  if (box.value !== b.text) box.value = b.text;
+  box.readOnly = !!b.saving;
+  $(id + '-save').disabled = $(id + '-discard').disabled = !edited(b) || !!b.saving;
+  const reset = $(id + '-reset');
+  if (reset) reset.disabled = !!b.saving;
+  const now = document.activeElement;
+  if (focused?.dataset?.role === role && (!now || now === document.body || now.disabled || !now.isConnected)) box.focus({preventScroll: true});
+}
+function promptInput(el) {
+  const b = promptBoxes.get(el.dataset.role);
+  if (!b) return;
+  b.text = el.value;
+  syncBox(el.dataset.role);
+}
+
+// applyAgent shows agent a. A box with unsaved edits keeps them and the
+// prompt they were made against, unless it is role, the box just written.
+function applyAgent(a, role = '') {
+  agentShown = a;
+  const old = new Map(promptBoxes);
+  promptBoxes.clear();
+  for (const p of a.prompts || []) {
+    const b = old.get(p.role), keep = b && p.role !== role;
+    if (keep && edited(b)) promptBoxes.set(p.role, b);
+    else promptBoxes.set(p.role, keep && !b.conflict ? {...b, p, text: lf(p.body)} : {p, text: lf(p.body)});
+  }
+  drawPrompts();
+}
+
+const promptURL = role => `/api/agents/${encodeURIComponent(view.name)}/prompts/${encodeURIComponent(role)}`;
+const sharers = b => andList([agentShown.name, ...b.p.shared_with]);
+
+// savePrompt saves role's text as its prompt override, after confirming when
+// other agents share the prompt.
+async function savePrompt(role) {
+  const b = promptBoxes.get(role);
+  if (!b || b.saving || !edited(b)) return;
+  if (b.p.shared_with?.length && !confirm(`Saving changes this prompt for ${sharers(b)}.`)) return;
+  await writePrompt(role, 'PUT', {body: b.text, base_hash: b.p.hash}, 'Saved. Applies to runs and revisions submitted from now on.');
+}
+// resetPrompt removes role's prompt override, after confirming when the box
+// has unsaved edits or other agents share the prompt.
+async function resetPrompt(role) {
+  const b = promptBoxes.get(role);
+  if (!b || b.saving) return;
+  if (edited(b) && !confirm('Reset to the built-in? Your unsaved edits to this prompt will be lost.')) return;
+  if (b.p.shared_with?.length && !confirm(`Resetting changes this prompt for ${sharers(b)}.`)) return;
+  await writePrompt(role, 'DELETE', {}, 'Reset to the built-in. Applies to runs and revisions submitted from now on.');
+}
+// writePrompt sends one write for role and redraws from the reply: the
+// updated agent on success, or the refusal, with the current version to load
+// when the prompt changed since it was loaded.
+async function writePrompt(role, method, payload, success) {
+  const current = generation;
+  Object.assign(promptBoxes.get(role), {saving: true, status: 'Saving…', error: false});
+  drawBox(role);
+  let status = success, error = false, conflict = null;
+  try {
+    const r = await send(promptURL(role), payload, method);
+    if (current !== generation) return;
+    if (r.ok) applyAgent(r.body, role);
+    else {
+      status = esc(r.error); error = true;
+      if (r.status === 409) conflict = {body: r.body.body, hash: r.body.hash, overridden: r.body.overridden};
+    }
+  } catch (err) {
+    if (current !== generation) return;
+    status = esc(String(err)); error = true;
+  }
+  const b = promptBoxes.get(role);
+  if (!b) return;
+  Object.assign(b, {saving: false, status, error}, conflict && {conflict});
+  drawBox(role);
+}
+function discardPrompt(role) {
+  const b = promptBoxes.get(role);
+  if (!b || b.saving) return;
+  b.text = lf(b.p.body);
+  if (!b.conflict) b.status = '';
+  drawBox(role);
+}
+// loadCurrent replaces role's prompt and text with the version a conflict
+// reported.
+function loadCurrent(role) {
+  const b = promptBoxes.get(role);
+  if (!b?.conflict || b.saving) return;
+  const {body, hash, overridden} = b.conflict;
+  promptBoxes.set(role, {p: {...b.p, body, hash, overridden}, text: lf(body), status: 'Loaded the current version.'});
+  drawBox(role);
 }
 
 async function agent(current) {
@@ -952,9 +1118,8 @@ async function agent(current) {
   ensurePage('agent');
   swap($('agent-head'), summaryRow(`<a data-focus="all-agents" href="#/agents">&larr; all agents</a><h2>${esc(a.name)}</h2>
     <p class="dim">${kind} · workflows: ${workflowNames(a.workflows)}</p>
-    <p class="dim">Read-only. Each run captures these prompts when it is submitted.</p>`, ''));
-  swap($('agent-prompts'), (a.prompts || []).map(p => promptBox(p, a.repo_instructions)).join('')
-    || '<p class="dim">No prompts.</p>');
+    <p class="dim">Edits are saved as prompt overrides on this machine. Each run captures its prompts when it is submitted.</p>`, ''));
+  applyAgent(a);
 
   bar.textContent = `Agents · ${a.name} · ${a.kind}`;
   done = true;
@@ -1014,14 +1179,14 @@ function projectShell(repo) {
     </form></div></div>`;
 }
 
-// send posts JSON to one of the dashboard's write routes and returns the
-// reply's body and, for a refusal, the reason to show.
-async function send(url, payload) {
-  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+// send sends JSON to one of the dashboard's write routes and returns the
+// reply's status and body and, for a refusal, the reason to show.
+async function send(url, payload, method = 'POST') {
+  const r = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
   const text = await r.text();
   let body = {};
   try { body = JSON.parse(text); } catch {}
-  return {ok: r.ok, body, error: body.error || text || 'HTTP ' + r.status};
+  return {ok: r.ok, status: r.status, body, error: body.error || text || 'HTTP ' + r.status};
 }
 const runLink = id => `<a href="#/runs/${esc(id)}">${esc(id)}</a>`;
 

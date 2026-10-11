@@ -601,6 +601,13 @@ func TestPrompts(t *testing.T) {
 			{Role: "instructions", Key: "prompts/routing/builder.md", Body: "build routing", SharedWith: []string{}},
 		}},
 	}
+	// Without an overlay nothing is overridden, so the built-in is the body.
+	for i := range want {
+		for j := range want[i].Prompts {
+			p := &want[i].Prompts[j]
+			p.Builtin, p.Hash = p.Body, PromptHash(p.Body)
+		}
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Prompts() =\n%+v\nwant\n%+v", got, want)
 	}

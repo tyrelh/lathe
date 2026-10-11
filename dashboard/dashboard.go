@@ -1,7 +1,7 @@
 // Package dashboard serves a view of the trace database and the roster's
-// prompts through an embedded page and JSON endpoints, plus three routes that
-// write through the CLI's own paths: queue a run for a project, revise a run,
-// and cancel one.
+// prompts through an embedded page and JSON endpoints, plus routes that write
+// through paths handed in by the CLI: queue a run for a project, revise a run,
+// cancel one, and save or reset a prompt override.
 package dashboard
 
 import (
@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
@@ -40,12 +41,16 @@ type Submit func(workflow, repo, prompt, issue string) (string, error)
 
 // Actions are the dashboard's writes, each the CLI's own path handed in by the
 // manager: Submit queues a run, Revise appends an iteration to one and returns
-// its number, Cancel asks one to stop and returns its status. A nil action
-// registers no route, which is what keeps a read-only dashboard read-only.
+// its number, Cancel asks one to stop and returns its status. SavePrompt writes
+// a prompt override for a roster key unless baseHash is stale, and ResetPrompt
+// removes one. A nil action registers no route, which is what keeps a
+// read-only dashboard read-only.
 type Actions struct {
-	Submit Submit
-	Revise func(runID, request string) (int, error)
-	Cancel func(runID string) (string, error)
+	Submit      Submit
+	Revise      func(runID, request string) (int, error)
+	Cancel      func(runID string) (string, error)
+	SavePrompt  func(key, body, baseHash string) error
+	ResetPrompt func(key string) error
 }
 
 // Sources are the dashboard's reads from outside the trace database, each
@@ -93,18 +98,22 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 			writeJSON(w, agents, err)
 		})
 		mux.HandleFunc("GET /api/agents/{name}", func(w http.ResponseWriter, r *http.Request) {
-			agents, err := agentViews(sources.Roster, true)
-			if err != nil {
-				writeJSON(w, nil, err)
+			a, err := findAgent(sources.Roster, r.PathValue("name"), true)
+			if errors.Is(err, errNoAgent) {
+				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			i := slices.IndexFunc(agents, func(a agentView) bool { return a.Name == r.PathValue("name") })
-			if i < 0 {
-				http.Error(w, "no such agent", http.StatusNotFound)
-				return
-			}
-			writeJSON(w, agents[i], nil)
+			writeJSON(w, a, err)
 		})
+		// One lock for both writes: a save checks the hash it was loaded
+		// against, and nothing else from this page may land in between.
+		var mu sync.Mutex
+		if actions.SavePrompt != nil {
+			mux.HandleFunc("PUT /api/agents/{name}/prompts/{role}", savePrompt(&mu, sources.Roster, actions.SavePrompt))
+		}
+		if actions.ResetPrompt != nil {
+			mux.HandleFunc("DELETE /api/agents/{name}/prompts/{role}", resetPrompt(&mu, sources.Roster, actions.ResetPrompt))
+		}
 	}
 	if actions.Submit != nil {
 		mux.HandleFunc("POST /api/projects/runs", submitRun(db, actions.Submit))
@@ -249,6 +258,23 @@ func agentViews(roster func() (config.Config, error), bodies bool) ([]agentView,
 		}
 	}
 	return views, nil
+}
+
+// errNoAgent is findAgent's answer for a name the roster does not have.
+var errNoAgent = errors.New("no such agent")
+
+// findAgent loads the roster and returns the named agent or routing phase,
+// with bodies when bodies is set.
+func findAgent(roster func() (config.Config, error), name string, bodies bool) (agentView, error) {
+	agents, err := agentViews(roster, bodies)
+	if err != nil {
+		return agentView{}, err
+	}
+	i := slices.IndexFunc(agents, func(a agentView) bool { return a.Name == name })
+	if i < 0 {
+		return agentView{}, errNoAgent
+	}
+	return agents[i], nil
 }
 
 // submitRun queues a run against a recorded project. It is browser-only, as
@@ -400,9 +426,14 @@ func submitError(w http.ResponseWriter, code int, msg, runID string) {
 	if runID != "" {
 		body["run_id"] = runID
 	}
+	writeStatus(w, code, body)
+}
+
+// writeStatus answers code with v as JSON.
+func writeStatus(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(body)
+	json.NewEncoder(w).Encode(v)
 }
 
 func projectParam(w http.ResponseWriter, r *http.Request) (string, bool) {

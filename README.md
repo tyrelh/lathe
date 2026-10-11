@@ -107,3 +107,16 @@ thinking = "high"
 - Your request and plan get sent to TypeSafe, and zero data retention is enterprise only. I'd think twice before turning this on for a private repo.
 - Click a `route-*` phase on the dashboard to see what it picked and the probability for every tier.
 - `lathe route-calibrate --agent builder` runs Jev over your past runs so you can tune the `when` text before relying on it.
+
+## Prompts
+
+The dashboard's Agents page lists every agent and routing phase and shows the prompts each one runs with. Save an edit there and it becomes a prompt override, which replaces the built-in prompt for every repo on this machine without a rebuild.
+
+- Overrides live in `~/.local/share/lathe/prompts/` (or `$XDG_DATA_HOME/lathe/prompts/`), at the same path as the prompt's key, so `prompts/planner/system.md` is overridden by `~/.local/share/lathe/prompts/planner/system.md`. Each prompt on the page shows its override path and whether it's active.
+- Prompts are captured when work is submitted, so an edit only applies to runs and revisions submitted after it. Queued and running work keeps what it had.
+- Some prompts are shared. The four code reviewers all use `prompts/code-review/user.md`, so saving it changes all four.
+- A user prompt has to keep `{{request}}`. That's where your request goes.
+- Reset to built-in deletes the override, and so does saving text identical to the built-in.
+- They're plain files, so editing one by hand works too. Delete it to go back to the built-in.
+- `lathe.toml` can't touch prompts, and `roster.toml` is never overridden, so tools, protected paths and the shell deny list stay what the binary shipped with.
+- An override keeps shadowing its built-in after you upgrade lathe, even if the built-in got better, so look over yours when you update. If a prompt's key is renamed, its old override is silently ignored.

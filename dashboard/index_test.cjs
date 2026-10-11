@@ -31,17 +31,46 @@ const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', '
 const pageIDs = ['page-summary', 'average-spend', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
   'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status',
   'agent-head', 'agent-prompts'];
+// The agent page redraws each prompt box's editor on its own, so those regions
+// register the IDs inside them, and each editor registers its own.
+const parsedIDs = new Map();
+const forget = el => {
+  for (const id of parsedIDs.get(el) || []) { forget(nodes.get(id)); nodes.delete(id); }
+  parsedIDs.delete(el);
+};
+function parses(el) {
+  let html = '';
+  Object.defineProperty(el, 'innerHTML', {
+    get: () => html,
+    set: value => {
+      html = value;
+      forget(el);
+      const ids = [...value.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
+      parsedIDs.set(el, ids);
+      for (const id of ids) {
+        assert(!nodes.has(id), `duplicate ID ${id}`);
+        const child = new Element();
+        if (id.endsWith('-edit')) parses(child);
+        nodes.set(id, child);
+      }
+    },
+  });
+}
+// deepHTML is el's markup with every registered region's contents filled in.
+const deepHTML = el => el.innerHTML.replace(/(<[^>]+id="([^"]+)"[^>]*>)/g, (tag, _, id) => tag + (nodes.has(id) ? deepHTML(nodes.get(id)) : ''));
 const appNode = nodes.get('app');
 let appHTML = '', scaffoldCount = 0;
 Object.defineProperty(appNode, 'innerHTML', {
   get: () => appHTML,
   set: html => {
     appHTML = html;
+    if (nodes.has('agent-prompts')) forget(nodes.get('agent-prompts'));
     for (const id of [...scaffoldIDs, ...pageIDs]) nodes.delete(id);
     const ids = [...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
     for (const id of ids) {
       assert([...scaffoldIDs, ...pageIDs].includes(id), `unregistered app ID ${id}`);
       nodes.set(id, new Element());
+      if (id === 'agent-prompts') parses(nodes.get(id));
     }
     if (ids.includes('log')) {
       scaffoldCount++;
@@ -56,11 +85,17 @@ let routeResponses = null;
 const observers = [];
 const listeners = new Map();
 const intervals = [];
+// confirms records every confirm() the page asks; confirmAnswer is the reply.
+const confirms = [];
+let confirmAnswer = true;
 const context = vm.createContext({
   document: {
     getElementById: id => nodes.get(id) ?? null, createElement: () => new Element(),
     body: {scrollHeight: 1000}, activeElement: null,
   },
+  confirm: message => { confirms.push(message); return confirmAnswer; },
+  // went records the last history.go().
+  history: {state: null, replaceState(state, title, url) { this.state = state; if (url !== undefined) context.location.hash = url; }, go(n) { this.went = n; }},
   location: {hash: '#run'}, addEventListener(type, handler) { listeners.set(type, handler); }, setInterval(f) { intervals.push(f); }, setTimeout, clearTimeout, Date, URLSearchParams,
   innerWidth: 800, innerHeight: 600, scrollY: 0, scrollTo() { throw Error('must not scroll a reader away'); },
   ResizeObserver: class {
@@ -926,18 +961,20 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(navOn('nav-agents') && !navOn('nav-runs'), 'Agents stays selected on an agent page');
   const agentHead = nodes.get('agent-head').innerHTML;
   assert(agentHead.includes('<h2>code-review-general</h2>') && agentHead.includes('Agent · workflows: implement, build, revise'), agentHead);
-  let boxes = nodes.get('agent-prompts').innerHTML;
-  assert.equal((boxes.match(/<textarea [^>]*readonly/g) || []).length, 2, boxes);
+  const promptsHTML = () => deepHTML(nodes.get('agent-prompts'));
+  let boxes = promptsHTML();
+  assert.equal((boxes.match(/<textarea /g) || []).length, 2, boxes);
+  assert(!boxes.includes('readonly'), 'prompt boxes are editable');
   assert(boxes.includes('<label for="prompt-system">System prompt</label>') && boxes.includes('<label for="prompt-user">User prompt</label>'), boxes);
   assert(boxes.includes('&lt;/textarea>&lt;script>alert(1)&lt;/script> &amp; report</textarea>') && !boxes.includes('<script>'),
     'a prompt body is escaped');
-  assert(boxes.includes('rows="4">\n{{request}}\n\nline 3</textarea>'), 'boxes size to their lines');
+  assert(/rows="4"[^>]*>\n\{\{request\}\}\n\nline 3<\/textarea>/.test(boxes), 'boxes size to their lines');
   assert(boxes.includes('Built-in <code>prompts/code-review/user.md</code>'), boxes);
   assert(boxes.includes('Shared with <a href="#/agents/code-review-security">code-review-security</a>, <a href="#/agents/code-review-slop">code-review-slop</a>'), boxes);
   assert.equal(boxes.split('Shared with').length - 1, 1, 'only the shared prompt says so');
   assert.equal(boxes.split('is replaced by the request.').length - 1, 1, 'only the user box has the request hint');
   assert(boxes.includes('The repo’s AGENTS.md is prepended on the first turn.'), boxes);
-  assert(!call('promptBox', {role:'user', key:'k', body:'x', shared_with:[]}, false).includes('AGENTS.md'),
+  assert(!call('promptInfo', {role:'user', key:'k', body:'x', shared_with:[]}, false).includes('AGENTS.md'),
     'no AGENTS.md note without repo instructions');
   assert.equal(nodes.get('status').textContent, 'Agents · code-review-general · agent');
   assert.equal(evaluate('done'), true, 'an agent page is not polled');
@@ -948,7 +985,7 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate('navigate()');
   await new Promise(setImmediate);
   assert(nodes.get('agent-head').innerHTML.includes('Routing phase for <a href="#/agents/planner">planner</a>'));
-  boxes = nodes.get('agent-prompts').innerHTML;
+  boxes = promptsHTML();
   assert(boxes.includes('<label for="prompt-instructions">Instructions</label>') && boxes.includes('Pick a tier.'), boxes);
   assert(!boxes.includes('{{request}}') && !boxes.includes('Shared with'), boxes);
 
@@ -986,6 +1023,173 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(!nodes.has('agent-head') && nodes.has('list-body'), 'a late agent reply is not drawn on the list');
   assert(nodes.get('list-body').innerHTML.includes('route-plan'));
   assert.equal(evaluate('done'), true);
+
+  // Prompt overrides: the list marks edited agents.
+  const dataRoot = '/home/me/.local/share/lathe/';
+  routeResponses.set('/api/agents', json(agentRows.map((a, i) => ({...a, prompts: a.prompts.map(p => ({...p, overridden: i === 1 && p.role === 'system'}))}))));
+  context.location.hash = '#/agents';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  const editedList = nodes.get('list-body').innerHTML;
+  assert(editedList.includes('>code-review-general</a> <span class="badge" title="A prompt override is active">edited</span></td>'), editedList);
+  assert.equal(editedList.split('class="badge"').length - 1, 1, 'only an agent with an override is marked');
+
+  // An agent page edits each prompt in place and shows where its override lives.
+  const reviewers = ['code-review-security', 'code-review-slop', 'code-review-adversarial'];
+  const prompt = (role, body, more) => ({role, key: `prompts/${role === 'user' ? 'code-review' : 'code-review-general'}/${role}.md`,
+    shared_with: role === 'user' ? reviewers : [], body, builtin: body, hash: 'h-' + role, overridden: false,
+    override_path: `${dataRoot}prompts/${role === 'user' ? 'code-review' : 'code-review-general'}/${role}.md`, ...more});
+  const reviewer = prompts => ({...agentRows[1], prompts});
+  routeResponses.set('/api/agents/code-review-general', json(reviewer([
+    prompt('system', 'Review </textarea><script>alert(1)</script>', {builtin: 'Review', overridden: true}),
+    prompt('user', '{{request}}')])));
+  context.location.hash = '#/agents/code-review-general';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert(nodes.get('agent-head').innerHTML.includes('Edits are saved as prompt overrides on this machine. Each run captures its prompts when it is submitted.'));
+  const boxHTML = role => ['edit', 'status', 'info'].map(part => deepHTML(nodes.get(`prompt-${role}-${part}`))).join('');
+  const statusOf = role => nodes.get(`prompt-${role}-status`);
+  assert(boxHTML('system').includes(`Override: <code>${dataRoot}prompts/code-review-general/system.md</code> (active)`), boxHTML('system'));
+  assert(boxHTML('user').includes(`Override: <code>${dataRoot}prompts/code-review/user.md</code> (not set, using built-in <code>prompts/code-review/user.md</code>)`), boxHTML('user'));
+  assert(boxHTML('system').includes('&lt;/textarea>&lt;script>alert(1)&lt;/script></textarea>') && !promptsHTML().includes('<script>'),
+    'an editable body is escaped');
+  assert(boxHTML('system').includes('>Reset to built-in</button>') && !boxHTML('user').includes('Reset to built-in'),
+    'only an active override can be reset');
+  const box = role => nodes.get('prompt-' + role);
+  const disabled = role => box(role + '-save').disabled && box(role + '-discard').disabled;
+  assert.equal(box('system').value, 'Review </textarea><script>alert(1)</script>');
+  assert(disabled('system') && disabled('user'), 'nothing to save until a box changes');
+
+  // Editing enables Save and Discard; typing the loaded text back disables them.
+  const type = (role, value) => { box(role).value = value; call('promptInput', {dataset: {role}, value}); };
+  type('system', '  Review harder\n');
+  assert(!box('system-save').disabled && !box('system-discard').disabled && disabled('user'));
+  type('system', 'Review </textarea><script>alert(1)</script>');
+  assert(disabled('system'), 'the loaded text is not an edit');
+  type('system', 'Review harder');
+  context.document.activeElement = Object.assign(box('system-discard'), {dataset: {role: 'system'}});
+  call('discardPrompt', 'system');
+  assert(disabled('system') && box('system').value === 'Review </textarea><script>alert(1)</script>', 'Discard restores the loaded text');
+  assert.deepEqual({...box('system').focused}, {preventScroll: true}, 'focus moves from the disabled Discard to the box');
+  context.document.activeElement = null;
+
+  // Leaving with unsaved edits asks first; declining keeps the page and its draft.
+  // Declining a link steps back over its new entry; declining Back goes
+  // forward again, so the entry it left is still there.
+  type('user', '{{request}} carefully');
+  confirmAnswer = false;
+  const at = context.history.state.at;
+  context.history.state = null;
+  context.location.hash = '#/agents';
+  listeners.get('hashchange')();
+  assert.equal(confirms.pop(), 'Leave this page? Unsaved prompt edits will be lost.');
+  assert.equal(context.history.went, -1, 'a declined link steps back');
+  context.history.state = {at: at - 1};
+  listeners.get('hashchange')();
+  confirms.pop();
+  assert.equal(context.history.went, 1, 'a declined Back goes forward again');
+  // Arriving back on the page's own entry is not a navigation.
+  context.history.state = {at};
+  context.location.hash = '#/agents/code-review-general';
+  listeners.get('hashchange')();
+  assert.equal(confirms.length, 0, 'coming back asks nothing');
+  assert(nodes.has('prompt-user') && box('user').value === '{{request}} carefully' && evaluate('view.page') === 'agent');
+  const unload = {preventDefault() { this.prevented = true; }};
+  listeners.get('beforeunload')(unload);
+  assert(unload.prevented && unload.returnValue === '', 'closing the tab with a draft asks first');
+  confirmAnswer = true;
+
+  // Writes go to the agent's prompt route as same-origin JSON.
+  const writes = [];
+  let writeReply;
+  const readFetch = context.fetch;
+  context.fetch = async (url, init) => {
+    if (!init) return readFetch(url);
+    writes.push({url, method: init.method, headers: {...init.headers}, body: init.body});
+    return writeReply;
+  };
+  const reply = (status, body) => ({ok: status < 300, status, text: async () => JSON.stringify(body)});
+  const saved = 'Saved. Applies to runs and revisions submitted from now on.';
+
+  // Save sends the text verbatim with the hash it was loaded with, and redraws
+  // from the reply without touching another box's draft. The status line and
+  // the other box's textarea are the same elements afterwards, and focus on the
+  // disabled Save moves to the box.
+  type('system', '  Review harder\n');
+  const userBox = box('user'), live = statusOf('system');
+  context.document.activeElement = Object.assign(box('system-save'), {dataset: {role: 'system'}});
+  writeReply = reply(200, reviewer([prompt('system', '  Review harder\n', {builtin: 'Review', hash: 'h-saved', overridden: true}), prompt('user', '{{request}}')]));
+  await call('savePrompt', 'system');
+  assert.deepEqual({...box('system').focused}, {preventScroll: true}, 'focus moves from the disabled Save to the box');
+  context.document.activeElement = null;
+  assert(box('user') === userBox && statusOf('system') === live, 'a save rebuilds neither another draft nor the status line');
+  assert.deepEqual(writes.pop(), {url: '/api/agents/code-review-general/prompts/system', method: 'PUT',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({body: '  Review harder\n', base_hash: 'h-system'})});
+  assert.equal(confirms.length, 0, 'an unshared prompt saves without asking');
+  assert(statusOf('system').innerHTML === saved && statusOf('system').className === '' && disabled('system'), boxHTML('system'));
+  assert(box('user').value === '{{request}} carefully' && !box('user-save').disabled, 'a save keeps other drafts');
+
+  // A shared prompt names every agent it changes; cancelling sends nothing.
+  confirmAnswer = false;
+  await call('savePrompt', 'user');
+  assert.equal(confirms.pop(), 'Saving changes this prompt for code-review-general, code-review-security, code-review-slop and code-review-adversarial.');
+  assert.equal(writes.length, 0, 'a cancelled save sends nothing');
+  confirmAnswer = true;
+
+  // A conflict offers the current version and keeps the draft until asked.
+  writeReply = reply(409, {error: 'this prompt changed since you loaded it', body: '{{request}} from <elsewhere>', hash: 'h-other', overridden: true});
+  await call('savePrompt', 'user');
+  confirms.length = 0;
+  assert.equal(JSON.parse(writes.pop().body).base_hash, 'h-user');
+  assert.equal(statusOf('user').innerHTML, 'this prompt changed since you loaded it <button type="button" data-role="user" data-focus="prompt-user-load" onclick="loadCurrent(this.dataset.role)">Load current version</button>');
+  assert.equal(statusOf('user').className, 'fail');
+  assert(box('user').value === '{{request}} carefully' && !box('user-save').disabled, 'a conflict keeps the draft');
+  call('loadCurrent', 'user');
+  assert(box('user').value === '{{request}} from <elsewhere>' && disabled('user'), 'loading the current version replaces the text');
+  assert(boxHTML('user').includes('{{request}} from &lt;elsewhere></textarea>') && !boxHTML('user').includes('Load current version'));
+  assert(boxHTML('user').includes('(active)'), 'a current version other than the built-in is an override');
+
+  // A refusal shows the server's reason; the next save uses the loaded hash.
+  type('user', 'no placeholder');
+  writeReply = {ok: false, status: 400, text: async () => JSON.stringify({error: 'a user prompt has to contain {{request}}'})};
+  await call('savePrompt', 'user');
+  confirms.length = 0;
+  assert.equal(JSON.parse(writes.pop().body).base_hash, 'h-other');
+  assert(statusOf('user').innerHTML === 'a user prompt has to contain {{request}}' && statusOf('user').className === 'fail', boxHTML('user'));
+  writeReply = {ok: false, status: 403, text: async () => 'forbidden <origin>\n'};
+  await call('savePrompt', 'user');
+  confirms.length = 0;
+  writes.pop();
+  assert(boxHTML('user').includes('forbidden &lt;origin>'), 'a plain-text refusal is shown as text');
+
+  // Reset asks before dropping a draft in its own box.
+  type('system', 'half-written');
+  confirmAnswer = false;
+  await call('resetPrompt', 'system');
+  assert.equal(confirms.pop(), 'Reset to the built-in? Your unsaved edits to this prompt will be lost.');
+  assert(writes.length === 0 && box('system').value === 'half-written', 'a declined reset keeps the draft');
+  confirmAnswer = true;
+
+  // Reset deletes the override and redraws on the built-in.
+  writeReply = reply(200, reviewer([prompt('system', 'Review', {hash: 'h-builtin'}), prompt('user', '{{request}}')]));
+  await call('resetPrompt', 'system');
+  confirms.length = 0;
+  assert.deepEqual(writes.pop(), {url: '/api/agents/code-review-general/prompts/system', method: 'DELETE',
+    headers: {'Content-Type': 'application/json'}, body: '{}'});
+  assert(boxHTML('system').includes('Reset to the built-in. Applies to runs and revisions submitted from now on.'), boxHTML('system'));
+  assert(boxHTML('system').includes('(not set, using built-in') && !boxHTML('system').includes('>Reset to built-in</button>'));
+  assert(box('system').value === 'Review' && box('user').value === 'no placeholder', 'a reset keeps other drafts');
+  context.fetch = readFetch;
+
+  // Confirming the leave navigates and drops the draft.
+  context.location.hash = '#/agents';
+  listeners.get('hashchange')();
+  await new Promise(setImmediate);
+  assert.equal(confirms.pop(), 'Leave this page? Unsaved prompt edits will be lost.');
+  assert(evaluate('view.page') === 'agents' && nodes.has('list-body') && !evaluate('unsaved()'));
+  const clean = {preventDefault() { this.prevented = true; }};
+  listeners.get('beforeunload')(clean);
+  assert(!clean.prevented, 'nothing to lose, nothing to ask');
   routeResponses = null;
 
   console.log('dashboard client checks passed');
