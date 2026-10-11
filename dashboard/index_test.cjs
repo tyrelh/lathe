@@ -570,9 +570,10 @@ assert(!generic.includes('<b>'));
 
 const phases = [ph(1,'fix',T(0),T(30)), ph(2,'fix',T(30),T(65))].map(p => ({...p, phase_id:'p'+p.seq}));
 const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:'/repo',request:'fix',submitted_at:'2026-09-20T11:59:50Z',activity_at:'2026-09-20T11:59:50Z',started_at:'2026-09-20T12:00:00Z',ended_at:'2026-09-20T12:01:05Z'};
+const iterations = [{iteration:0, request:'fix', status:'ok', worktree:'/data/worktrees/run/iteration-0', worktree_state:'removed'}];
 let id = 0;
 const event = (type, payload, phase_id='p1', name='fix') => ({event_id:++id,type,payload,phase_id,name});
-function serve(events, ps = phases, r = run) { response = json({run:r,phases:ps,events}); }
+function serve(events, ps = phases, r = run) { response = json({run:r,phases:ps,events,iterations}); }
 const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phase').innerHTML;
 const costs = () => nodes.get('costs').innerHTML;
 (async () => {
@@ -693,10 +694,10 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(permitRows.length, 1, 'permit event appears once across paginated polls');
   assert(permitRows[0].innerHTML.includes('&lt;bad>') && !permitRows[0].innerHTML.includes('<bad>'),
     'permit payload is escaped in the events log');
-  // The bottom bar carries the run's own context, and a settled run reads run complete.
+  // The bottom bar names only the latest iteration's worktree; the rest is on the page already.
   const bar = nodes.get('status').innerHTML;
-  // Queue time and execution time are separate: 10s waiting, 1m05s working.
-  for (const text of ['build','ok','$0.30','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
+  assert(bar.includes('worktree /data/worktrees/run/iteration-0') && bar.includes('(removed)'), `status: ${bar}`);
+  for (const text of ['build','$0.30','10s queued','1m05s',' tok']) assert(!bar.includes(text), `status repeats ${text}: ${bar}`);
   const summary = nodes.get('summary').innerHTML;
   for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
                       '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>', '<dt>run</dt><dd>run</dd>'])
