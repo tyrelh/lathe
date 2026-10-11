@@ -470,21 +470,14 @@ func (o overlay) Open(name string) (fs.File, error) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
 	if strings.HasPrefix(name, "prompts/") {
-		f, err := os.Open(filepath.Join(o.dir, filepath.FromSlash(name)))
+		path := filepath.Join(o.dir, filepath.FromSlash(name))
+		st, err := os.Stat(path)
 		switch {
 		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		case err != nil:
 			return nil, err
-		default:
-			st, err := f.Stat()
-			if err != nil {
-				f.Close()
-				return nil, err
-			}
-			if st.Mode().IsRegular() {
-				return f, nil
-			}
-			f.Close()
+		case st.Mode().IsRegular():
+			return os.Open(path)
 		}
 	}
 	return o.base.Open(name)

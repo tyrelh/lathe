@@ -12,7 +12,7 @@ Editing the source tree is what already worked, and it needs a rebuild, which is
 
 `config.Overlay` serves a name under `prompts/` from the data root when that file exists, and everything else from the embedded assets. `roster.toml` is never overlaid. The roster decides each agent's tools, the protected paths and `bash_denied`, which makes it the trust boundary, so it stays what the binary shipped with plus what `lathe.toml` may set. An override only changes what an agent is told.
 
-The dashboard never takes a path from a request. A save names an agent and a role, the key comes from the roster, and a key that is not under `prompts/` or would resolve outside the data root is rejected.
+The dashboard never takes a path from a request. A save names an agent and a role, the key comes from the roster, and a key that is not under `prompts/` or whose path would leave the data root is rejected. Symlinked directories under the data root are followed, so prompts can live in a dotfiles repo.
 
 ## Captured at submission
 

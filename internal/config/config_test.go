@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -677,6 +679,31 @@ func TestOverlay(t *testing.T) {
 	}
 	if _, err := fsys.Open("prompts/../roster.toml"); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("invalid path: err = %v", err)
+	}
+}
+
+// A named pipe at an override path falls back rather than blocking on open.
+func TestOverlayFIFO(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prompts", "alpha", "system.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o644); err != nil {
+		t.Skipf("named pipes unavailable: %v", err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		b, _ := fs.ReadFile(Overlay(dir, promptsFS()), "prompts/alpha/system.md")
+		done <- string(b)
+	}()
+	select {
+	case got := <-done:
+		if got != "alpha system" {
+			t.Fatalf("read %q; want the built-in", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reading through a named pipe override blocked")
 	}
 }
 
