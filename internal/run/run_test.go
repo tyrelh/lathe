@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,11 +21,20 @@ import (
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
+	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/web"
 
 	_ "modernc.org/sqlite"
 )
+
+// The test binary doubles as the supervisor helper, the way lathe does.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == process.HelperArg {
+		os.Exit(process.Helper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
 
 // scoutOutput mirrors the scout's contract rather than importing it:
 // internal/workflow imports this package, so a test inside it cannot import
@@ -112,6 +122,12 @@ func stubPi(t *testing.T, replies ...string) (bin, argsFile string) {
 // and a worker do.
 func newRun(t *testing.T, bin string) *Run {
 	t.Helper()
+	return newRunWith(t, bin, nil)
+}
+
+// newRunWith is newRun with set adjusting the options Open receives.
+func newRunWith(t *testing.T, bin string, set func(*Options)) *Run {
+	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	seed, err := fs.Sub(os.DirFS(filepath.Join("..", "..")), "seed")
 	if err != nil {
@@ -149,12 +165,16 @@ func newRun(t *testing.T, bin string) *Run {
 	if _, err := db.Claim(attempt, trace.NewClaimToken(), "host", os.Getpid(), time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	r, err := Open(Options{
+	o := Options{
 		ID: id, Workflow: "scout", Request: "what is here", Repo: repo,
 		Dir:      filepath.Join(dataRoot, "runs", id),
 		Work:     filepath.Join(dataRoot, "runs", id, attempt),
 		Snapshot: roster, DB: db, Out: io.Discard, PiBin: bin,
-	})
+	}
+	if set != nil {
+		set(&o)
+	}
+	r, err := Open(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1178,5 +1198,148 @@ func TestCallReportsAProviderErrorWithoutCorrecting(t *testing.T) {
 	args, _ := os.ReadFile(argsFile)
 	if n := strings.Count(string(args), "--session-id"); n != 1 {
 		t.Fatalf("spawns = %d; a provider error must not be corrected", n)
+	}
+}
+
+// launches is a Registrar that counts each kind of launch record.
+type launches struct {
+	mu    sync.Mutex
+	calls map[string]int
+	pids  []int
+}
+
+func (l *launches) Intent(string, []string) error { return l.add("intent", 0) }
+func (l *launches) Drained(string) error          { return l.add("drained", 0) }
+func (l *launches) Register(_ string, reg process.Registration) error {
+	return l.add("register", reg.PID)
+}
+
+func (l *launches) add(call string, pid int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.calls == nil {
+		l.calls = map[string]int{}
+	}
+	l.calls[call]++
+	if pid != 0 {
+		l.pids = append(l.pids, pid)
+	}
+	return nil
+}
+
+// A run given a runner launches every Pi invocation through it, auth checks
+// included, and records the supervisor's PID as the diagnostic pi_pid.
+func TestRunnerLaunchesEveryInvocation(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "pi")
+	body := filepath.Join(dir, "reply.jsonl")
+	if err := os.WriteFile(body, []byte(reply(t, envelope("nothing here"))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = auth ]; then printf '{"provider":"%%s","status":"ready"}\n' "$4"; exit 0; fi
+cat %q
+`, body)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := &launches{}
+	r := newRunWith(t, bin, func(o *Options) {
+		o.Runner = &process.Runner{Bin: os.Args[0], Registrar: l}
+		o.Base = "abc123"
+	})
+	defer r.Finish(true, "")
+	if r.Base() != "abc123" {
+		t.Fatalf("Base = %q", r.Base())
+	}
+	r.cfg.Agents = map[string]config.Resolved{"scout": r.cfg.Agents["scout"]}
+	if err := r.Phase(Params{Name: "auth", Owner: "engineer"}, func(h *Handle) error { return h.AuthPreflight() }); err != nil {
+		t.Fatal(err)
+	}
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "scout", Owner: "scout"},
+		func(h *Handle) error { return h.Call(&out, "what is here") }); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	calls, pids := l.calls, l.pids
+	l.mu.Unlock()
+	if calls["intent"] != 2 || calls["register"] != 2 || calls["drained"] != 2 {
+		t.Fatalf("launch records = %v; want two of each", calls)
+	}
+	payload := scalar[string](t, readDB(t),
+		`SELECT payload FROM events WHERE run_id = ? AND name = 'pi_pid'`, r.ID)
+	if want := fmt.Sprintf(`{"pid":%d}`, pids[1]); payload != want {
+		t.Fatalf("pi_pid = %s; want the supervisor's %s", payload, want)
+	}
+}
+
+// worktreeOf is a detached worktree of a fresh repo, and that repo.
+func worktreeOf(t *testing.T) (tree, source string) {
+	t.Helper()
+	source = gitRepo(t)
+	tree = filepath.Join(t.TempDir(), "iteration-0")
+	cmd := exec.Command("git", "worktree", "add", "-q", "--detach", tree, "HEAD")
+	cmd.Dir = source
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v: %s", err, out)
+	}
+	return tree, source
+}
+
+// In a managed worktree, a web_read agent's reads are held to the worktree,
+// not the checkout it came from.
+func TestReadRootsAreTheWorktree(t *testing.T) {
+	tree, source := worktreeOf(t)
+	bin, _ := stubPi(t, reply(t, envelope("planned")))
+	r := newRunWith(t, bin, func(o *Options) { o.Repo = tree })
+	defer r.Finish(true, "")
+	var out scoutOutput
+	if err := r.Phase(Params{Name: "plan", Owner: "planner"},
+		func(h *Handle) error { return h.Call(&out, "plan it") }); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(r.Work, r.ID+"_01_plan", permit.ScopeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope permit.Scope
+	if err := json.Unmarshal(b, &scope); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(scope.ReadRoots, tree) || slices.Contains(scope.ReadRoots, source) {
+		t.Fatalf("read roots = %v; want %s and not %s", scope.ReadRoots, tree, source)
+	}
+}
+
+// Enforcement in a worktree reverts only there: the source checkout's own
+// changes, tracked and untracked, are left alone.
+func TestEnforceStaysInTheWorktree(t *testing.T) {
+	tree, source := worktreeOf(t)
+	for _, f := range []struct{ path, body string }{
+		{filepath.Join(source, "tracked.txt"), "the engineer's edit\n"},
+		{filepath.Join(source, "escaped.go"), "the engineer's file\n"},
+	} {
+		if err := os.WriteFile(f.path, []byte(f.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := newRunWith(t, stubWriter(t, reply(t, envelope("wrote it")), "escaped.go"), func(o *Options) { o.Repo = tree })
+	if err := r.EnsureClean(); err != nil {
+		t.Fatal(err)
+	}
+	var out scoutOutput
+	err := r.Phase(Params{Name: "scout", Owner: "scout"}, func(h *Handle) error { return h.Call(&out, "write") })
+	if err == nil || !strings.Contains(err.Error(), "escaped.go") {
+		t.Fatalf("phase = %v; want the escaped write reverted", err)
+	}
+	r.Finish(false, "")
+	if _, err := os.Stat(filepath.Join(tree, "escaped.go")); !os.IsNotExist(err) {
+		t.Fatal("the escaped write survived in the worktree")
+	}
+	for path, want := range map[string]string{"tracked.txt": "the engineer's edit\n", "escaped.go": "the engineer's file\n"} {
+		if got, err := os.ReadFile(filepath.Join(source, path)); err != nil || string(got) != want {
+			t.Fatalf("source %s = %q, %v; want it untouched", path, got, err)
+		}
 	}
 }

@@ -22,7 +22,7 @@ import (
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/install"
 	"github.com/tyrelh/lathe/internal/manager"
-	"github.com/tyrelh/lathe/internal/permit"
+	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 	"github.com/tyrelh/lathe/internal/workflow"
@@ -36,7 +36,7 @@ usage: lathe <command> [flags] [args]
 commands:
   scout "<request>"   investigate the current repo and report what is there
   plan "<request>"    plan a change to the current repo; write nothing
-  implement "<req>"   plan, implement and test a change; leave it uncommitted
+  implement "<req>"   plan, implement and test a change; save it as a patch
   build "<request>"   implement it, then branch, commit and open a pull request
   revise <id> "<change>"
                       plan, validate and push another change to a build's open
@@ -69,14 +69,20 @@ Agent configuration lives in ~/.lathe: agents/<name>/config.yaml, system.md
 and user.md, and routing/<agent>.md. Missing files are seeded from this binary
 when a run is submitted.
 
-implement and build need a clean checkout and own it until they stop. build
-leaves the checkout on the branch it created, and a failure after its commit
-leaves that commit there rather than losing the work.
+implement, build and revise run in a worktree of their own under the data
+directory, created at the commit HEAD was on when you submitted (a revision's
+at the commit lathe last pushed). Your checkout is never changed: it may be
+dirty or on another branch, and several of these runs may go at once.
+implement saves its result as result.patch in the run directory; lathe show
+prints where, and git apply --index <patch> applies it from a checkout at
+the run's base commit. build pushes a new branch and opens a pull request; a
+failure after its commit leaves the commit on that branch. Commits nothing
+else reaches are kept under refs/lathe/runs/<id>/iteration-<n>.
 
 revise needs a build whose latest iteration succeeded and whose pull request is
-still open, with the checkout clean, on that branch, and both it and origin at
-the commit lathe last pushed. It publishes only a change validation accepts,
-and leaves the pull request's title and description alone.
+still open, with origin's branch at the commit lathe last pushed. It
+publishes only a change validation accepts, and leaves the pull request's
+title and description alone.
 
 environment:
   Workers inherit the manager's environment: credentials such as
@@ -110,6 +116,9 @@ func dispatch(args []string) int {
 		return managerCmd()
 	case "worker":
 		return workerCmd(args[1:])
+	// Hidden: the supervisor every subprocess of a writing run starts as.
+	case process.HelperArg:
+		return process.Helper(args[1:])
 	case "runs":
 		return runs(args[1:])
 	case "show":
@@ -189,7 +198,7 @@ func submit(name string, args []string) int {
 	if db == nil {
 		return code
 	}
-	id, err := db.Submit(req)
+	id, err := db.Submit(req.Request)
 	if err != nil {
 		db.Close()
 		return fail(err)
@@ -198,11 +207,10 @@ func submit(name string, args []string) int {
 		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
 	}
 	if workflow.Writes[name] {
-		fmt.Printf("lathe %s %s: %s belongs to lathe until this run stops.\n"+
-			"  Do not edit files or switch branches there; cleanup can revert changes made during the run.\n",
-			name, id, req.Repo)
-		if name == "build" {
-			fmt.Printf("  It ends on the branch it creates, and a failure after its commit leaves that commit there.\n")
+		fmt.Printf("lathe %s %s: runs in its own worktree from %s; %s is left as it is.\n",
+			name, id, workspace.Short(req.Base), req.Repo)
+		if name == "implement" {
+			fmt.Printf("  Its result is saved as result.patch in %s.\n", worker.ReportDir(dataRoot, id, 0))
 		}
 	}
 	fmt.Printf("%s %s queued\n", name, id)
@@ -217,42 +225,47 @@ func submit(name string, args []string) int {
 // prepare turns a submission into the row that records it: the checkout
 // resolved from dir and the agent roster frozen into a spec. It writes nothing
 // to the database; the caller submits the request.
-func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.Writer) (trace.Request, error) {
+func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.Writer) (submission, error) {
 	root, err := config.TargetRoot(dir)
 	if err != nil {
-		return trace.Request{}, err
+		return submission{}, err
 	}
 	roster, err := capture(name, ov, warn)
 	if err != nil {
-		return trace.Request{}, err
+		return submission{}, err
 	}
 	ws, err := workspace.Local(root)
 	if err != nil {
-		return trace.Request{}, err
+		return submission{}, err
 	}
-	branch, err := workspace.Branch(ws.Path)
-	if err != nil {
-		return trace.Request{}, err
-	}
-	// Checked here for early feedback and again when the worker starts; a
-	// checkout that goes dirty in between fails the run without discarding
-	// anything.
+	// A writing run starts from the commit HEAD is on now, in a worktree of
+	// its own; the checkout's changes and later branch switches do not
+	// reach it. A read-only run reads the checkout, so it records the branch.
+	var branch, base string
 	if workflow.Writes[name] {
-		if err := permit.Clean(ws.Path); err != nil {
-			return trace.Request{}, err
+		if base, err = workspace.Head(ws.Path); err != nil {
+			return submission{}, fmt.Errorf("%s has no commit to start a worktree from", ws.Path)
 		}
+		branch, _ = workspace.Branch(ws.Path)
+	} else if branch, err = workspace.Branch(ws.Path); err != nil {
+		return submission{}, err
 	}
 	spec, err := worker.Spec{
 		Version: worker.SpecVersion, Workflow: name, Request: request, Issue: issueRef,
-		Workspace: ws, Roster: roster, Overrides: ov,
+		Workspace: ws, Roster: roster, Overrides: ov, Base: base,
 	}.Marshal()
 	if err != nil {
-		return trace.Request{}, err
+		return submission{}, err
 	}
-	return trace.Request{
+	return submission{Request: trace.Request{
 		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec,
-		Exclusive: workflow.Writes[name],
-	}, nil
+	}, Base: base}, nil
+}
+
+// submission is a prepared request and the base commit it records.
+type submission struct {
+	trace.Request
+	Base string
 }
 
 // capture resolves the configuration a workflow's agents run with, as it is
@@ -324,9 +337,6 @@ func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Ove
 	if err := ws.Check(); err != nil {
 		return 0, err
 	}
-	if err := permit.Clean(ws.Path); err != nil {
-		return 0, err
-	}
 	if _, err := workspace.CheckRevisable(ws.Path, ev); err != nil {
 		return 0, err
 	}
@@ -336,7 +346,7 @@ func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Ove
 	}
 	spec, err := worker.Spec{
 		Version: worker.SpecVersion, Workflow: "revise", Request: request,
-		Workspace: ws, Roster: roster, Overrides: ov,
+		Workspace: ws, Roster: roster, Overrides: ov, Base: ev.Commit,
 	}.Marshal()
 	if err != nil {
 		return 0, err
@@ -371,9 +381,9 @@ func reviseCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
 	}
 	row, _ := db.Get(id)
-	fmt.Printf("lathe revise %s: %s belongs to lathe until this iteration stops.\n"+
-		"  Do not edit files, commit or switch branches there. It pushes to %s only once validation accepts the change.\n",
-		id, row.Repo, row.Branch)
+	fmt.Printf("lathe revise %s: runs in its own worktree at %s; %s is left as it is.\n"+
+		"  It pushes to %s only once validation accepts the change.\n",
+		id, workspace.Short(row.Commit), row.Repo, row.Branch)
 	fmt.Printf("revise %s iteration %d queued\n", id, n)
 	if *detach {
 		return 0
@@ -402,6 +412,7 @@ func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 	if req.Repo != repo {
 		return "", fmt.Errorf("%s now resolves to %s", repo, req.Repo)
 	}
+	reqRow := req.Request
 	dataRoot, err := trace.DataRoot()
 	if err != nil {
 		return "", err
@@ -411,7 +422,7 @@ func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	return db.Submit(req)
+	return db.Submit(reqRow)
 }
 
 // dashboardRevise and dashboardCancel are the dashboard's other two writes,
@@ -564,6 +575,23 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 	}
 	if row.Commit != "" {
 		fmt.Printf("  %s @ %s\n", row.Branch, workspace.Short(row.Commit))
+	}
+	if it.Worktree != "" {
+		fmt.Printf("  worktree %s (%s)\n", it.Worktree, it.WorktreeState)
+		if it.CleanupError != "" {
+			fmt.Printf("  cleanup pending: %s\n", it.CleanupError)
+		}
+	}
+	if it.Patch != "" {
+		label := "result patch"
+		if it.Status != trace.StatusOK {
+			label = "partial, unaccepted patch"
+		}
+		fmt.Printf("  %s %s\n    apply from a checkout at %s: git apply --index %s\n",
+			label, it.Patch, workspace.Short(it.Base), it.Patch)
+	}
+	if it.RecoveryRef != "" {
+		fmt.Printf("  commits kept under %s\n", it.RecoveryRef)
 	}
 	if len(its) > 1 {
 		fmt.Println("  iterations:")

@@ -6,15 +6,17 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
-// CreatePR opens a pull request for the branch checked out in repo and returns
-// its URL. The body goes through a temporary file rather than an argument: it is
+// CreatePR opens a pull request from branch, already pushed, and returns its
+// URL. The body goes through a temporary file rather than an argument: it is
 // long, it has newlines, and it is text an agent wrote.
 //
 // The temporary file lives outside the repository, like everything else lathe
 // writes about a repository. A draft is for work lathe could not accept.
-func CreatePR(repo, title, body string, draft bool) (string, error) {
+func CreatePR(repo, branch, title, body string, draft bool) (string, error) {
 	f, err := os.CreateTemp("", "lathe-pr-*.md")
 	if err != nil {
 		return "", err
@@ -28,13 +30,13 @@ func CreatePR(repo, title, body string, draft bool) (string, error) {
 		return "", err
 	}
 
-	args := []string{"pr", "create", "--title", title, "--body-file", f.Name()}
+	args := []string{"pr", "create", "--head", branch, "--title", title, "--body-file", f.Name()}
 	if draft {
 		args = append(args, "--draft")
 	}
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = repo
-	out, err := cmd.CombinedOutput()
+	out, err := process.CombinedOutput(cmd)
 	if err != nil {
 		return "", fmt.Errorf("gh pr create: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -74,7 +76,7 @@ func ViewPR(repo, url string) (PR, error) {
 	cmd.Dir = repo
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := process.Output(cmd)
 	if err != nil {
 		return PR{}, fmt.Errorf("gh pr view %s: %w: %s", url, err, strings.TrimSpace(stderr.String()))
 	}
@@ -91,29 +93,12 @@ type Evidence struct {
 	PR, Branch, Commit string
 }
 
-// CheckRevisable is the whole checkout and pull request half of revision
-// eligibility, shared by every submitter and repeated by the worker. The
-// checkout must be on the recorded branch at the shipped commit, and origin's
-// branch must be at that commit too, with the pull request still open from it.
-// Lathe switches, merges and rebases nothing to get there: every refusal names
-// the state a person has to restore. A clean tree is the caller's check, made
-// for every writing workflow.
+// CheckRevisable is the pull request half of revision eligibility, shared by
+// every submitter and repeated by the worker: the pull request is open, comes
+// from the recorded branch, and origin's branch is at the commit lathe last
+// shipped. gh and git run in repo, whose branch, HEAD and changes are not
+// checked. Every refusal names the state a person has to restore.
 func CheckRevisable(repo string, e Evidence) (PR, error) {
-	current, err := Branch(repo)
-	if err != nil {
-		return PR{}, err
-	}
-	if current != e.Branch {
-		return PR{}, fmt.Errorf("%s is on %s; check out %s, the pull request's branch, first", repo, current, e.Branch)
-	}
-	head, err := Head(repo)
-	if err != nil {
-		return PR{}, err
-	}
-	if head != e.Commit {
-		return PR{}, fmt.Errorf("%s is at %s in %s, but lathe last shipped %s: the branch changed outside lathe; restore it to %s before revising",
-			e.Branch, Short(head), repo, Short(e.Commit), Short(e.Commit))
-	}
 	pr, err := ViewPR(repo, e.PR)
 	if err != nil {
 		return PR{}, err

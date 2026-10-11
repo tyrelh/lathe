@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,8 +128,12 @@ func TestBuildShipsTheChange(t *testing.T) {
 	if got, want := totalSpawns(t, stub), len(Agents["build"]); got != want {
 		t.Fatalf("spawn count = %d; want %d", got, want)
 	}
-	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != "feat/greet-the-world" {
-		t.Fatalf("checked out %q", got)
+	branch := builtBranch(t)
+	if !strings.HasPrefix(branch, "feat/greet-the-world-") {
+		t.Fatalf("branch %q does not carry the run's suffix", branch)
+	}
+	if got := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current")); got != branch {
+		t.Fatalf("checked out %q; want %q", got, branch)
 	}
 	if got := gitBuild(t, repo, "status", "--porcelain"); got != "" {
 		t.Fatalf("tree left dirty: %q", got)
@@ -145,12 +150,15 @@ func TestBuildShipsTheChange(t *testing.T) {
 	if got := gitBuild(t, repo, "show", "HEAD:hello.txt"); got != "hello world\n" {
 		t.Fatalf("committed content = %q", got)
 	}
-	if got := strings.TrimSpace(gitBuild(t, origin, "rev-parse", "feat/greet-the-world")); got != strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD")) {
+	if got := strings.TrimSpace(gitBuild(t, origin, "rev-parse", branch)); got != strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD")) {
 		t.Fatalf("origin is not at the pushed commit: %s", got)
+	}
+	if got, _ := exec.Command("git", "-C", repo, "config", "--get", "branch."+branch+".remote").Output(); len(got) != 0 {
+		t.Fatalf("the push set an upstream in the shared configuration: %s", got)
 	}
 
 	args, _ := os.ReadFile(filepath.Join(stub, "gh-args"))
-	for _, want := range []string{"pr", "create", "--title", "feat: greet the world", "--body-file"} {
+	for _, want := range []string{"pr", "create", "--head\n" + branch, "--title", "feat: greet the world", "--body-file"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("gh arguments missing %q: %s", want, args)
 		}
@@ -187,19 +195,25 @@ func assertShipped(t *testing.T, repo string) {
 	t.Helper()
 	row := latestRun(t)
 	head := strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD"))
-	if row.Branch != "feat/greet-the-world" || row.Commit != head {
-		t.Fatalf("run records %s @ %s; want feat/greet-the-world @ %s", row.Branch, row.Commit, head)
+	if want := builtBranch(t); row.Branch != want || row.Commit != head {
+		t.Fatalf("run records %s @ %s; want %s @ %s", row.Branch, row.Commit, want, head)
 	}
 }
 
-// A name that is already taken fails before a file has been written, which is
+// builtBranch is the branch the latest build creates from the stub's proposal.
+func builtBranch(t *testing.T) string {
+	t.Helper()
+	return RunBranch(&run.Run{ID: latestRun(t).ID}, "feat/greet-the-world")
+}
+
+// A name git will not accept fails before a file has been written, which is
 // the cheapest place for it to fail: the brancher is corrected twice, the run
 // ends, and the checkout is exactly as it was.
-func TestBuildRefusesATakenBranchName(t *testing.T) {
+func TestBuildRefusesAnUnusableBranchName(t *testing.T) {
 	cfg, repo, _ := shipRepo(t)
 	start := strings.TrimSpace(gitBuild(t, repo, "branch", "--show-current"))
 	head := strings.TrimSpace(gitBuild(t, repo, "rev-parse", "HEAD"))
-	stub := shipStub(t, start)
+	stub := shipStub(t, "feat//retry")
 
 	if code := execute(t, cfg, "build", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
@@ -239,7 +253,7 @@ func TestBuildKeepsTheCommitWhenGhFails(t *testing.T) {
 		t.Fatalf("the commit was lost: %s", got)
 	}
 	if reason := latestRun(t).Reason; !strings.Contains(reason, "gh pr create") ||
-		!strings.Contains(reason, "committed on feat/greet-the-world") {
+		!strings.Contains(reason, "committed on "+builtBranch(t)) {
 		t.Fatalf("reason = %q", reason)
 	}
 	if _, err := os.Stat(filepath.Join(latestRunDir(t), "pr.json")); !os.IsNotExist(err) {
@@ -282,6 +296,27 @@ func TestBranchUsable(t *testing.T) {
 	// A different envelope type is another phase's business.
 	if v := BranchUsable(&CommitOutput{}, r); v != nil {
 		t.Fatalf("foreign envelope: %v", v)
+	}
+}
+
+// Two builds proposing the same name get distinct branches: the gate checks
+// the run's own name, which is the one checkout creates, so the second is
+// accepted after the first has created its branch.
+func TestRunBranchesAreDistinct(t *testing.T) {
+	_, repo := buildRepo(t)
+	proposal := "feat/retry-backoff"
+	first := &run.Run{Repo: repo, ID: "20260101T000000Z_build_aaaa1111"}
+	second := &run.Run{Repo: repo, ID: "20260101T000000Z_build_bbbb2222"}
+	a, b := RunBranch(first, proposal), RunBranch(second, proposal)
+	if a == b || a != proposal+"-aaaa1111" || RunBranch(first, proposal) != a {
+		t.Fatalf("branches %q and %q", a, b)
+	}
+	gitBuild(t, repo, "branch", a)
+	if v := BranchUsable(&BranchOutput{Branch: &proposal}, second); len(v) != 0 {
+		t.Fatalf("the second build was refused: %v", v)
+	}
+	if v := BranchUsable(&BranchOutput{Branch: &proposal}, first); len(v) != 1 || !strings.Contains(v[0], "already exists") {
+		t.Fatalf("the gate did not check the created name: %v", v)
 	}
 }
 

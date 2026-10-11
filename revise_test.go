@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +110,97 @@ func TestSubmitRevisionRefusesFromTheRecords(t *testing.T) {
 	}
 	if its, _ := db.Iterations(failed); len(its) != 1 {
 		t.Fatal("a refused revision was recorded")
+	}
+}
+
+// stdout runs f and returns what it printed to standard output.
+func stdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+	done := make(chan []byte)
+	go func() { b, _ := io.ReadAll(r); done <- b }()
+	f()
+	w.Close()
+	return string(<-done)
+}
+
+// show reports where a writing iteration ran, why its cleanup is pending, and
+// where its result is kept, labelling unaccepted work, in text and JSON.
+func TestShowReportsWorktreeResults(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(trace.Request{Workflow: "build", Repo: "/r", Request: "greet", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, token := trace.NewAttemptID(id), trace.NewClaimToken()
+	if err := db.Reserve(id, attempt, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Claim(attempt, token, "host", 1, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(dataRoot, "worktrees", id, "iteration-0")
+	if err := db.SetWorktree(id, attempt, tree, "0123456789abcdef", "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Complete(id, attempt, token, trace.StatusFail, "validation unresolved"); err != nil {
+		t.Fatal(err)
+	}
+	patch := filepath.Join(dataRoot, "runs", id, "result.patch")
+	ref := "refs/lathe/runs/" + id + "/iteration-0"
+	for _, err := range []error{
+		db.SetPatch(id, 0, patch),
+		db.SetRecoveryRef(id, 0, ref),
+		db.SetWorktreeState(id, 0, "pending", "removing the worktree: busy"),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	row, err := db.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var code int
+	text := stdout(t, func() { code = report(db, row, dataRoot, 0, false) })
+	if code != 1 {
+		t.Fatalf("exit %d, want the failure's", code)
+	}
+	for _, want := range []string{
+		"worktree " + tree + " (pending)",
+		"cleanup pending: removing the worktree: busy",
+		"partial, unaccepted patch " + patch,
+		"apply from a checkout at 01234567: git apply --index " + patch,
+		"commits kept under " + ref,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("show missing %q:\n%s", want, text)
+		}
+	}
+
+	var got struct {
+		Iterations []trace.Iteration `json:"iterations"`
+	}
+	if err := json.Unmarshal([]byte(stdout(t, func() { report(db, row, dataRoot, 0, true) })), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Iterations) != 1 {
+		t.Fatalf("iterations = %+v", got.Iterations)
+	}
+	if it := got.Iterations[0]; it.Worktree != tree || it.WorktreeState != "pending" ||
+		it.CleanupError != "removing the worktree: busy" || it.Patch != patch || it.RecoveryRef != ref {
+		t.Fatalf("show --json iteration = %+v", it)
 	}
 }

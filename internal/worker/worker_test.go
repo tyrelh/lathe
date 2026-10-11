@@ -14,9 +14,20 @@ import (
 
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/workflow"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
+
+// The test binary is the supervisor helper writing runs launch through, as
+// the lathe binary is in production.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == process.HelperArg {
+		os.Exit(process.Helper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
 
 // scoutReply is one Pi stream carrying a complete scout report.
 const scoutReply = `{"type":"message_end","message":{"role":"assistant","stopReason":"stop",` +
@@ -103,8 +114,12 @@ func queue(t *testing.T, dataRoot, dir, workflow string) (db *trace.DB, runID, a
 	if err != nil {
 		t.Fatal(err)
 	}
+	var base string
+	if writes(workflow) {
+		base = strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	}
 	spec, err := Spec{Version: SpecVersion, Workflow: workflow, Request: "what is here",
-		Workspace: ws, Roster: roster}.Marshal()
+		Workspace: ws, Roster: roster, Base: base}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +200,10 @@ func TestExecutionTimeCheckoutChecks(t *testing.T) {
 			change: func(t *testing.T, dir string) { git(t, dir, "checkout", "-q", "-b", "other") },
 		},
 		{
-			name: "build went dirty", workflow: "build", want: "uncommitted changes", code: 1,
+			// The build runs in its own worktree, so the person's change is
+			// neither refused nor touched. The stub agent cannot plan, so the
+			// run itself fails.
+			name: "build went dirty", workflow: "build", want: "", code: 1,
 			change: func(t *testing.T, dir string) { write(t, filepath.Join(dir, "hello.txt"), "mine\n") },
 		},
 		{
@@ -254,6 +272,189 @@ func TestCancellationRecordsCancelled(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataRoot, "runs", runID, "result.json")); err != nil {
 		t.Fatalf("cancellation discarded the report it had already written: %v", err)
+	}
+}
+
+// writes stands in for workflow.Writes in fixtures.
+func writes(name string) bool { return workflow.Writes[name] }
+
+// A writing run executes in its own worktree at the commit it was submitted
+// at, whatever the checkout does meanwhile, and removes the worktree when it
+// stops: the checkout's branch, index and files are as the person left them,
+// and git lists no worktree but the checkout.
+func TestWritingRunUsesCapturedCommitAndCleansUp(t *testing.T) {
+	fakePi(t)
+	dir, dataRoot := repo(t), t.TempDir()
+	submitted := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	db, runID, attemptID := queue(t, dataRoot, dir, "build")
+
+	git(t, dir, "checkout", "-q", "-b", "elsewhere")
+	write(t, filepath.Join(dir, "later.txt"), "later\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "later")
+	write(t, filepath.Join(dir, "hello.txt"), "mine\n")
+	git(t, dir, "add", "hello.txt")
+	beforeHead := git(t, dir, "rev-parse", "HEAD")
+	beforeStatus := git(t, dir, "status", "--porcelain")
+
+	Execute(dataRoot, runID, attemptID, io.Discard)
+
+	its, err := db.Iterations(runID)
+	if err != nil || len(its) != 1 {
+		t.Fatalf("iterations: %v %v", its, err)
+	}
+	it := its[0]
+	if it.Base != submitted {
+		t.Fatalf("base = %s; want the submitted commit %s", it.Base, submitted)
+	}
+	if it.Worktree != workspace.WorktreePath(dataRoot, runID, 0) || it.WorktreeState != trace.WorktreeRemoved {
+		t.Fatalf("worktree %q state %q (%s)", it.Worktree, it.WorktreeState, it.CleanupError)
+	}
+	if _, err := os.Stat(it.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("the worktree is still on disk: %v", err)
+	}
+	if list := git(t, dir, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
+		t.Fatalf("stale worktree entries:\n%s", list)
+	}
+	if got := strings.TrimSpace(git(t, dir, "branch", "--show-current")); got != "elsewhere" {
+		t.Fatalf("the checkout moved to %q", got)
+	}
+	if git(t, dir, "rev-parse", "HEAD") != beforeHead || git(t, dir, "status", "--porcelain") != beforeStatus {
+		t.Fatal("the checkout's HEAD, index or files changed")
+	}
+	if held, _ := db.HeldCheckouts(); len(held) != 0 {
+		t.Fatalf("the worker kept its reservation: %v", held)
+	}
+}
+
+// Every Pi a writing run starts is a child of the supervisor helper, and
+// every launch it recorded has drained by the time the run stops.
+func TestWritingRunSupervisesEveryLaunch(t *testing.T) {
+	fakePi(t)
+	stub := t.TempDir()
+	parents := filepath.Join(stub, "parents")
+	write(t, filepath.Join(stub, "pi"), "#!/bin/sh\nps -o command= -p $PPID >> "+parents+"\nexec "+
+		filepath.Join(strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0], "pi")+" \"$@\"\n")
+	if err := os.Chmod(filepath.Join(stub, "pi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir, dataRoot := repo(t), t.TempDir()
+	db, runID, attemptID := queue(t, dataRoot, dir, "build")
+
+	Execute(dataRoot, runID, attemptID, io.Discard)
+
+	b, err := os.ReadFile(parents)
+	if err != nil {
+		t.Fatalf("pi never ran: %v", err)
+	}
+	for _, parent := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if !strings.Contains(parent, process.HelperArg) {
+			t.Fatalf("pi started outside the supervisor, by %q", parent)
+		}
+	}
+	if open, err := db.OpenLaunches(runID); err != nil || len(open) != 0 {
+		t.Fatalf("undrained launches: %v %v", open, err)
+	}
+}
+
+// A writing run queued by the previous lathe is refused after its claim and
+// before anything else: no reservation, no worktree, no agent. Its read-only
+// counterpart still runs.
+func TestQueuedLegacySpecifications(t *testing.T) {
+	for _, tc := range []struct {
+		workflow string
+		code     int
+	}{{"build", 1}, {"scout", 0}} {
+		t.Run(tc.workflow, func(t *testing.T) {
+			fakePi(t)
+			dir, dataRoot := repo(t), t.TempDir()
+			cfg := seeded(t)
+			roster, err := cfg.Capture(map[string][]string{"scout": {"scout"}, "build": {"planner"}}[tc.workflow], config.Overrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ws, _ := workspace.Local(dir)
+			spec, _ := Spec{Version: legacyVersion, Workflow: tc.workflow, Request: "r", Workspace: ws, Roster: roster}.Marshal()
+			if Mode(spec) != map[string]string{"build": trace.ModeReject, "scout": trace.ModeCheckout}[tc.workflow] {
+				t.Fatalf("mode = %s", Mode(spec))
+			}
+			db, err := trace.Open(dataRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			runID, err := db.Submit(trace.Request{Workflow: tc.workflow, Repo: ws.Path, Request: "r", Branch: "main", Spec: spec})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attemptID := trace.NewAttemptID(runID)
+			if err := db.ReserveMode(runID, attemptID, "", Mode(spec)); err != nil {
+				t.Fatal(err)
+			}
+			if code := Execute(dataRoot, runID, attemptID, io.Discard); code != tc.code {
+				t.Fatalf("exit code = %d; want %d", code, tc.code)
+			}
+			if tc.code == 0 {
+				return
+			}
+			row, _ := db.Get(runID)
+			if row.Status != trace.StatusFail || !strings.Contains(row.Reason, "submit it again") {
+				t.Fatalf("run = %+v", row)
+			}
+			if _, err := os.Stat(workspace.WorktreeRoot(dataRoot)); !os.IsNotExist(err) {
+				t.Fatal("a refused run created a worktree")
+			}
+			if _, err := os.Stat(filepath.Join(AttemptDir(dataRoot, runID, attemptID), "raw.jsonl")); !os.IsNotExist(err) {
+				t.Fatal("a refused run started an agent")
+			}
+		})
+	}
+}
+
+// A worker that died between creating its worktree and activating it leaves
+// a worktree recovery can settle: with the base recorded alongside ownership,
+// changes made during setup are exported before removal; without one, the
+// worktree is kept and cleanup stays pending rather than deleting it.
+func TestSettleAfterCrashDuringSetup(t *testing.T) {
+	dir, dataRoot := repo(t), t.TempDir()
+	base := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	path, err := workspace.CreateWorktree(dataRoot, dir, "r1", 0, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A checkout hook, say, wrote during setup.
+	write(t, filepath.Join(path, "setup.txt"), "from setup\n")
+
+	w := trace.Worktree{RunID: "r1", Iteration: 0, Repo: dir, Path: path}
+	if err := Settle(db, dataRoot, w, nil, true); err == nil {
+		t.Fatal("a worktree without a recorded base was settled")
+	}
+	if _, err := os.Stat(filepath.Join(path, "setup.txt")); err != nil {
+		t.Fatal("the unexportable worktree was removed")
+	}
+
+	w.Base = base
+	if err := Settle(db, dataRoot, w, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := os.ReadFile(filepath.Join(ReportDir(dataRoot, "r1", 0), "result.patch"))
+	if err != nil || !strings.Contains(string(patch), "from setup") {
+		t.Fatalf("patch = %q, %v", patch, err)
+	}
+	if fi, _ := os.Stat(filepath.Join(ReportDir(dataRoot, "r1", 0), "result.patch")); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("patch mode = %v; want 0600", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("the settled worktree is still on disk")
+	}
+	if list := git(t, dir, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
+		t.Fatalf("stale entries:\n%s", list)
 	}
 }
 

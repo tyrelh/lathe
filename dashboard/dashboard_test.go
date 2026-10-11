@@ -455,10 +455,6 @@ func TestSubmitRun(t *testing.T) {
 		t.Errorf("issue run: %d", code)
 	}
 
-	result = fmt.Errorf("%w: 20260923T110000Z_build_1", trace.ErrDuplicateBuild)
-	if code, out := send(build); code != http.StatusConflict || out["run_id"] != "20260923T110000Z_build_1" {
-		t.Errorf("duplicate build: %d %v, want 409 naming the holder", code, out)
-	}
 	result = errors.New("checkout has uncommitted changes")
 	if code, out := send(build); code != http.StatusBadRequest || out["error"] != result.Error() {
 		t.Errorf("checkout problem: %d %v, want 400 with the reason", code, out)
@@ -543,10 +539,6 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 	if code, out := send(revise, `{"request":"x"}`); code != http.StatusConflict || !strings.Contains(fmt.Sprint(out["error"]), "still queued") {
 		t.Errorf("not revisable: %d %v", code, out)
 	}
-	reviseErr = fmt.Errorf("%w: other_run", trace.ErrDuplicateBuild)
-	if code, out := send(revise, `{"request":"x"}`); code != http.StatusConflict || out["run_id"] != "other_run" {
-		t.Errorf("checkout held: %d %v", code, out)
-	}
 	reviseErr = errors.New("origin/feat/x is at 1234abcd")
 	if code, out := send(revise, `{"request":"x"}`); code != http.StatusBadRequest || out["error"] != reviseErr.Error() {
 		t.Errorf("checkout refusal: %d %v", code, out)
@@ -594,6 +586,71 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 		if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
 			t.Errorf("%s on a read-only dashboard: %d", path, w.Code)
 		}
+	}
+}
+
+// The run payload says where a writing iteration ran and where its result is
+// kept, and the run still counts toward its original repository rather than
+// the worktree it ran in.
+func TestWorktreeReporting(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, attempt, token := claimed(t, db, "build", "/repos/alpha", "greet")
+	tree := filepath.Join(root, "worktrees", id, "iteration-0")
+	if err := db.SetWorktree(id, attempt, tree, "0123456789abcdef", "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Complete(id, attempt, token, trace.StatusFail, "validation unresolved"); err != nil {
+		t.Fatal(err)
+	}
+	patch := filepath.Join(root, "runs", id, "result.patch")
+	ref := "refs/lathe/runs/" + id + "/iteration-0"
+	if err := db.SetPatch(id, 0, patch); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetRecoveryRef(id, 0, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetWorktreeState(id, 0, "pending", "removing the worktree: busy"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	ro, err := trace.OpenRO(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	h := handler(ro, "dev", Actions{}, Sources{})
+	get := func(path string, v any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local("GET", path, nil))
+		if err := json.Unmarshal(w.Body.Bytes(), v); err != nil {
+			t.Fatalf("%s: %v: %s", path, err, w.Body)
+		}
+	}
+
+	var d struct {
+		Iterations []trace.Iteration
+	}
+	get("/api/runs/"+id, &d)
+	want := trace.Iteration{Worktree: tree, WorktreeState: "pending", CleanupError: "removing the worktree: busy",
+		Patch: patch, RecoveryRef: ref}
+	if len(d.Iterations) != 1 {
+		t.Fatalf("iterations = %+v", d.Iterations)
+	}
+	if got := d.Iterations[0]; got.Worktree != want.Worktree || got.WorktreeState != want.WorktreeState ||
+		got.CleanupError != want.CleanupError || got.Patch != want.Patch || got.RecoveryRef != want.RecoveryRef {
+		t.Fatalf("iteration = %+v; want %+v", got, want)
+	}
+
+	var projects []trace.ProjectSpend
+	get("/api/projects", &projects)
+	if len(projects) != 1 || projects[0].Repo != "/repos/alpha" || projects[0].Runs != 1 {
+		t.Fatalf("projects = %+v", projects)
 	}
 }
 

@@ -6,6 +6,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,6 +59,16 @@ type Launcher interface {
 	Alive(handle string) (bool, error)
 }
 
+// Supervisors probes and stops the supervised launches a worker left
+// behind, by the process group and authenticated endpoint each registered.
+type Supervisors interface {
+	GroupLive(pgid int) (bool, error)
+	Stop(endpoint, token string) error
+}
+
+// stopWait is how long recovery waits for a stopped launch's group to end.
+var stopWait = 10 * time.Second
+
 // Run drains the queue and serves the dashboard until ctx is cancelled. Only
 // one manager per data directory: the lock is what enforces it, and the same
 // lock is what a submitter checks before auto-starting one. actions are
@@ -76,7 +87,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 	}
 	defer db.Close()
 
-	m := &manager{db: db, dataRoot: dataRoot, out: out, launcher: Local{},
+	m := &manager{db: db, dataRoot: dataRoot, out: out, launcher: Local{}, groups: Local{},
 		capacity: Capacity()}
 
 	// Reservations and attempts are reconciled before anything new is
@@ -123,16 +134,21 @@ type manager struct {
 	dataRoot string
 	out      io.Writer
 	launcher Launcher
+	groups   Supervisors
 	capacity int
 	// uncertain is the attempt whose worker the launcher could not vouch for.
 	// It holds capacity until a person confirms the process is gone, and the
 	// refusal message is the whole recovery procedure.
 	uncertain map[string]bool
-	warned    bool
+	// blocked is the source repositories whose recovery is unresolved; their
+	// queued runs are not dispatched.
+	blocked map[string]error
+	warned  bool
 }
 
-// dispatch admits as much queued work as capacity and checkout availability
-// allow, oldest first.
+// dispatch launches queued runs, oldest first, while capacity allows. A run
+// in a blocked repository is skipped, as is a checkout-mode run whose
+// checkout another active run holds.
 func (m *manager) dispatch() error {
 	active, err := m.db.Active()
 	if err != nil {
@@ -148,12 +164,14 @@ func (m *manager) dispatch() error {
 	if err != nil {
 		return err
 	}
-	// A dispatched run intends to hold its checkout before its worker has
-	// reserved it, so the reservations alone are not enough: without this a
-	// second poll would dispatch into a directory the first run is about to
-	// take, and that run would fail instead of waiting.
+	// A dispatched checkout run intends to hold its checkout before its
+	// worker has reserved it, so the reservations alone are not enough:
+	// without this a second poll would dispatch into a directory the first
+	// run is about to take, and that run would fail instead of waiting.
 	for _, row := range active {
-		held[row.Repo] = row.ID
+		if attempt, err := m.db.GetAttempt(row.AttemptID); err != nil || attempt.Mode == trace.ModeCheckout {
+			held[row.Repo] = row.ID
+		}
 	}
 	queued, err := m.db.Queued()
 	if err != nil {
@@ -163,31 +181,35 @@ func (m *manager) dispatch() error {
 		if len(active) >= m.capacity {
 			return nil
 		}
-		if _, busy := held[row.Repo]; busy {
-			// Another run is in that checkout. Waiting is the whole strategy;
-			// concurrency against one checkout needs worktrees.
+		if m.blocked[row.Repo] != nil {
 			continue
 		}
-		if err := m.launch(row); err != nil {
+		mode := worker.Mode(row.Spec)
+		if _, busy := held[row.Repo]; busy && mode == trace.ModeCheckout {
+			// Another run is in that checkout. Waiting is the whole strategy.
+			continue
+		}
+		if err := m.launch(row, mode); err != nil {
 			fmt.Fprintf(m.out, "lathe manager: dispatching %s: %v\n", row.ID, err)
 			continue
 		}
-		held[row.Repo] = row.ID
+		if mode == trace.ModeCheckout {
+			held[row.Repo] = row.ID
+		}
 		active = append(active, row)
 	}
 	return nil
 }
 
-// launch records the dispatch before spawning anything. If the manager dies
-// between the two, reconciliation has an attempt row to ask about rather than
-// a run nobody can account for.
-func (m *manager) launch(row trace.Row) error {
+// launch records the dispatch with its execution mode, then starts the
+// worker. A worker that fails to start marks the run lost.
+func (m *manager) launch(row trace.Row, mode string) error {
 	attemptID := trace.NewAttemptID(row.ID)
 	logPath := worker.LogPath(m.dataRoot, row.ID, attemptID)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
-	if err := m.db.Reserve(row.ID, attemptID, logPath); err != nil {
+	if err := m.db.ReserveMode(row.ID, attemptID, logPath, mode); err != nil {
 		return err
 	}
 	handle, err := m.launcher.Launch(Job{
@@ -202,23 +224,41 @@ func (m *manager) launch(row trace.Row) error {
 	return m.db.SetHandle(attemptID, handle, pid(handle))
 }
 
-// reconcile settles what the last manager left behind. A run whose worker is
-// gone is lost; a run whose worker is still there keeps its capacity and its
-// checkout and will record its own outcome.
+// reconcile settles what the last manager left behind, before anything new
+// is admitted. A run whose worker is still there keeps its capacity and will
+// record its own outcome. A run whose worker is confirmed gone is lost: its
+// unadmitted launches are cancelled, its admitted ones stopped, and once
+// nothing of it can write, its worktree's result is preserved and the
+// worktree removed. Cleanup an earlier worker or manager left pending is
+// retried too.
 func (m *manager) reconcile() error {
 	m.uncertain = map[string]bool{}
+	if m.groups == nil {
+		m.groups = Local{}
+	}
 	active, err := m.db.Active()
 	if err != nil {
 		return err
 	}
+	host, _ := os.Hostname()
 	for _, row := range active {
 		attempt, err := m.db.GetAttempt(row.AttemptID)
 		if err != nil {
 			return err
 		}
-		if attempt.Handle == "" {
-			// The previous manager died between recording the dispatch and
-			// spawning: no process was ever started, so nothing has to stop.
+		handle := attempt.Handle
+		if handle == "" && attempt.Claimed != "" && attempt.PID > 0 {
+			// Launched, but the handle was never recorded: the claim says
+			// which process took the attempt.
+			if attempt.Host != host {
+				m.uncertain[row.ID] = true
+				continue
+			}
+			handle = strconv.Itoa(attempt.PID)
+		}
+		if handle == "" {
+			// No worker claimed it, and marking it lost revokes the attempt:
+			// a late worker's claim needs the run still starting.
 			if err := m.db.MarkLost(row.ID, "the manager stopped before the worker was launched"); err != nil {
 				return err
 			}
@@ -227,22 +267,177 @@ func (m *manager) reconcile() error {
 			}
 			continue
 		}
-		alive, err := m.launcher.Alive(attempt.Handle)
+		alive, err := m.launcher.Alive(handle)
 		switch {
 		case err != nil:
 			m.uncertain[row.ID] = true
 		case alive:
 			fmt.Fprintf(m.out, "lathe manager: %s is still running (pid %d)\n", row.ID, attempt.PID)
 		default:
+			// Lost first: from here no intent of the run can register.
 			if err := m.db.MarkLost(row.ID, "the worker is gone; its outcome is unknown"); err != nil {
 				return err
+			}
+			if err := m.stopLaunches(row.ID, "", host); err != nil {
+				fmt.Fprintf(m.out, "lathe manager: %s: %v; its worktree is kept until they are confirmed stopped\n", row.ID, err)
+				m.uncertain[row.ID] = true
+				continue
 			}
 			if err := m.db.ReleaseCheckout(row.ID); err != nil {
 				return err
 			}
 		}
 	}
+	unresolved, err := m.cleanup(host)
+	if err != nil {
+		return err
+	}
+	m.blocked = unresolved
+	for repo, err := range unresolved {
+		fmt.Fprintf(m.out, "lathe manager: recovery is unresolved in %s; its queued runs wait until the cause is fixed and the manager restarted, which retries it: %v\n", repo, err)
+	}
 	return nil
+}
+
+// stopLaunches settles every open launch of runID except those of attempt
+// keep. An intent that never registered admitted nothing and is cancelled. A
+// registered supervisor is asked to stop, and its group is waited for; one
+// that will not stop is an error.
+func (m *manager) stopLaunches(runID, keep, host string) error {
+	launches, err := m.db.OpenLaunches(runID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, l := range launches {
+		if keep != "" && l.AttemptID == keep {
+			continue
+		}
+		if l.State == trace.LaunchIntent {
+			if cancelled, err := m.db.CancelLaunch(l.ID); err != nil {
+				errs = append(errs, err)
+				continue
+			} else if cancelled {
+				continue
+			}
+			// It registered meanwhile: settle it from its registration.
+			fresh, open, err := m.openLaunch(runID, l.ID)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if !open {
+				continue
+			}
+			l = fresh
+		}
+		if l.Host != "" && l.Host != host {
+			errs = append(errs, fmt.Errorf("launch %s runs on %s, not this host", l.ID, l.Host))
+			continue
+		}
+		if l.PGID > 1 {
+			live, err := m.groups.GroupLive(l.PGID)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("probing launch %s (process group %d): %w", l.ID, l.PGID, err))
+				continue
+			}
+			if live {
+				if err := m.groups.Stop(l.Endpoint, l.Token); err != nil {
+					fmt.Fprintf(m.out, "lathe manager: asking launch %s to stop: %v\n", l.ID, err)
+				}
+				if !m.waitStopped(l.PGID) {
+					errs = append(errs, fmt.Errorf("process group %d of launch %s did not stop; stop it with kill -TERM -%d", l.PGID, l.ID, l.PGID))
+					continue
+				}
+			}
+		}
+		if err := m.db.LaunchDrainedAt(l.ID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// openLaunch is runID's launch id, and whether it is still open.
+func (m *manager) openLaunch(runID, id string) (trace.Launch, bool, error) {
+	launches, err := m.db.OpenLaunches(runID)
+	if err != nil {
+		return trace.Launch{}, false, err
+	}
+	for _, l := range launches {
+		if l.ID == id {
+			return l, true, nil
+		}
+	}
+	return trace.Launch{}, false, nil
+}
+
+func (m *manager) waitStopped(pgid int) bool {
+	deadline := time.Now().Add(stopWait)
+	for {
+		if live, err := m.groups.GroupLive(pgid); err == nil && !live {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// cleanup preserves and removes every recorded worktree whose run no longer
+// executes in it. It returns the source repositories it could not finish,
+// each with why; their unsettled worktrees stay recorded pending. Worktrees
+// of runs with an uncertain worker are skipped.
+func (m *manager) cleanup(host string) (map[string]error, error) {
+	worktrees, err := m.db.Worktrees()
+	if err != nil {
+		return nil, err
+	}
+	unresolved := map[string]error{}
+	for _, w := range worktrees {
+		if w.Current && !trace.Terminal(w.RunStatus) {
+			continue // its worker is alive and owns it
+		}
+		if m.uncertain[w.RunID] {
+			continue
+		}
+		fail := func(err error) {
+			unresolved[w.Repo] = errors.Join(unresolved[w.Repo], err)
+		}
+		keep := func(err error) {
+			if serr := m.db.SetWorktreeState(w.RunID, w.Iteration, trace.WorktreePending, err.Error()); serr != nil {
+				err = errors.Join(err, serr)
+			}
+			fail(err)
+		}
+		live := ""
+		if !trace.Terminal(w.RunStatus) {
+			row, err := m.db.Get(w.RunID)
+			if err != nil {
+				keep(err)
+				continue
+			}
+			live = row.AttemptID
+		}
+		if err := m.stopLaunches(w.RunID, live, host); err != nil {
+			keep(fmt.Errorf("%s: %w; its worktree %s is kept", w.RunID, err, w.Path))
+			continue
+		}
+		lock, err := workspace.Acquire(m.dataRoot, w.Path)
+		if err != nil {
+			keep(fmt.Errorf("%s: %w; its worktree is kept", w.Path, err))
+			continue
+		}
+		err = worker.Settle(m.db, m.dataRoot, w, worker.Protected(w.Spec), true)
+		lock.Release()
+		if err != nil {
+			fail(fmt.Errorf("cleaning up %s: %w", w.Path, err))
+			continue
+		}
+		fmt.Fprintf(m.out, "lathe manager: removed %s\n", w.Path)
+	}
+	return unresolved, nil
 }
 
 // refuse prints why nothing is being admitted. There is no recovery command

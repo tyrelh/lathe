@@ -1,7 +1,7 @@
 package workspace
 
-// The git in this file is lathe's own work. It runs through exec.Command and
-// never through run.Handle.Command, so the roster's shell deny list — which
+// The git in this file is lathe's own work. It runs through the process
+// package and never through an agent's tools, so the roster's shell deny list — which
 // refuses `git push` and `git commit` to every agent — stays intact while lathe
 // performs both itself. An agent judges the text; lathe performs the git.
 
@@ -10,6 +10,9 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 // Head is the commit HEAD points at. A worker records it before a run starts,
@@ -64,9 +67,9 @@ func Commit(repo, message string, paths []string) error {
 	return gitRun(repo, strings.NewReader(message), "commit", "-F", "-")
 }
 
-// Push publishes branch and sets it as the upstream, so gh has a remote branch
-// to open a pull request against.
-func Push(repo, branch string) error { return gitRun(repo, nil, "push", "-u", "origin", branch) }
+// Push publishes branch to origin. It sets no upstream, so repo's
+// configuration is not written.
+func Push(repo, branch string) error { return gitRun(repo, nil, "push", "origin", branch) }
 
 // gitRun is git for its exit code, with the output folded into the error.
 // These are the calls whose failure a run reports rather than parses. Paths are
@@ -75,7 +78,7 @@ func gitRun(repo string, stdin io.Reader, args ...string) error {
 	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
 	cmd.Dir = repo
 	cmd.Stdin = stdin
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := process.CombinedOutput(cmd); err != nil {
 		return fmt.Errorf("git %s in %s: %w: %s",
 			strings.Join(args, " "), repo, err, strings.TrimSpace(string(out)))
 	}
@@ -88,7 +91,7 @@ func gitRun(repo string, stdin io.Reader, args ...string) error {
 func RemoteHead(repo, branch string) (string, error) {
 	cmd := exec.Command("git", "ls-remote", "origin", "refs/heads/"+branch)
 	cmd.Dir = repo
-	out, err := cmd.CombinedOutput()
+	out, err := process.CombinedOutput(cmd)
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote origin %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
@@ -96,10 +99,34 @@ func RemoteHead(repo, branch string) (string, error) {
 	return sha, nil
 }
 
+// FetchBranch updates origin/<branch> from origin and returns the commit it
+// names now. Nothing local but that remote-tracking ref changes. A fetch that
+// finds the ref locked by another is retried.
+func FetchBranch(repo, branch string) (string, error) {
+	ref := "refs/remotes/origin/" + branch
+	var err error
+	for try := 1; ; try++ {
+		err = gitRun(repo, nil, "fetch", "--no-tags", "origin", "+refs/heads/"+branch+":"+ref)
+		if err == nil || try == fetchTries || !strings.Contains(err.Error(), ".lock") {
+			break
+		}
+		time.Sleep(time.Duration(try) * 200 * time.Millisecond)
+	}
+	if err != nil {
+		return "", err
+	}
+	return git(repo, "rev-parse", "--verify", ref)
+}
+
+// fetchTries is how many times FetchBranch tries a fetch that finds its ref
+// locked.
+const fetchTries = 5
+
 // PushExpecting publishes HEAD to origin's branch only while that branch is
 // still at expect, so an update someone made meanwhile is refused rather than
 // overwritten. HEAD descends from expect, so a push the lease admits is a
-// fast-forward and the branch keeps its history.
+// fast-forward and the branch keeps its history. HEAD may be detached; no
+// local branch is moved.
 func PushExpecting(repo, branch, expect string) error {
 	ref := "refs/heads/" + branch
 	return gitRun(repo, nil, "push", "--force-with-lease="+ref+":"+expect, "origin", "HEAD:"+ref)

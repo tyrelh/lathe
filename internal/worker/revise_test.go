@@ -73,7 +73,7 @@ echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}'
 		t.Fatal(err)
 	}
 	defer db.Close()
-	id, _ := db.Submit(trace.Request{Workflow: "build", Repo: ws.Path, Request: "r", Branch: "feat/x", Spec: spec, Exclusive: true})
+	id, _ := db.Submit(trace.Request{Workflow: "build", Repo: ws.Path, Request: "r", Branch: "feat/x", Spec: spec})
 	attempt := trace.NewAttemptID(id)
 	db.Reserve(id, attempt, "")
 	token := trace.NewClaimToken()
@@ -84,13 +84,16 @@ echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}'
 	b, _ := json.Marshal(map[string]string{"url": "u"})
 	write(t, filepath.Join(ReportDir(dataRoot, id, 0), "pr.json"), string(b))
 
-	revision, _ := Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: ws, Roster: roster}.Marshal()
+	revision, _ := Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: ws, Roster: roster, Base: sha}.Marshal()
 	if _, err := db.Revise(id, 0, "more", revision); err != nil {
 		t.Fatal(err)
 	}
-	// After queueing, someone commits to the pull request's branch by hand.
+	// After queueing, someone pushes to the pull request's branch by hand, and
+	// leaves the checkout dirty, which on its own would not matter.
 	write(t, filepath.Join(dir, "hello.txt"), "mine\n")
 	git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "manual")
+	git(t, dir, "push", "-q", "origin", "feat/x")
+	write(t, filepath.Join(dir, "hello.txt"), "dirty\n")
 	manual := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
 
 	second := trace.NewAttemptID(id)
@@ -114,5 +117,71 @@ echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}'
 	}
 	if head := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD")); head != manual {
 		t.Fatal("the worker touched the person's commit")
+	}
+	if _, err := os.Stat(workspace.WorktreeRoot(dataRoot)); !os.IsNotExist(err) {
+		t.Fatal("a refused revision created a worktree")
+	}
+}
+
+// A pull request base that cannot be fetched fails the revision before any
+// agent or worktree: the planner's diff would describe the wrong change.
+func TestRevisionNeedsItsBase(t *testing.T) {
+	stub := t.TempDir()
+	write(t, filepath.Join(stub, "pi"), "#!/bin/sh\ntouch "+filepath.Join(stub, "spawned")+"\n")
+	write(t, filepath.Join(stub, "gh"), `#!/bin/sh
+echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"no-such-base"}'
+`)
+	os.Chmod(filepath.Join(stub, "pi"), 0o755)
+	os.Chmod(filepath.Join(stub, "gh"), 0o755)
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	dir, dataRoot, origin := repo(t), t.TempDir(), t.TempDir()
+	git(t, origin, "init", "-q", "--bare")
+	git(t, dir, "checkout", "-qb", "feat/x")
+	git(t, dir, "remote", "add", "origin", origin)
+	git(t, dir, "push", "-q", "origin", "main", "feat/x")
+	sha := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+
+	roster, err := seeded(t).Capture([]string{"planner"}, config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := workspace.Local(dir)
+	spec, _ := Spec{Version: SpecVersion, Workflow: "build", Request: "r", Workspace: ws, Roster: roster, Base: sha}.Marshal()
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, _ := db.Submit(trace.Request{Workflow: "build", Repo: ws.Path, Request: "r", Branch: "feat/x", Spec: spec})
+	attempt := trace.NewAttemptID(id)
+	db.Reserve(id, attempt, "")
+	token := trace.NewClaimToken()
+	db.Claim(attempt, token, "host", 1, Lease)
+	db.SetShipped(id, attempt, "feat/x", sha)
+	db.Complete(id, attempt, token, trace.StatusOK, "")
+	os.MkdirAll(ReportDir(dataRoot, id, 0), 0o700)
+	write(t, filepath.Join(ReportDir(dataRoot, id, 0), "pr.json"), `{"url":"u"}`)
+
+	revision, _ := Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: ws, Roster: roster, Base: sha}.Marshal()
+	if _, err := db.Revise(id, 0, "more", revision); err != nil {
+		t.Fatal(err)
+	}
+	second := trace.NewAttemptID(id)
+	if err := db.ReserveMode(id, second, "", Mode(revision)); err != nil {
+		t.Fatal(err)
+	}
+	if code := Execute(dataRoot, id, second, io.Discard); code != 1 {
+		t.Fatalf("exit code = %d", code)
+	}
+	row, _ := db.Get(id)
+	if row.Status != trace.StatusFail || !strings.Contains(row.Reason, "the pull request's base") {
+		t.Fatalf("run = %s %q", row.Status, row.Reason)
+	}
+	if _, err := os.Stat(filepath.Join(stub, "spawned")); err == nil {
+		t.Fatal("an agent ran without the pull request's base")
+	}
+	if _, err := os.Stat(workspace.WorktreeRoot(dataRoot)); !os.IsNotExist(err) {
+		t.Fatal("a revision without its base created a worktree")
 	}
 }

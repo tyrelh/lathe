@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 // Local launches workers as processes on this machine. Everything about a
@@ -71,6 +73,13 @@ func (l Local) Alive(handle string) (bool, error) {
 	}
 }
 
+// GroupLive reports whether process group pgid on this host has a member
+// that is not a zombie.
+func (l Local) GroupLive(pgid int) (bool, error) { return process.GroupLive(pgid) }
+
+// Stop asks the supervisor at endpoint to stop its process group.
+func (l Local) Stop(endpoint, token string) error { return process.RequestStop(endpoint, token) }
+
 // Start makes sure a manager is running, starting a detached one if the data
 // directory lock is free. A submitter calls it because a blocking submission
 // would otherwise wait on a queue nobody drains. The started manager lives
@@ -108,4 +117,7 @@ func Start(dataRoot string) error {
 
 func logPath(dataRoot string) string { return filepath.Join(dataRoot, LogFile) }
 
-var _ Launcher = Local{}
+var (
+	_ Launcher    = Local{}
+	_ Supervisors = Local{}
+)

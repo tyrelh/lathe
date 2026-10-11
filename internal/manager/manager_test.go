@@ -2,6 +2,8 @@ package manager
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -9,6 +11,8 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/worker"
+	"github.com/tyrelh/lathe/internal/workspace"
 )
 
 // fake is a launcher that records what it was asked to start and answers
@@ -327,4 +331,248 @@ func TestDataDirectoryLockIsExclusive(t *testing.T) {
 		t.Fatalf("the lock was not released: %v", err)
 	}
 	second.Release()
+}
+
+// submitSpec records a run carrying a specification of the given version.
+func submitSpec(t *testing.T, db *trace.DB, workflow, repo string, version int) string {
+	t.Helper()
+	spec, err := worker.Spec{Version: version, Workflow: workflow, Request: "x", Base: "abc"}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.Submit(trace.Request{Workflow: workflow, Repo: repo, Request: "x", Branch: "main", Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// Writing runs execute in worktrees of their own, so several for one
+// repository are admitted up to capacity, even beside a run in the checkout.
+// Read-only runs still wait for the checkout, and a queued legacy writing run
+// is dispatched only to be refused, without holding the checkout.
+func TestDispatchByExecutionMode(t *testing.T) {
+	l := &fake{alive: true}
+	m, db, _ := newManager(t, 5, l)
+	reader := submitSpec(t, db, "scout", "/repo", worker.SpecVersion)
+	first := submitSpec(t, db, "build", "/repo", worker.SpecVersion)
+	second := submitSpec(t, db, "build", "/repo", worker.SpecVersion)
+	legacy := submitSpec(t, db, "implement", "/repo", 3)
+	waiting := submitSpec(t, db, "plan", "/repo", 3)
+	if err := m.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	launched := map[string]bool{}
+	for _, j := range l.jobs {
+		launched[j.RunID] = true
+	}
+	for _, id := range []string{first, second, legacy} {
+		if !launched[id] {
+			t.Fatalf("%s was not launched (%+v)", id, l.jobs)
+		}
+	}
+	// The two checkout runs share one checkout: whichever is older goes.
+	if launched[reader] == launched[waiting] {
+		t.Fatalf("checkout runs launched: %v and %v; want exactly one", launched[reader], launched[waiting])
+	}
+	if !launched[reader] {
+		reader = waiting
+	}
+	for id, mode := range map[string]string{reader: trace.ModeCheckout, first: trace.ModeWorktree,
+		second: trace.ModeWorktree, legacy: trace.ModeReject} {
+		row, _ := db.Get(id)
+		if a, _ := db.GetAttempt(row.AttemptID); a.Mode != mode {
+			t.Fatalf("%s mode = %q; want %q", id, a.Mode, mode)
+		}
+	}
+
+	// Capacity still bounds writing runs.
+	l2 := &fake{alive: true}
+	m2, db2, _ := newManager(t, 2, l2)
+	for i := 0; i < 3; i++ {
+		submitSpec(t, db2, "build", "/repo", worker.SpecVersion)
+	}
+	if err := m2.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	if len(l2.jobs) != 2 {
+		t.Fatalf("launched %d builds; want 2", len(l2.jobs))
+	}
+}
+
+// A lost run's worktree that cannot be exported holds back its repository
+// only: the worktree stays on disk and recorded pending, queued runs for
+// that repository wait, other repositories dispatch, and the next start
+// retries it.
+func TestStartupCleanupFailureBlocksItsRepository(t *testing.T) {
+	l := &fake{alive: true}
+	m, db, _ := newManager(t, 2, l)
+	m.groups = &supervisors{live: map[int]bool{}}
+	id := submitSpec(t, db, "build", "/nonexistent-repo", worker.SpecVersion)
+	if err := m.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := db.Get(id)
+	if _, err := db.Claim(row.AttemptID, trace.NewClaimToken(), "host", 424242, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	path := workspace.WorktreePath(m.dataRoot, id, 0)
+	if err := db.SetWorktree(id, row.AttemptID, path, "abc", trace.WorktreeActive); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(path, 0o700)
+	os.WriteFile(filepath.Join(path, "work.txt"), []byte("unsaved"), 0o600)
+
+	l.alive = false
+	if err := m.reconcile(); err != nil {
+		t.Fatalf("reconcile = %v; want the failure confined to its repository", err)
+	}
+	if m.blocked["/nonexistent-repo"] == nil {
+		t.Fatalf("blocked = %v; want /nonexistent-repo", m.blocked)
+	}
+	if _, err := os.Stat(filepath.Join(path, "work.txt")); err != nil {
+		t.Fatal("the unexported worktree was removed")
+	}
+	its, _ := db.Iterations(id)
+	if its[0].WorktreeState != trace.WorktreePending || its[0].CleanupError == "" {
+		t.Fatalf("iteration = %+v", its[0])
+	}
+
+	before := len(l.jobs)
+	waiting := submitSpec(t, db, "build", "/nonexistent-repo", worker.SpecVersion)
+	other := submitSpec(t, db, "build", "/other-repo", worker.SpecVersion)
+	if err := m.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.jobs[before:]; len(got) != 1 || got[0].RunID != other {
+		t.Fatalf("dispatched %+v; want only %s", got, other)
+	}
+	if row, _ := db.Get(waiting); row.Status != trace.StatusQueued {
+		t.Fatalf("the blocked repository's run is %s; want queued", row.Status)
+	}
+
+	if err := m.reconcile(); err != nil || m.blocked["/nonexistent-repo"] == nil {
+		t.Fatalf("retry: %v, blocked %v; want the same failure", err, m.blocked)
+	}
+}
+
+// supervisors is a fake group probe: groups in live stay alive until a stop
+// request names them.
+type supervisors struct {
+	live     map[int]bool
+	stopped  []string
+	stubborn bool
+}
+
+func (s *supervisors) GroupLive(pgid int) (bool, error) { return s.live[pgid], nil }
+
+func (s *supervisors) Stop(endpoint, token string) error {
+	s.stopped = append(s.stopped, endpoint+" "+token)
+	if !s.stubborn {
+		for pgid := range s.live {
+			delete(s.live, pgid)
+		}
+	}
+	return nil
+}
+
+// A dead worker's run is lost automatically: its unregistered intent is
+// cancelled without a PID, its registered supervisor is asked to stop and
+// waited for, and only then is its checkout released. A group that will not
+// stop keeps the run's resources and says how to stop it.
+func TestLostRecoveryStopsLaunches(t *testing.T) {
+	for _, stubborn := range []bool{false, true} {
+		t.Run(strconv.FormatBool(stubborn), func(t *testing.T) {
+			stopWait = 100 * time.Millisecond
+			t.Cleanup(func() { stopWait = 10 * time.Second })
+			l := &fake{alive: true}
+			m, db, out := newManager(t, 1, l)
+			sup := &supervisors{live: map[int]bool{777: true}, stubborn: stubborn}
+			m.groups = sup
+			id := submitSpec(t, db, "build", "/repo", worker.SpecVersion)
+			if err := m.dispatch(); err != nil {
+				t.Fatal(err)
+			}
+			row, _ := db.Get(id)
+			host, _ := os.Hostname()
+			if _, err := db.Claim(row.AttemptID, trace.NewClaimToken(), host, 424242, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.LaunchIntent(id, row.AttemptID, "never", []string{"git"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.LaunchIntent(id, row.AttemptID, "admitted", []string{"pi"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.LaunchRegistered("admitted", host, 777, 777, "127.0.0.1:1", "tok"); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.ReserveCheckout("/wt", host, id); err != nil {
+				t.Fatal(err)
+			}
+
+			l.alive = false
+			if err := m.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if row, _ := db.Get(id); row.Status != trace.StatusLost {
+				t.Fatalf("status = %q", row.Status)
+			}
+			if len(sup.stopped) != 1 || sup.stopped[0] != "127.0.0.1:1 tok" {
+				t.Fatalf("stop requests = %v", sup.stopped)
+			}
+			open, _ := db.OpenLaunches(id)
+			held, _ := db.HeldCheckouts()
+			if stubborn {
+				if len(open) != 1 || open[0].ID != "admitted" || held["/wt"] != id ||
+					!strings.Contains(out.String(), "kill -TERM -777") {
+					t.Fatalf("open %+v held %v\n%s", open, held, out)
+				}
+				return
+			}
+			if len(open) != 0 || len(held) != 0 {
+				t.Fatalf("open %+v held %v", open, held)
+			}
+			// A late registration of the cancelled intent is refused.
+			if err := db.LaunchRegistered("never", host, 1, 1, "x", "y"); err == nil {
+				t.Fatal("a revoked intent registered")
+			}
+		})
+	}
+}
+
+// Settling a run's launches leaves those of the attempt named to keep alone.
+func TestStopLaunchesKeepsTheLiveAttempt(t *testing.T) {
+	l := &fake{alive: true}
+	m, db, _ := newManager(t, 1, l)
+	sup := &supervisors{live: map[int]bool{777: true}}
+	m.groups = sup
+	id := submitSpec(t, db, "build", "/repo", worker.SpecVersion)
+	if err := m.dispatch(); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := db.Get(id)
+	host, _ := os.Hostname()
+	if _, err := db.Claim(row.AttemptID, trace.NewClaimToken(), host, 424242, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.LaunchIntent(id, row.AttemptID, "live", []string{"pi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.LaunchRegistered("live", host, 777, 777, "127.0.0.1:1", "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.stopLaunches(id, row.AttemptID, host); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := db.OpenLaunches(id); len(open) != 1 || len(sup.stopped) != 0 {
+		t.Fatalf("open %+v, stop requests %v; want the live attempt untouched", open, sup.stopped)
+	}
+	if err := m.stopLaunches(id, "", host); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := db.OpenLaunches(id); len(open) != 0 || len(sup.stopped) != 1 {
+		t.Fatalf("open %+v, stop requests %v; want it stopped", open, sup.stopped)
+	}
 }

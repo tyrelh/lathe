@@ -10,11 +10,63 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 )
+
+// The test binary doubles as the supervisor helper, the way lathe does.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == process.HelperArg {
+		os.Exit(process.Helper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
+
+// launches is a Registrar that records each launch record in order, runs
+// onReg before storing a registration, and refuses it when refuse is set.
+type launches struct {
+	mu     sync.Mutex
+	calls  []string
+	reg    process.Registration
+	refuse bool
+	onReg  func()
+}
+
+func (l *launches) Intent(string, []string) error { return l.add("intent") }
+func (l *launches) Drained(string) error          { return l.add("drained") }
+func (l *launches) Register(_ string, reg process.Registration) error {
+	if l.onReg != nil {
+		l.onReg()
+	}
+	l.mu.Lock()
+	l.reg = reg
+	l.mu.Unlock()
+	if l.refuse {
+		return errors.New("registration refused")
+	}
+	return l.add("register")
+}
+
+func (l *launches) add(call string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, call)
+	return nil
+}
+
+func (l *launches) log() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.calls, ",")
+}
+
+func supervisor(l *launches) *process.Runner {
+	return &process.Runner{Bin: os.Args[0], Registrar: l}
+}
 
 func authStub(t *testing.T, body string) string {
 	t.Helper()
@@ -382,5 +434,141 @@ func TestLiveScout(t *testing.T) {
 	t.Logf("run %s: %d events, %d tokens, $%.5f\n%s", runID, res.Events, res.Tokens, res.Cost, res.Text)
 	if res.Events == 0 || res.Text == "" {
 		t.Fatal("the agent produced nothing")
+	}
+}
+
+// A supervised auth check reads the same response and exit status as a direct
+// one, and its launch is recorded from intent to drained.
+func TestCheckAuthSupervised(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		exit         int
+		ok           bool
+	}{
+		{"ready", `{"provider":"test","status":"ready"}`, 0, true},
+		{"missing", `{"provider":"test","status":"not_ready","reason":"credentials_not_configured"}`, 1, false},
+		{"nonzero ready", `{"provider":"test","status":"ready"}`, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &launches{}
+			bin := authStub(t, fmt.Sprintf("cat <<'JSON'\n%s\nJSON\nexit %d\n", tc.output, tc.exit))
+			err := CheckAuth(context.Background(), Options{Bin: bin, Provider: "test", Runner: supervisor(l)})
+			if (err == nil) != tc.ok {
+				t.Fatalf("error = %v; success = %v", err, tc.ok)
+			}
+			if got := l.log(); got != "intent,register,drained" {
+				t.Fatalf("launch records = %s", got)
+			}
+		})
+	}
+}
+
+// A refused registration admits nothing: the check fails without Pi running.
+func TestCheckAuthRefusedRegistrationRunsNothing(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	bin := authStub(t, "touch "+marker+"\nprintf '{\"provider\":\"test\",\"status\":\"ready\"}\\n'\n")
+	l := &launches{refuse: true}
+	if err := CheckAuth(context.Background(), Options{Bin: bin, Provider: "test", Runner: supervisor(l)}); err == nil {
+		t.Fatal("a refused launch reported readiness")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("pi ran without a stored registration: %v", err)
+	}
+}
+
+// Supervised, Run streams every event, reports the supervisor's PID, and does
+// not start Pi until its registration is stored.
+func TestRunSupervisedStreams(t *testing.T) {
+	dir := t.TempDir()
+	sample, err := filepath.Abs(filepath.Join("..", "..", "testdata", "pi-sample.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "ran")
+	stub := filepath.Join(dir, "fake-pi")
+	if err := os.WriteFile(stub, []byte(fmt.Sprintf("#!/bin/sh\ntouch %q\ncat %q\n", marker, sample)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := &launches{}
+	l.onReg = func() {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := os.Stat(marker); err == nil {
+			t.Error("pi ran before its registration was stored")
+		}
+	}
+	var raw bytes.Buffer
+	var pid int
+	res, err := Run(context.Background(), Options{Bin: stub, Dir: dir, Raw: &raw, Runner: supervisor(l),
+		OnStart: func(p int) { pid = p }}, "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Events != 356 {
+		t.Fatalf("events = %d; want 356", res.Events)
+	}
+	want, err := os.ReadFile(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw.Bytes(), want) {
+		t.Fatalf("raw stream differs from Pi's output: %d bytes, want %d", raw.Len(), len(want))
+	}
+	if pid == 0 || pid != l.reg.PID {
+		t.Fatalf("OnStart pid = %d; want the supervisor's %d", pid, l.reg.PID)
+	}
+	if got := l.log(); got != "intent,register,drained" {
+		t.Fatalf("launch records = %s", got)
+	}
+}
+
+// Pi's exit status survives supervision, including 126 and 127, and its
+// stderr reaches the error.
+func TestRunSupervisedExitStatus(t *testing.T) {
+	for _, code := range []int{1, 3, 126, 127} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			stub := authStub(t, fmt.Sprintf("echo 'pi broke %d' >&2\nexit %d\n", code, code))
+			l := &launches{}
+			_, err := Run(context.Background(), Options{Bin: stub, Dir: t.TempDir(), Runner: supervisor(l)}, "go", nil)
+			var exit *process.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != code {
+				t.Fatalf("error = %v; want exit status %d", err, code)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("pi broke %d", code)) {
+				t.Fatalf("stderr missing from %v", err)
+			}
+		})
+	}
+}
+
+// A refused registration fails Run before Pi starts.
+func TestRunSupervisedRefusedRegistration(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	stub := authStub(t, "touch "+marker+"\n")
+	l := &launches{refuse: true}
+	if _, err := Run(context.Background(), Options{Bin: stub, Dir: t.TempDir(), Runner: supervisor(l)}, "go", nil); err == nil {
+		t.Fatal("a refused launch ran")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("pi ran without a stored registration: %v", err)
+	}
+}
+
+// Cancelling a supervised Run stops Pi's descendants too.
+func TestRunSupervisedCancellationKillsDescendants(t *testing.T) {
+	dir := t.TempDir()
+	stub := authStub(t, "(sleep 0.4; echo late > "+filepath.Join(dir, "late")+") &\nwait\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Run(ctx, Options{Bin: stub, Dir: dir, Runner: supervisor(&launches{})}, "go", nil)
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
+		t.Fatalf("cancellation: %v after %s", err, time.Since(start))
+	}
+	time.Sleep(500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, "late")); !os.IsNotExist(err) {
+		t.Fatalf("descendant survived: %v", err)
 	}
 }

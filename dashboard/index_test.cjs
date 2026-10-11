@@ -529,6 +529,29 @@ const history = call('renderIterations', {iterations:[
 for (const text of ['&lt;greet>', 'abcdef12', 'origin at abcdef12', 'kimi-k3', 'planner: moonshotai/kimi-k3', 'not published'])
   assert(history.includes(text), `history: ${text}`);
 
+// A writing iteration says where it ran and where its result is kept; an
+// unaccepted patch and pending cleanup say so, escaped.
+const kept = {iteration:0, request:'greet', status:'fail', worktree:'/data/worktrees/r/iteration-0',
+  worktree_state:'pending', cleanup_error:'<busy>', patch:'/data/runs/r/result.patch',
+  recovery_ref:'refs/lathe/runs/r/iteration-0', models:{}};
+const line = call('worktreeLine', kept);
+for (const text of ['class="one-line fail"', 'worktree pending', 'cleanup pending: &lt;busy>',
+                    'unaccepted patch /data/runs/r/result.patch', 'kept under refs/lathe/runs/r/iteration-0',
+                    'title="/data/worktrees/r/iteration-0"'])
+  assert(line.includes(text), `worktree line: ${text}: ${line}`);
+assert(!line.includes('<busy>'), 'cleanup error is escaped');
+const removed = call('worktreeLine', {...kept, status:'ok', worktree_state:'removed', cleanup_error:'', recovery_ref:''});
+assert(removed.includes('class="one-line dim"') && removed.includes('worktree removed') &&
+  removed.includes('patch /data/runs/r/result.patch') && !removed.includes('unaccepted') && !removed.includes('kept under'), removed);
+assert.equal(call('worktreeLine', {iteration:0, status:'ok'}), '', 'a checkout run has no worktree line');
+assert(call('renderIterations', {iterations:[kept]}).includes('kept under refs/lathe/runs/r/iteration-0'), 'history shows the worktree line');
+const copied = call('iterationText', kept);
+for (const text of ['Worktree: /data/worktrees/r/iteration-0 (pending)', 'Cleanup pending: <busy>',
+                    'Patch: /data/runs/r/result.patch', 'Recovery ref: refs/lathe/runs/r/iteration-0'])
+  assert(copied.includes(text), `iteration text: ${text}`);
+const bare = call('iterationText', {iteration:0, request:'greet', status:'ok'});
+assert(bare.includes('Worktree: —') && bare.includes('Patch: —') && bare.includes('Recovery ref: —') && !bare.includes('Cleanup pending'), bare);
+
 // Status marks stay right-aligned inside wide blocks and prefer spilling right.
 const arrange = (blocks, width) => JSON.parse(JSON.stringify(call('arrange', blocks, width)));
 assert.deepEqual(arrange([{left:0, width:200, label:20}], 400), [{x:177, side:'inside'}]);

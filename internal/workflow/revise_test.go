@@ -18,8 +18,6 @@ import (
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
-const prBranch = "feat/greet-the-world"
-
 // revisable is a finished build with an open pull request: shipRepo, with the
 // base branch on origin so a revision has a branch diff to show, a successful
 // build, and a git on PATH that a test can make lie about a push. It returns
@@ -53,9 +51,10 @@ func lyingGit(t *testing.T, stub, origin string) {
 	}
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "git"), fmt.Sprintf(`#!/bin/sh
-real=%[1]q; d=%[2]q; origin=%[3]q; ref=refs/heads/%[4]s
+real=%[1]q; d=%[2]q; origin=%[3]q
 case " $* " in
   *" push "*)
+    ref=refs/heads/$(cat "$d/gh-head" 2>/dev/null)
     if [ -f "$d/push-race" ]; then "$real" --git-dir="$origin" update-ref $ref "$("$real" --git-dir="$origin" rev-parse $ref^)"; fi
     if [ -f "$d/push-refuse" ]; then echo "fatal: the remote end hung up" >&2; exit 1; fi
     "$real" "$@"; code=$?
@@ -66,7 +65,7 @@ case " $* " in
     if [ -f "$d/pushed" ] && [ -f "$d/ls-fail" ]; then echo "fatal: unable to access origin" >&2; exit 128; fi ;;
 esac
 exec "$real" "$@"
-`, real, stub, origin, prBranch))
+`, real, stub, origin))
 	if err := os.Chmod(filepath.Join(dir, "git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +212,7 @@ func TestReviseEnvironmentFailurePublishesNothing(t *testing.T) {
 				t.Fatalf("exit = %d", got)
 			}
 			assertEnvironmentFailure(t, stub, filepath.Join(latestRunDir(t), "iteration-1"), command, exit, 1)
-			if rev(t, repo, "HEAD") != head || rev(t, origin, prBranch) != head {
+			if rev(t, repo, "HEAD") != head || rev(t, origin, builtBranch(t)) != head {
 				t.Fatal("environment failure committed or pushed")
 			}
 			if _, err := os.Stat(filepath.Join(stub, "pushed")); !os.IsNotExist(err) {
@@ -252,7 +251,7 @@ func TestRevisionsExtendTheRun(t *testing.T) {
 		t.Fatalf("gh pr create ran %d times; the revisions reuse the pull request", got)
 	}
 	row := latestRun(t)
-	if row.Status != trace.StatusOK || row.Iteration != 2 || row.Branch != prBranch || row.Commit != head {
+	if row.Status != trace.StatusOK || row.Iteration != 2 || row.Branch != builtBranch(t) || row.Commit != head {
 		t.Fatalf("run = %+v", row)
 	}
 	its := iterations(t)
@@ -273,7 +272,7 @@ func TestRevisionsExtendTheRun(t *testing.T) {
 	}
 
 	// The branch on origin carries all three commits, in order, one on another.
-	if rev(t, origin, prBranch) != head {
+	if rev(t, origin, builtBranch(t)) != head {
 		t.Fatal("origin is not at the last revision")
 	}
 	gitBuild(t, repo, "merge-base", "--is-ancestor", built, first)
@@ -352,7 +351,7 @@ func TestRevisionWithNoChanges(t *testing.T) {
 		t.Fatalf("tester spawned %d times; the unchanged branch is still validated", n)
 	}
 	row := latestRun(t)
-	if row.Status != trace.StatusOK || row.Commit != built || rev(t, repo, "HEAD") != built || rev(t, origin, prBranch) != built {
+	if row.Status != trace.StatusOK || row.Commit != built || rev(t, repo, "HEAD") != built || rev(t, origin, builtBranch(t)) != built {
 		t.Fatalf("run = %+v", row)
 	}
 	if !strings.Contains(row.Reason, "no code changes") {
@@ -361,7 +360,7 @@ func TestRevisionWithNoChanges(t *testing.T) {
 	if err := trace.Revisable(row); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workspace.CheckRevisable(repo, workspace.Evidence{PR: shipURL, Branch: prBranch, Commit: built}); err != nil {
+	if _, err := workspace.CheckRevisable(repo, workspace.Evidence{PR: shipURL, Branch: builtBranch(t), Commit: built}); err != nil {
 		t.Fatalf("no longer revisable: %v", err)
 	}
 }
@@ -410,7 +409,7 @@ func TestUnfinishedRevisionsPublishNothing(t *testing.T) {
 			if b, _ := os.ReadFile(filepath.Join(repo, "hello.txt")); string(b) != "hello again\n" {
 				t.Fatalf("the revision's work was not kept: %q", b)
 			}
-			if rev(t, repo, "HEAD") != built || rev(t, origin, prBranch) != built {
+			if rev(t, repo, "HEAD") != built || rev(t, origin, builtBranch(t)) != built {
 				t.Fatal("an unfinished revision committed or pushed")
 			}
 			if n := spawnsOf(t, stub, "committer"); n != 1 {
@@ -482,7 +481,7 @@ func TestRevisionPublication(t *testing.T) {
 			if its[1].Commit != local {
 				t.Errorf("the iteration does not record its local commit: %+v", its[1])
 			}
-			remote, want := rev(t, origin, prBranch), built
+			remote, want := rev(t, origin, builtBranch(t)), built
 			switch {
 			case tc.arrived:
 				want = local

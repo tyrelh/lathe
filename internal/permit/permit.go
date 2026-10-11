@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 // Norm is the one canonical path form every half of the boundary compares in:
@@ -53,6 +55,22 @@ func Denied(path string, deny []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Partition splits paths into those deny covers and the rest, in order,
+// skipping empty names.
+func Partition(paths, deny []string) (denied, kept []string) {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, ok := Denied(p, deny); ok {
+			denied = append(denied, p)
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	return denied, kept
 }
 
 // Escapes reports whether a repo-relative path would land outside the repo.
@@ -271,7 +289,7 @@ type entry struct {
 func status(repo string) ([]entry, error) {
 	cmd := exec.Command("git", "status", "--porcelain=v1", "-z", "-uall", "--no-renames")
 	cmd.Dir = repo
-	out, err := cmd.Output()
+	out, err := process.Output(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("git status in %s: %w", repo, err)
 	}
@@ -316,7 +334,7 @@ func revert(repo string, e entry) error {
 func inHEAD(repo, path string) bool {
 	cmd := exec.Command("git", "cat-file", "-e", "HEAD:"+path)
 	cmd.Dir = repo
-	return cmd.Run() == nil
+	return process.Run(cmd) == nil
 }
 
 // git runs with --literal-pathspecs: a path here is always one exact file, and a
@@ -324,7 +342,7 @@ func inHEAD(repo, path string) bool {
 func git(repo string, args ...string) error {
 	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
 	cmd.Dir = repo
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := process.CombinedOutput(cmd); err != nil {
 		return fmt.Errorf("git %s in %s: %w: %s",
 			strings.Join(args, " "), repo, err, strings.TrimSpace(string(out)))
 	}

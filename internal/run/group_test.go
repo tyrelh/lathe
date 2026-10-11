@@ -246,3 +246,33 @@ func TestGroupDetectsMutationsAndDefersCleanup(t *testing.T) {
 		t.Fatal("test output survived the sweep after the join")
 	}
 }
+
+// Validation cleanup in a managed worktree sweeps only the worktree: test
+// output there is removed, and the source checkout's own files survive.
+func TestGroupCleanupStaysInTheWorktree(t *testing.T) {
+	tree, source := worktreeOf(t)
+	sourceOutput := filepath.Join(source, "coverage.out")
+	if err := os.WriteFile(sourceOutput, []byte("the engineer's\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := newRunWith(t, "", func(o *Options) { o.Repo = tree })
+	defer r.Finish(true, "")
+	if err := r.EnsureClean(); err != nil {
+		t.Fatal(err)
+	}
+	g := NewGraph(r)
+	g.AddGroup(Node{Name: "validate", Owner: "engineer"}, []Worker{
+		{Name: "tester", Owner: "engineer", Run: func(e *Entry) error {
+			return os.WriteFile(filepath.Join(tree, "coverage.out"), []byte("x"), 0o644)
+		}},
+	}, func(e *Entry, res GroupResult) (string, error) { return "", nil })
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(tree, "coverage.out")); !os.IsNotExist(err) {
+		t.Fatal("test output survived the sweep in the worktree")
+	}
+	if got, err := os.ReadFile(sourceOutput); err != nil || string(got) != "the engineer's\n" {
+		t.Fatalf("source file = %q, %v; want it untouched", got, err)
+	}
+}

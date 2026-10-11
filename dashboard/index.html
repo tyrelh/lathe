@@ -1357,7 +1357,7 @@ async function submitRun(e) {
     const {ok, body, error} = await send('/api/projects/runs', {repo: view.repo, workflow, ...(prompt ? {prompt} : {issue})});
     if (current !== generation) return;
     if (!ok) {
-      runStatus(esc(error) + (body.run_id ? ' · held by ' + runLink(body.run_id) : ''), true);
+      runStatus(esc(error), true);
       return;
     }
     $(prompt ? 'run-prompt' : 'run-issue').value = '';
@@ -1594,11 +1594,21 @@ function renderIterations(r) {
       <div class="row-heading"><button type="button" data-focus="iteration-${esc(i.iteration)}" data-iteration="${esc(i.iteration)}" onclick="readIteration(this.dataset.iteration, this)">#${esc(i.iteration)}</button>
         <span class="${cls(i.status)}">${esc(i.status)}</span><span class="dim one-line">${where}</span></div>
       <div class="preview" title="${esc(i.request)}">${esc(clip(i.request, 200))}</div>
-      <div class="one-line ${i.reason && i.status !== 'ok' ? 'fail' : 'dim'}">${esc(i.reason || span(i.started_at, i.ended_at))}</div></div>`;
+      <div class="one-line ${i.reason && i.status !== 'ok' ? 'fail' : 'dim'}">${esc(i.reason || span(i.started_at, i.ended_at))}</div>${worktreeLine(i)}</div>`;
   }).join('')}</div>${pageControls('iterations')}`;
 }
+// worktreeLine says where a writing iteration ran and where its result is.
+function worktreeLine(i) {
+  const parts = [];
+  if (i.worktree) parts.push(`worktree ${i.worktree_state || ''}`.trim());
+  if (i.cleanup_error) parts.push(`cleanup pending: ${i.cleanup_error}`);
+  if (i.patch) parts.push(`${i.status === 'ok' ? 'patch' : 'unaccepted patch'} ${i.patch}`);
+  if (i.recovery_ref) parts.push(`kept under ${i.recovery_ref}`);
+  if (!parts.length) return '';
+  return `<div class="one-line ${i.cleanup_error ? 'fail' : 'dim'}" title="${esc(i.worktree || '')}">${esc(parts.join(' / '))}</div>`;
+}
 function iterationText(i) {
-  return `#${i.iteration} · ${i.status}\n\n${i.request}\n\n${i.reason || ''}\n\nSubmitted: ${i.submitted_at || '—'}\nStarted: ${i.started_at || '—'}\nEnded: ${i.ended_at || '—'}\nCommit: ${i.commit || '—'}\nRemote: ${i.remote || '—'}\n\n`
+  return `#${i.iteration} · ${i.status}\n\n${i.request}\n\n${i.reason || ''}\n\nSubmitted: ${i.submitted_at || '—'}\nStarted: ${i.started_at || '—'}\nEnded: ${i.ended_at || '—'}\nCommit: ${i.commit || '—'}\nRemote: ${i.remote || '—'}\nWorktree: ${i.worktree ? i.worktree + ' (' + (i.worktree_state || '') + ')' : '—'}${i.cleanup_error ? '\nCleanup pending: ' + i.cleanup_error : ''}\nPatch: ${i.patch || '—'}\nRecovery ref: ${i.recovery_ref || '—'}\n\n`
     + Object.entries(i.models || {}).map(([agent, model]) => `${agent}: ${model}`).join('\n');
 }
 function readIteration(n, trigger) {
@@ -1628,7 +1638,7 @@ async function reviseRun(e) {
   try {
     const {ok, body, error} = await send('/api/runs/' + encodeURIComponent(view.id) + '/revisions', {request});
     if (current !== generation) return;
-    if (!ok) return reviseStatus(esc(error) + (body.run_id ? ' · held by ' + runLink(body.run_id) : ''), true);
+    if (!ok) return reviseStatus(esc(error), true);
     $('revise-request').value = '';
     reviseStatus(`Queued iteration ${esc(body.iteration)}.`);
     done = false;
