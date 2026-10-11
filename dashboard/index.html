@@ -478,7 +478,15 @@ const time = s => (s || '').slice(11, 19);
 const base = p => (p || '').split('/').filter(Boolean).pop() || p;
 // clip cuts by code point, so an emoji is never split in half.
 const clip = (s, n) => { const cs = [...(s || '')]; return cs.length > n ? cs.slice(0, n).join('') + '…' : cs.join(''); };
-const money = n => '$' + (n || 0).toFixed(5);
+// money rounds to cents, keeping two significant digits below a cent.
+const cents = new Intl.NumberFormat('en-US', {
+  style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+});
+const tinyMoney = new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD', maximumSignificantDigits: 2});
+const money = n => {
+  const x = n || 0;
+  return x !== 0 && Math.abs(x) < 0.01 ? tinyMoney.format(x) : cents.format(x);
+};
 const averageMoney = (cost, runs) => money(runs ? cost / runs : 0);
 const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
@@ -1753,7 +1761,7 @@ function contextEstimate(context) {
 }
 
 // block is one phase entry. Model and cost are omitted when no usage was
-// recorded, so an engineer phase does not read "$0.00000" as though it had
+// recorded, so an engineer phase does not read "$0.00" as though it had
 // been asked; a recorded zero still shows. The 2px floor is only visual, and
 // min() keeps that floor inside the track at its right edge.
 function block(p, t, g) {

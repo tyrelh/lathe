@@ -124,9 +124,16 @@ assert(bootstrap > 0, 'bootstrap not found');
 vm.runInContext(script.slice(0, bootstrap), context);
 const evaluate = code => vm.runInContext(code, context);
 const call = (fn, ...args) => { context.args = args; return evaluate(`${fn}(...args)`); };
-assert.equal(call('averageMoney', 1, 4), '$0.25000');
-assert.equal(call('averageMoney', 9, 0), '$0.00000');
-assert.equal(call('averageMoney', 0, 3), '$0.00000');
+assert.equal(call('averageMoney', 1, 4), '$0.25');
+assert.equal(call('averageMoney', 9, 0), '$0.00');
+assert.equal(call('averageMoney', 0, 3), '$0.00');
+for (const [n, text] of [[0, '$0.00'], [null, '$0.00'], [0.00004, '$0.00004'], [0.00123, '$0.0012'],
+                         [0.45482, '$0.45'], [2.99474, '$2.99'], [22.73561, '$22.74'],
+                         [121.64971, '$121.65'], [1234.5, '$1,234.50'], [0.1, '$0.10'], [0.5, '$0.50'],
+                         [0.9, '$0.90'], [0.0333, '$0.03'], [0.01, '$0.01']])
+  assert.equal(call('money', n), text, `money(${n})`);
+// Formatting must not depend on roundingPriority, which older browsers ignore.
+assert(!script.includes('roundingPriority'), 'money must not rely on roundingPriority');
 
 // Immediate text-only content, viewport clamping, keyboard dismissal, and
 // rebinding when polling replaces the hovered chart block.
@@ -391,13 +398,13 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(nodes.get('project-title').innerHTML, '/repo/MiXeD &lt;&amp;&quot;&#39;>');
   assert.equal(nodes.get('head').innerHTML, 'fix &lt;prompt>&amp;');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
-  assert(nodes.get('run-total').textContent === '$0.30000' && costs().includes('unknown') && costs().includes('model') && costs().includes('$0.10000'), costs());
+  assert(nodes.get('run-total').textContent === '$0.30' && costs().includes('unknown') && costs().includes('model') && costs().includes('$0.10'), costs());
   assert(costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), 'partial rows still load');
   assert(costs().indexOf('providers') < costs().indexOf('models'), 'providers precede models');
   assert(!costs().includes('unknown/model'), 'model names are bare');
   assert.deepEqual(JSON.parse(JSON.stringify(evaluate('providerCosts()'))), [{provider:'unknown', cost:0.1}],
     'missing provider becomes unknown in providerCosts');
-  assert(chart().includes('fix · model · success · $0.10000'), chart());
+  assert(chart().includes('fix · model · success · $0.10'), chart());
   assert(chart().includes('Context (estimated): 1,200 tokens / 8,000 window · 15.3% full'),
     'block tooltip rounds the snapshot to one decimal');
   assert(!chart().match(/data-phase="p2"[^>]*data-tooltip="[^"]*Context \(estimated\)/),
@@ -463,13 +470,13 @@ const costs = () => nodes.get('costs').innerHTML;
 
   // The selection and its open disclosures survived the poll; spend summed
   // once across pages, with one row per recorded response.
-  for (const text of ['first','correction','30 tok','$0.30000','unknown/model','pi/unknown',
+  for (const text of ['first','correction','30 tok','$0.30','unknown/model','pi/unknown',
                       'data-panel="p1-inputs" open']) assert(panel().includes(text), text);
   assert.equal(panel().split('attempt ').length - 1, 2, 'one usage row per response');
   assert(panel().includes('Context (estimated): unknown tokens') && panel().includes('8,000 window · unknown full'),
     'latest snapshot wins, unknown after compaction is not zero');
   assert(!panel().includes('1,200 tokens'), 'earlier snapshot is replaced on polling');
-  assert(chart().includes('$0.30000'));
+  assert(chart().includes('$0.30'));
 
   // Selection still works after polling stops, and disclosure state is per phase.
   evaluate(`pick('p2')`);
@@ -491,7 +498,7 @@ const costs = () => nodes.get('costs').innerHTML;
   // The bottom bar carries the run's own context, and a settled run reads run complete.
   const bar = nodes.get('status').innerHTML;
   // Queue time and execution time are separate: 10s waiting, 1m05s working.
-  for (const text of ['build','ok','$0.30000','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
+  for (const text of ['build','ok','$0.30','10s queued','1m05s','repo','run']) assert(bar.includes(text),`status: ${text}`);
   const summary = nodes.get('summary').innerHTML;
   for (const text of ['<dt>workflow</dt><dd>build</dd>', '<dt>status</dt><dd class="ok">ok</dd>',
                       '<dt>queued</dt><dd>10s</dd>', '<dt>duration</dt><dd>1m05s</dd>', '<dt>run</dt><dd>run</dd>'])
@@ -634,7 +641,7 @@ const costs = () => nodes.get('costs').innerHTML;
   serve(blankPage, phases, priced);
   await evaluate('tick()');
   assert.equal(scaffoldCount, 2, 'navigation makes a new run scaffold');
-  assert(nodes.get('run-total').textContent === '$0.90000' && costs().includes('Loading usage…'), costs());
+  assert(nodes.get('run-total').textContent === '$0.90' && costs().includes('Loading usage…'), costs());
   assert(!costs().includes('No usage recorded') && !costs().includes('unknown/model'),
     'neither an empty state nor the previous run leaks into a partial page');
 
@@ -672,7 +679,7 @@ const costs = () => nodes.get('costs').innerHTML;
   const beforeColours = colouredRows(costsHtml);
   assert([...beforeColours.values()].every(Boolean), 'every cost row has a coloured dot');
   assert(costsHtml.includes('class="model-dot" aria-hidden="true"'), 'dots are decorative');
-  assert.equal(nodes.get('run-total').textContent, '$0.90000');
+  assert.equal(nodes.get('run-total').textContent, '$0.90');
 
   serve([
     event('usage',{attempt:2,seq:1,provider:'a',model:'b/c',cost:0.15},'p1'),
@@ -717,7 +724,7 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate('navigate()');
   await new Promise(setImmediate); // navigate launches an async tick
   assert.equal(scaffoldCount, 3);
-  assert(nodes.get('run-total').textContent === '$0.50000' && costs().includes('No usage recorded.'), costs());
+  assert(nodes.get('run-total').textContent === '$0.50' && costs().includes('No usage recorded.'), costs());
   assert(!costs().includes('unknown/') && !costs().includes('Loading usage…'), costs());
   assert.equal(evaluate('usage.size'), 0, 'navigating to another run resets the event cache');
   const liveEmpty = call('renderCosts', {...run, status:'running', cost:0});
@@ -779,13 +786,13 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(projectTableHTML.includes('<th class="num">Total Spend</th><th class="num">Avg / PR</th>'), projectTableHTML);
   assert.equal((projectTableHTML.match(/<th[\s>]/g) || []).length, 7);
   const projectRowHTML = repo => projectTableHTML.match(new RegExp(`<tr class="project" data-row="${repo}"[^>]*>[\\s\\S]*?<\\/tr>`))?.[0];
-  assert(projectRowHTML('/one/alpha').includes('<td class="num cost">$3.00000</td>\n    <td class="num cost">$1.00000</td>'));
-  assert(projectRowHTML('/two/alpha').includes('<td class="num cost">$1.00000</td>\n    <td class="num cost">$0.50000</td>'));
-  assert(projectRowHTML('/free').includes('<td class="num cost">$0.00000</td>\n    <td class="num cost">$0.00000</td>'), 'free runs remain in the denominator');
-  assert(projectRowHTML('/no-runs').includes('<td class="num cost">$0.00000</td>\n    <td class="num cost">$0.00000</td>'), 'no runs have a zero average');
+  assert(projectRowHTML('/one/alpha').includes('<td class="num cost">$3.00</td>\n    <td class="num cost">$1.00</td>'));
+  assert(projectRowHTML('/two/alpha').includes('<td class="num cost">$1.00</td>\n    <td class="num cost">$0.50</td>'));
+  assert(projectRowHTML('/free').includes('<td class="num cost">$0.00</td>\n    <td class="num cost">$0.00</td>'), 'free runs remain in the denominator');
+  assert(projectRowHTML('/no-runs').includes('<td class="num cost">$0.00</td>\n    <td class="num cost">$0.00</td>'), 'no runs have a zero average');
   assert(projects.includes('#/projects/detail?repo=%2Fone%2Falpha'), projects);
   assert(projects.includes('#/projects/detail?repo=%2Ftwo%2Falpha'), projects);
-  assert(projects.indexOf('$3.00000') < projects.indexOf('$1.00000'), projects);
+  assert(projects.indexOf('$3.00') < projects.indexOf('$1.00'), projects);
   response = json([]);
   await evaluate('tick()');
   assert(nodes.get('list-body').innerHTML.includes('<td colspan="7" class="dim">No projects recorded yet.</td>'));
@@ -805,10 +812,10 @@ const costs = () => nodes.get('costs').innerHTML;
   await evaluate('tick()');
   const head = nodes.get('project-head').innerHTML;
   assert(appHTML.includes('id="project-head" class="card page-summary project-summary"'));
-  assert(head.includes('300</b><span>tokens') && head.includes('$3.50000'), head);
+  assert(head.includes('300</b><span>tokens') && head.includes('$3.50'), head);
   assert(head.indexOf('runs recorded') < head.indexOf('tokens') && head.indexOf('tokens') < head.indexOf('avg spend per PR')
     && head.indexOf('avg spend per PR') < head.indexOf('recorded spend'), 'project metrics keep their reading order');
-  assert(head.includes('<div class="cost"><b>$1.16667</b><span>avg spend per PR</span></div>'), head);
+  assert(head.includes('<div class="cost"><b>$1.17</b><span>avg spend per PR</span></div>'), head);
   assert(head.includes('Lifetime metrics for this repository. 75.0% of total recorded spend.'));
   assert(head.includes('Full path') && head.includes('/one/alpha'), 'repository identity stays in the summary');
   let project = nodes.get('project-runs').innerHTML;
@@ -818,15 +825,15 @@ const costs = () => nodes.get('costs').innerHTML;
   project = nodes.get('project-runs').innerHTML;
   assert(project.includes("location.hash='/runs/r1'") && !project.includes('Load more runs'), project);
   assert(nodes.get('status').innerHTML.includes('showing 3 of 3 runs'));
-  assert(nodes.get('project-head').innerHTML.includes('$1.16667'), 'loading more run rows does not change the lifetime average');
+  assert(nodes.get('project-head').innerHTML.includes('$1.17'), 'loading more run rows does not change the lifetime average');
   routeResponses.set('/api/projects/detail?repo=%2Fone%2Falpha',
     json({repo:'/one/alpha',runs:4,tokens:330,cost:3.6,share:0.75}));
   await evaluate('tick()');
-  assert(nodes.get('project-head').innerHTML.includes('<b>$0.90000</b><span>avg spend per PR</span>'),
+  assert(nodes.get('project-head').innerHTML.includes('<b>$0.90</b><span>avg spend per PR</span>'),
     'polling updates from summary totals, not loaded runs');
   failNext = 'database is locked';
   await evaluate('tick()');
-  assert(nodes.get('project-head').innerHTML.includes('<b>$0.90000</b><span>avg spend per PR</span>'),
+  assert(nodes.get('project-head').innerHTML.includes('<b>$0.90</b><span>avg spend per PR</span>'),
     'a failed project refresh retains the last average');
   routeResponses = null;
 
@@ -847,7 +854,7 @@ const costs = () => nodes.get('costs').innerHTML;
   response = json(overviewData);
   await evaluate('tick()');
   const over = pageHTML();
-  assert.equal(nodes.get('average-spend').textContent, '$0.03285', 'global lifetime totals determine the fractional average');
+  assert.equal(nodes.get('average-spend').textContent, '$0.03', 'global lifetime totals determine the fractional average');
   assert(appHTML.includes('<div class="ranking-column"><section class="card average-card"><h2>average spend per PR</h2>'));
   assert(appHTML.includes('id="average-spend" class="cost"'), 'average uses the purple cost style');
   assert(appHTML.indexOf('id="average-spend"') < appHTML.indexOf('id="rank-projects"')
@@ -857,7 +864,7 @@ const costs = () => nodes.get('costs').innerHTML;
     'overview left and right columns retain ranking order');
   assert(appHTML.includes('</div><div class="ranking-column">'), 'models and providers occupy an explicit second column');
   assert(!nodes.get('rank-projects').innerHTML.includes('Avg / PR'), 'overview rankings do not gain an average column');
-  for (const text of ['1,284','$42.18374','$9.50000','alpha','$38.00000','90.0%','900 runs',
+  for (const text of ['1,284','$42.18','$9.50','alpha','$38.00','90.0%','900 runs',
                       'moonshotai/kimi','71.1%','unknown/unknown',
                       '2,700 phases','counted per phase',"location.hash='/runs/top'"]) {
     assert(over.includes(text), `overview: ${text}`);
@@ -873,7 +880,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(projectsH2 < runsH2 && runsH2 < modelsH2 && modelsH2 < providersH2,
     'projects and runs stack in the first column, models and providers in the second');
   const provCard = over.slice(providersH2);
-  for (const text of ['$32.00000', '75.9%', '2,712 phases']) assert(provCard.includes(text), `provider card: ${text}`);
+  for (const text of ['$32.00', '75.9%', '2,712 phases']) assert(provCard.includes(text), `provider card: ${text}`);
   assert(provCard.includes('>unknown<'), 'empty provider falls back to unknown');
   assert(provCard.indexOf('moonshotai') < provCard.indexOf('>unknown<'), 'providers are sorted by spend descending');
   assert(over.includes('#/projects/detail?repo=%2Frepos%2Falpha'), 'overview project links to its detail');
@@ -886,22 +893,22 @@ const costs = () => nodes.get('costs').innerHTML;
 
   response = json({...overviewData, runs: 3, cost: 12.34567});
   await evaluate('tick()');
-  assert.equal(nodes.get('average-spend').textContent, '$4.11522', 'polling replaces the global average');
+  assert.equal(nodes.get('average-spend').textContent, '$4.12', 'polling replaces the global average');
   failNext = 'database is locked';
   await evaluate('tick()');
-  assert.equal(nodes.get('average-spend').textContent, '$4.11522', 'failed polling keeps the last good average');
+  assert.equal(nodes.get('average-spend').textContent, '$4.12', 'failed polling keeps the last good average');
   assert.equal(nodes.get('note').className, 'stale');
   response = json({...overviewData, runs: 4, cost: 0});
   await evaluate('tick()');
-  assert.equal(nodes.get('average-spend').textContent, '$0.00000', 'zero-cost runs show a zero average');
+  assert.equal(nodes.get('average-spend').textContent, '$0.00', 'zero-cost runs show a zero average');
 
   // Empty database: zero totals and empty tables, never a blank page.
   evaluate('generation++');
   response = json({runs:0, tokens:0, cost:0, top_projects:[], top_runs:[], top_models:[], top_providers:[], at:''});
   await evaluate('tick()');
   const empty = pageHTML();
-  assert.equal(nodes.get('average-spend').textContent, '$0.00000', 'zero runs show a zero average');
-  assert(empty.includes('$0.00000') && empty.includes('No runs recorded yet.')
+  assert.equal(nodes.get('average-spend').textContent, '$0.00', 'zero runs show a zero average');
+  assert(empty.includes('$0.00') && empty.includes('No runs recorded yet.')
          && empty.includes('No model spend recorded yet.')
          && empty.includes('No provider spend recorded yet.')
          && empty.includes('No project spend recorded yet.'), empty);
@@ -909,8 +916,8 @@ const costs = () => nodes.get('costs').innerHTML;
   // A failed refresh keeps the last good values and says they are stale.
   failNext = 'database is locked';
   await evaluate('tick()');
-  assert.equal(nodes.get('average-spend').textContent, '$0.00000', 'the zero-run average survives a failed poll');
-  assert(pageHTML().includes('$0.00000'), 'values must survive a failed poll');
+  assert.equal(nodes.get('average-spend').textContent, '$0.00', 'the zero-run average survives a failed poll');
+  assert(pageHTML().includes('$0.00'), 'values must survive a failed poll');
   assert.equal(nodes.get('note').className, 'stale');
   assert(nodes.get('note').textContent.includes('database is locked'));
 
