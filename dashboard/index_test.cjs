@@ -21,7 +21,7 @@ class Element {
   focus(options) { this.focused = options; }
 }
 for (const id of ['app', 'status', 'note', 'version',
-                  'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'follow-box', 'follow-label',
+                  'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'nav-agents', 'follow-box', 'follow-label',
                   'project-head', 'project-runs', 'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
 // Parse only the scaffold IDs when app is replaced. In particular, do not
 // precreate #log: that would skip the first-render branch in detail().
@@ -29,7 +29,8 @@ const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', '
   'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status', 'log', 'run-total',
   'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
 const pageIDs = ['page-summary', 'average-spend', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
-  'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status'];
+  'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status',
+  'agent-head', 'agent-prompts'];
 const appNode = nodes.get('app');
 let appHTML = '', scaffoldCount = 0;
 Object.defineProperty(appNode, 'innerHTML', {
@@ -54,12 +55,13 @@ let response, resolveFetch, failNext = null, frames = [];
 let routeResponses = null;
 const observers = [];
 const listeners = new Map();
+const intervals = [];
 const context = vm.createContext({
   document: {
     getElementById: id => nodes.get(id) ?? null, createElement: () => new Element(),
     body: {scrollHeight: 1000}, activeElement: null,
   },
-  location: {hash: '#run'}, addEventListener(type, handler) { listeners.set(type, handler); }, setInterval() {}, setTimeout, clearTimeout, Date, URLSearchParams,
+  location: {hash: '#run'}, addEventListener(type, handler) { listeners.set(type, handler); }, setInterval(f) { intervals.push(f); }, setTimeout, clearTimeout, Date, URLSearchParams,
   innerWidth: 800, innerHeight: 600, scrollY: 0, scrollTo() { throw Error('must not scroll a reader away'); },
   ResizeObserver: class {
     constructor(callback) { this.callback = callback; this.watching = []; observers.push(this); }
@@ -135,14 +137,18 @@ for (const [hash, want] of [
   ['', 'overview'], ['#/', 'overview'], ['#/overview', 'overview'], ['#/runs', 'runs'],
   ['#/projects', 'projects'], ['#/projects/detail?repo=%2Frepos%2Falpha', 'project'],
   ['#/runs/20260920T120000Z_build_1', 'run'], ['#20260920T120000Z_build_1', 'run'],
-  ['#/nope', 'missing'],
+  ['#/nope', 'missing'], ['#/agents', 'agents'], ['#/agents/route-plan', 'agent'], ['#/agents/', 'missing'],
+  ['#/agents/%E0%A4%A', 'missing'],
 ]) {
   context.location.hash = hash;
   const r = evaluate('route()');
   assert.equal(r.page, want, `${hash} -> ${r.page}`);
   if (want === 'run') assert.equal(r.id, '20260920T120000Z_build_1', hash);
   if (want === 'project') assert.equal(r.repo, '/repos/alpha', hash);
+  if (want === 'agent') assert.equal(r.name, 'route-plan', hash);
 }
+context.location.hash = '#/agents/' + encodeURIComponent("o'<b>");
+assert.equal(evaluate('route()').name, "o'<b>", 'agent names are decoded');
 
 const long = 'x'.repeat(400) + '<script>tail</script>';
 context.long = long;
@@ -572,9 +578,14 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(observers[0].watching.length, 0, 'navigation stops watching the old chart');
   for (const name of ['usage', 'tails', 'panels', 'outputs', 'responses', 'spend', 'contexts']) assert.equal(evaluate(name + '.size'), 0, name);
   assert.equal(evaluate('selected'), '');
+  // The dropped reply re-ticks for the new page; fail that fetch so the
+  // ticks below drive this page by hand.
+  failNext = 'superseded';
   resolveFetch(json({run,phases,events:[event('usage',{tokens:999}),event('log','late','p1','output'),
                                         event('output',{report:{summary:'late'}})]}));
   await pending;
+  await new Promise(setImmediate);
+  assert.equal(failNext, null, 'navigation during a fetch fetches the new page');
   assert.equal(evaluate('after'),0);
   for (const name of ['usage', 'tails', 'outputs', 'spend', 'contexts']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
   assert.equal(nodes.has('costs'), false, 'navigation removes the old cost panel');
@@ -873,6 +884,109 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate('view = route(); generation++');
   await evaluate('tick()');
   assert(pageHTML().includes('not found'));
+
+  // Agents: a list linking every row, read once rather than polled.
+  const navOn = id => nodes.get(id).attrs.get('aria-current') === 'page';
+  const agentRows = [
+    {name:'planner', kind:'agent', repo_instructions:true, workflows:['plan','implement','build','revise'], prompts:[
+      {role:'system', key:'prompts/planner/system.md', shared_with:[]}, {role:'user', key:'prompts/planner/user.md', shared_with:[]}]},
+    {name:'code-review-general', kind:'agent', repo_instructions:true, workflows:['implement','build','revise'], prompts:[
+      {role:'system', key:'prompts/code-review-general/system.md', shared_with:[]},
+      {role:'user', key:'prompts/code-review/user.md', shared_with:['code-review-security','code-review-slop']}]},
+    {name:'route-plan', kind:'routing', routes:'planner', repo_instructions:false, workflows:['plan','implement','build','revise'], prompts:[
+      {role:'instructions', key:'prompts/routing/planner.md', shared_with:[]}]},
+    {name:"o'<b>", kind:'agent', repo_instructions:false, workflows:[], prompts:[]},
+  ];
+  routeResponses = new Map([['/api/agents', json(agentRows)]]);
+  context.location.hash = '#/agents';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert(navOn('nav-agents') && !navOn('nav-projects'), 'Agents is selected on its list');
+  const agentList = nodes.get('list-body').innerHTML;
+  assert(agentList.includes('<th>Agent</th><th>Kind</th><th>Workflows</th><th>Prompts</th>'), agentList);
+  assert(agentList.includes(`<tr class="agent" data-row="code-review-general" onclick="location.hash='#/agents/code-review-general'">`), agentList);
+  assert(agentList.includes('<a data-focus="agent-route-plan" href="#/agents/route-plan">route-plan</a>'), agentList);
+  assert(agentList.includes('<td>system · user</td>'), 'an unshared prompt is unmarked');
+  assert(agentList.includes('system · user <span class="dim" title="Shared with code-review-security, code-review-slop">shared</span>'), agentList);
+  assert(agentList.includes('<td>instructions</td>') && agentList.includes('<td class="dim">routing</td>'), agentList);
+  assert(agentList.includes('<td>plan, implement, build, revise</td>'), agentList);
+  assert(agentList.includes('href="#/agents/o%27%3Cb%3E"') && agentList.includes('>o&#39;&lt;b></a>') && !agentList.includes('<b>'),
+    'agent names are escaped and encoded');
+  assert(pageHTML().includes('3</b><span>agents') && pageHTML().includes('1</b><span>routing phases'));
+  assert.equal(evaluate('done'), true, 'the list is not polled');
+  assert.equal(nodes.get('note').textContent, 'loaded · reload to refresh');
+
+  // An agent page: one read-only box per prompt, bodies as text, never markup.
+  routeResponses.set('/api/agents/code-review-general', json({...agentRows[1], prompts:[
+    {...agentRows[1].prompts[0], body:'Review </textarea><script>alert(1)</script> & report'},
+    {...agentRows[1].prompts[1], body:'{{request}}\n\nline 3'}]}));
+  context.location.hash = '#/agents/code-review-general';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert(navOn('nav-agents') && !navOn('nav-runs'), 'Agents stays selected on an agent page');
+  const agentHead = nodes.get('agent-head').innerHTML;
+  assert(agentHead.includes('<h2>code-review-general</h2>') && agentHead.includes('Agent · workflows: implement, build, revise'), agentHead);
+  let boxes = nodes.get('agent-prompts').innerHTML;
+  assert.equal((boxes.match(/<textarea [^>]*readonly/g) || []).length, 2, boxes);
+  assert(boxes.includes('<label for="prompt-system">System prompt</label>') && boxes.includes('<label for="prompt-user">User prompt</label>'), boxes);
+  assert(boxes.includes('&lt;/textarea>&lt;script>alert(1)&lt;/script> &amp; report</textarea>') && !boxes.includes('<script>'),
+    'a prompt body is escaped');
+  assert(boxes.includes('rows="4">\n{{request}}\n\nline 3</textarea>'), 'boxes size to their lines');
+  assert(boxes.includes('Built-in <code>prompts/code-review/user.md</code>'), boxes);
+  assert(boxes.includes('Shared with <a href="#/agents/code-review-security">code-review-security</a>, <a href="#/agents/code-review-slop">code-review-slop</a>'), boxes);
+  assert.equal(boxes.split('Shared with').length - 1, 1, 'only the shared prompt says so');
+  assert.equal(boxes.split('is replaced by the request.').length - 1, 1, 'only the user box has the request hint');
+  assert(boxes.includes('The repo’s AGENTS.md is prepended on the first turn.'), boxes);
+  assert(!call('promptBox', {role:'user', key:'k', body:'x', shared_with:[]}, false).includes('AGENTS.md'),
+    'no AGENTS.md note without repo instructions');
+  assert.equal(nodes.get('status').textContent, 'Agents · code-review-general · agent');
+  assert.equal(evaluate('done'), true, 'an agent page is not polled');
+
+  // A routing phase has one instructions box and names the agent it routes.
+  routeResponses.set('/api/agents/route-plan', json({...agentRows[2], prompts:[{...agentRows[2].prompts[0], body:'Pick a tier.'}]}));
+  context.location.hash = '#/agents/route-plan';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert(nodes.get('agent-head').innerHTML.includes('Routing phase for <a href="#/agents/planner">planner</a>'));
+  boxes = nodes.get('agent-prompts').innerHTML;
+  assert(boxes.includes('<label for="prompt-instructions">Instructions</label>') && boxes.includes('Pick a tier.'), boxes);
+  assert(!boxes.includes('{{request}}') && !boxes.includes('Shared with'), boxes);
+
+  // An unknown agent is a not-found page; a broken roster is a failure.
+  routeResponses.set('/api/agents/nope', {ok:false, status:404, text: async () => 'no such agent\n'});
+  context.location.hash = '#/agents/nope';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert(appHTML.includes('No agent named <code>nope</code>') && navOn('nav-agents'), appHTML);
+  assert(evaluate('done') && nodes.get('note').className === '', 'not found is final, not stale');
+  routeResponses.set('/api/agents/broken', {ok:false, status:500, text: async () => 'roster is broken'});
+  context.location.hash = '#/agents/broken';
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert(nodes.get('note').className === 'stale' && nodes.get('note').textContent.includes('roster is broken'));
+  assert.equal(nodes.get('status').textContent, '');
+  // A failed first load is retried by the shared timer until it succeeds.
+  routeResponses.set('/api/agents/broken', json({...agentRows[0], name:'broken', prompts:[]}));
+  evaluate('last = 0');
+  intervals.forEach(f => f());
+  await new Promise(setImmediate);
+  assert(nodes.get('agent-head').innerHTML.includes('<h2>broken</h2>'));
+  assert.equal(evaluate('done'), true);
+  assert.equal(nodes.get('note').textContent, 'loaded · reload to refresh');
+
+  // A reply that lands after navigating away is dropped, and the page it was
+  // blocking fetches without a manual tick.
+  response = null;
+  context.location.hash = '#/agents/slow';
+  evaluate('navigate()');
+  context.location.hash = '#/agents';
+  evaluate('navigate()');
+  resolveFetch(json({...agentRows[0], name:'slow', prompts:[]}));
+  await new Promise(setImmediate);
+  assert(!nodes.has('agent-head') && nodes.has('list-body'), 'a late agent reply is not drawn on the list');
+  assert(nodes.get('list-body').innerHTML.includes('route-plan'));
+  assert.equal(evaluate('done'), true);
+  routeResponses = null;
 
   console.log('dashboard client checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -61,8 +61,9 @@ type Launcher interface {
 // Run drains the queue and serves the dashboard until ctx is cancelled. Only
 // one manager per data directory: the lock is what enforces it, and the same
 // lock is what a submitter checks before auto-starting one. actions are
-// handed to the dashboard for its forms; nil ones leave it read-only.
-func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions dashboard.Actions) error {
+// handed to the dashboard for its forms; nil ones leave it read-only. sources
+// are handed to it for its reads outside the database.
+func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions dashboard.Actions, sources dashboard.Sources) error {
 	lock, err := Lock(dataRoot)
 	if err != nil {
 		return fmt.Errorf("a manager is already running for %s", dataRoot)
@@ -84,7 +85,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 		return err
 	}
 
-	srv := &http.Server{Addr: dashboard.Addr, Handler: dashboard.Handler(dataRoot, version, actions)}
+	srv := &http.Server{Addr: dashboard.Addr, Handler: dashboard.Handler(dataRoot, version, actions, sources)}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintln(out, "lathe manager: dashboard:", err)

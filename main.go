@@ -598,7 +598,8 @@ func managerCmd() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	actions := dashboard.Actions{Submit: prepareAndSubmit, Revise: dashboardRevise, Cancel: dashboardCancel}
-	if err := manager.Run(ctx, dataRoot, version, os.Stdout, actions); err != nil {
+	sources := dashboard.Sources{Roster: func() (config.Config, error) { return config.Load(Assets) }}
+	if err := manager.Run(ctx, dataRoot, version, os.Stdout, actions, sources); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe manager:", err)
 		return 1
 	}

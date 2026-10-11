@@ -1,6 +1,7 @@
-// Package dashboard serves a view of the trace database through an embedded
-// page and JSON endpoints, plus three routes that write through the CLI's own
-// paths: queue a run for a project, revise a run, and cancel one.
+// Package dashboard serves a view of the trace database and the roster's
+// prompts through an embedded page and JSON endpoints, plus three routes that
+// write through the CLI's own paths: queue a run for a project, revise a run,
+// and cancel one.
 package dashboard
 
 import (
@@ -10,11 +11,14 @@ import (
 	"errors"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
+	"github.com/tyrelh/lathe/internal/workflow"
 )
 
 //go:embed index.html
@@ -44,6 +48,13 @@ type Actions struct {
 	Cancel func(runID string) (string, error)
 }
 
+// Sources are the dashboard's reads from outside the trace database, each
+// called per request: Roster loads the agent roster and its prompts. A nil
+// source registers no route.
+type Sources struct {
+	Roster func() (config.Config, error)
+}
+
 // maxSubmitBody bounds a POST body; a prompt is text someone typed.
 const maxSubmitBody = 64 << 10
 
@@ -52,8 +63,9 @@ const maxSubmitBody = 64 << 10
 // listener. The database is opened read-only — a UI bug cannot write — and
 // created first if it is not there yet, so a fresh install serves an empty
 // dashboard rather than an error telling you to go start a run. Submissions go
-// through actions, never through this handle.
-func Handler(dataRoot, version string, actions Actions) http.Handler {
+// through actions, never through this handle; sources serve what the database
+// does not hold.
+func Handler(dataRoot, version string, actions Actions, sources Sources) http.Handler {
 	if err := trace.Init(dataRoot); err != nil {
 		return failed(err)
 	}
@@ -61,7 +73,7 @@ func Handler(dataRoot, version string, actions Actions) http.Handler {
 	if err != nil {
 		return failed(err)
 	}
-	return handler(db, version, actions)
+	return handler(db, version, actions, sources)
 }
 
 func failed(err error) http.Handler {
@@ -72,8 +84,28 @@ func failed(err error) http.Handler {
 
 // handler is the whole server minus the listener, which is what lets a test
 // exercise the routes without binding a port.
-func handler(db *trace.DB, version string, actions Actions) http.Handler {
+func handler(db *trace.DB, version string, actions Actions, sources Sources) http.Handler {
 	mux := http.NewServeMux()
+	if sources.Roster != nil {
+		mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, r *http.Request) {
+			// The list leaves the bodies to the agent page.
+			agents, err := agentViews(sources.Roster, false)
+			writeJSON(w, agents, err)
+		})
+		mux.HandleFunc("GET /api/agents/{name}", func(w http.ResponseWriter, r *http.Request) {
+			agents, err := agentViews(sources.Roster, true)
+			if err != nil {
+				writeJSON(w, nil, err)
+				return
+			}
+			i := slices.IndexFunc(agents, func(a agentView) bool { return a.Name == r.PathValue("name") })
+			if i < 0 {
+				http.Error(w, "no such agent", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, agents[i], nil)
+		})
+	}
 	if actions.Submit != nil {
 		mux.HandleFunc("POST /api/projects/runs", submitRun(db, actions.Submit))
 	}
@@ -183,6 +215,40 @@ func handler(db *trace.DB, version string, actions Actions) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// agentView is one agent or routing phase as the Agents page shows it.
+// Workflows is every workflow that spawns the agent, or that routes it.
+type agentView struct {
+	config.AgentPrompts
+	Workflows []string `json:"workflows"`
+}
+
+// agentViews loads the roster and returns its agents and routing phases in
+// Prompts order, with bodies when bodies is set.
+func agentViews(roster func() (config.Config, error), bodies bool) ([]agentView, error) {
+	c, err := roster()
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := c.Prompts(bodies)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]agentView, len(prompts))
+	for i, p := range prompts {
+		agent := p.Name
+		if p.Kind == "routing" {
+			agent = p.Routes
+		}
+		views[i] = agentView{AgentPrompts: p, Workflows: []string{}}
+		for _, wf := range workflow.Names {
+			if slices.Contains(workflow.Agents[wf], agent) {
+				views[i].Workflows = append(views[i].Workflows, wf)
+			}
+		}
+	}
+	return views, nil
 }
 
 // submitRun queues a run against a recorded project. It is browser-only, as
