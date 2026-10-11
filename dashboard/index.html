@@ -1758,10 +1758,16 @@ function gantt(r, phases, now) {
   const ax = axis(r, now);
   if (!phases.length) return `<p class="dim">${ax.note && live(r.status) ? ax.note : 'No phases recorded yet.'}</p>`;
   const tl = ax.note ? null : timeline(ax, r.iterations || [], now);
-  const rows = new Map(), untimed = [];
+  const rows = new Map(), untimed = [], totals = new Map();
   const links = phaseLinks(phases, r, now);
   for (const p of [...phases].sort((a, b) => a.seq - b.seq)) {
     const t = phaseTiming(p, r, now), g = ax.note ? null : geometry(t, ax, tl);
+    const sum = totals.get(p.name) || {n: 0, ms: 0, cost: 0, costed: false};
+    totals.set(p.name, sum);
+    sum.n++;
+    if (t.end >= t.start) sum.ms += t.end - t.start;
+    const s = spend.get(p.phase_id);
+    if (s) { sum.cost += s.cost || 0; sum.costed = true; }
     if (!g) { untimed.push(block(p, t)); continue; }
     bucket(rows, p.name).push(block(p, t, g));
   }
@@ -1779,9 +1785,16 @@ function gantt(r, phases, now) {
     + (rows.size ? `<div class="gantt"><svg class="flow-arrows" aria-hidden="true" focusable="false" data-links="${esc(JSON.stringify(links))}"></svg><span></span>
         <div class="axis"><span>${edge(ax.start)}</span><span>${ax.live ? 'now' : edge(ax.end)}</span></div>
         ${iterations}${[...rows].map(([name, blocks]) =>
-          `<div class="node" tabindex="0" data-focus="node-${esc(name)}" data-tooltip-key="node-${esc(name)}" data-tooltip="${esc(name)}">${esc(name)}</div><div class="track">${breaks(false, name)}${blocks.join('')}</div>`).join('')}
+          `<div class="node" tabindex="0" data-focus="node-${esc(name)}" data-tooltip-key="node-${esc(name)}" data-tooltip="${esc(name)}">${esc(name)}</div><div class="track" data-tooltip-key="row-${esc(name)}" data-tooltip="${esc(rowTip(name, totals.get(name)))}">${breaks(false, name)}${blocks.join('')}</div>`).join('')}
       </div>` : '')
     + (untimed.length ? `<p class="dim">Untimed · timestamps missing or invalid</p><div class="untimed">${untimed.join('')}</div>` : '');
+}
+
+// rowTip returns a phase row's tooltip text from its totals. Cost is omitted
+// when no invocation recorded usage.
+function rowTip(name, total) {
+  return [name, `Invocations: ${total.n}`, `Total runtime: ${dur(total.ms)}`,
+    total.costed && `Total cost: ${money(total.cost)}`].filter(Boolean).join('\n');
 }
 
 // Sequence records entry order, not dependency edges. Only connect adjacent

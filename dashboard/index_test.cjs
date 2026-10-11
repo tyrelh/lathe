@@ -233,7 +233,34 @@ html = call('gantt', settled, [ph(3,'plan',T(50),T(60)), ph(1,'plan',T(0),T(20))
 assert.equal(html.split('class="node"').length - 1, 2, 'one row per node');
 const planRow = html.split('class="node"')[1];
 assert(planRow.indexOf('data-phase="c1"') < planRow.indexOf('data-phase="c3"'), 'blocks follow seq');
-assert(!planRow.split('class="track"')[1].split('</div>')[0].includes('c2'), 'review is its own row');
+const planTrack = planRow.slice(planRow.indexOf('<div class="track'));
+assert(!planTrack.slice(0, planTrack.indexOf('</div>')).includes('data-phase="c2"'), 'review is its own row');
+// Each phase row's background carries totals: summed durations, not the span.
+const rowTip = (markup, name) => markup.match(new RegExp(`data-tooltip-key="row-${name}" data-tooltip="([^"]*)"`))?.[1];
+assert.equal(rowTip(html, 'plan'), 'plan\nInvocations: 2\nTotal runtime: 30s', html);
+assert.equal(rowTip(html, 'review'), 'review\nInvocations: 1\nTotal runtime: 30s', html);
+assert(!html.includes('Total cost'), 'no usage recorded means no cost line');
+assert(/class="block[^"]*"[^>]*data-phase="c1"[^>]*data-tooltip="#1 plan/.test(html), 'blocks keep their own tooltip');
+// Hovering moves between the row background and an invocation.
+{
+  const track = new Element(), blockEl = new Element();
+  track.dataset = {tooltip: 'plan\nInvocations: 2', tooltipKey: 'row-plan'};
+  blockEl.dataset = {tooltip: '#1 plan\nStatus: success', tooltipKey: 'phase-c1'};
+  track.closest = () => track; blockEl.closest = () => blockEl;
+  track.contains = el => el === blockEl;
+  track.getBoundingClientRect = blockEl.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30});
+  listeners.get('pointerover')({target: track, pointerType: 'mouse'});
+  assert.equal(tip.textContent, track.dataset.tooltip, 'row background shows totals');
+  listeners.get('pointerout')({target: track, relatedTarget: blockEl});
+  listeners.get('pointerover')({target: blockEl, pointerType: 'mouse'});
+  assert.equal(tip.textContent, blockEl.dataset.tooltip, 'an invocation shows its own tooltip');
+  assert(!track.attrs.has('aria-describedby'));
+  listeners.get('pointerout')({target: blockEl, relatedTarget: track});
+  listeners.get('pointerover')({target: track, pointerType: 'mouse'});
+  assert.equal(tip.hidden, false);
+  assert.equal(tip.textContent, track.dataset.tooltip, 'returning to the row restores its totals');
+  call('tooltip.hide');
+}
 assert(html.includes('aria-label="#3 plan · success"'), 'the accessible name carries the sequence');
 assert(html.includes('<span class="piece" aria-hidden="true">✅</span>'), 'the block shows its status mark');
 assert(!html.includes('data-line='), 'all chart rows use a single line');
@@ -307,6 +334,8 @@ assert(w(ms(10)).includes('implement · running') && w(ms(10)).includes('>now<')
 assert(w(ms(10)).includes('aria-hidden="true">⏳</span>'), 'running is marked');
 assert(w(ms(10)).includes('left:min(50.000%, calc(100% - 2px));width:max(2px, 50.000%)'), w(ms(10)));
 assert(w(ms(20)).includes('left:min(25.000%, calc(100% - 2px));width:max(2px, 75.000%)'), 'a running phase grows with now');
+assert(rowTip(w(ms(10)), 'implement').includes('Total runtime: 5s'), w(ms(10)));
+assert(rowTip(w(ms(20)), 'implement').includes('Total runtime: 15s'), 'a running phase total grows with now');
 const cut = {status:'fail', started_at:T(0), ended_at:T(40)};
 assert.equal(call('gantt', cut, [open], ms(100)), call('gantt', cut, [open], ms(900)), 'interrupted phases stop growing');
 assert(call('gantt', cut, [open], ms(100)).includes('class="block interrupted"'));
@@ -413,6 +442,7 @@ const costs = () => nodes.get('costs').innerHTML;
     'only the status is visible; model and cost remain in the tooltip');
   assert(chart().includes('aria-label="#2 fix · success"'), 'no usage means no model or cost');
   assert.equal(chart().split('class="node"').length - 1, 1, 'both entries share a row');
+  assert.equal(rowTip(chart(), 'fix'), 'fix\nInvocations: 2\nTotal runtime: 1m05s\nTotal cost: $0.10', chart());
   assert(panel().includes('Select a phase.'));
   assert.equal(nodes.get('events-body').scrollTop, 0, 'must not scroll a reader away');
   assert(observers[0].watching.includes(nodes.get('phases')), 'the chart is watched for width changes');
@@ -477,6 +507,7 @@ const costs = () => nodes.get('costs').innerHTML;
     'latest snapshot wins, unknown after compaction is not zero');
   assert(!panel().includes('1,200 tokens'), 'earlier snapshot is replaced on polling');
   assert(chart().includes('$0.30'));
+  assert(rowTip(chart(), 'fix').includes('Total cost: $0.30'), 'row totals follow polled usage');
 
   // Selection still works after polling stops, and disclosure state is per phase.
   evaluate(`pick('p2')`);
