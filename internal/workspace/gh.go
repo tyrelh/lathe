@@ -93,11 +93,11 @@ type Evidence struct {
 	PR, Branch, Commit string
 }
 
-// CheckRevisable is the pull request half of revision eligibility, shared by
-// every submitter and repeated by the worker: the pull request is open, comes
-// from the recorded branch, and origin's branch is at the commit lathe last
-// shipped. gh and git run in repo, whose branch, HEAD and changes are not
-// checked. Every refusal names the state a person has to restore.
+// CheckRevisable checks the pull request half of revision eligibility: the
+// pull request is open, comes from the recorded branch, and origin's branch
+// is at the commit lathe last shipped. gh and git run in repo, whose branch,
+// HEAD and changes are not checked. Every refusal names the state a person
+// has to restore.
 func CheckRevisable(repo string, e Evidence) (PR, error) {
 	pr, err := ViewPR(repo, e.PR)
 	if err != nil {

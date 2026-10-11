@@ -98,10 +98,6 @@ var (
 	dbGrace = 15 * time.Second
 )
 
-// HelperBin is the executable supervised launches start as their helper.
-// Empty is this binary.
-var HelperBin = ""
-
 // Execute claims the attempt, runs the workflow and records the outcome. It
 // returns the process exit code. Every early return is a recorded outcome:
 // a worker that gives up without writing one leaves a run that only the
@@ -268,27 +264,26 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeCreating); err != nil {
 		return 0, "", "", err
 	}
-	wt := trace.Worktree{RunID: row.ID, Iteration: row.Iteration, Repo: spec.Workspace.Path, Path: path, Base: base}
-	protected := spec.Roster.Protected
+	wt := trace.Worktree{RunID: row.ID, Iteration: row.Iteration, Repo: spec.Workspace.Path, Path: path, Base: base, Spec: row.Spec}
 	if _, err := workspace.CreateWorktree(dataRoot, spec.Workspace.Path, row.ID, row.Iteration, base); err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, protected, true))
+		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeActive); err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, protected, true))
+		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
 	if err := db.SetCommit(row.ID, attemptID, base); err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, protected, true))
+		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
 	r, err := open(ctx, db, dataRoot, row, attemptID, spec, path, base, revision, runner, out)
 	if err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, protected, true))
+		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
 	// Every supervised writer has drained by the time the graph returns.
 	code := workflow.Graphs[spec.Workflow](r)
 	code, status, reason := outcome(db, row.ID, r, code)
 
 	keep := spec.Workflow == "implement" || status != trace.StatusOK
-	if err := Settle(db, dataRoot, wt, protected, keep); err != nil {
+	if err := Settle(db, dataRoot, wt, keep); err != nil {
 		// Not a success: the result is not preserved or the worktree is not
 		// gone. The worktree stays, recorded pending, and the manager retries.
 		fmt.Fprintln(out, "lathe worker: cleaning up the worktree:", err)
@@ -298,18 +293,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 		reason = join(reason, "worktree cleanup pending ("+path+"): "+err.Error())
 	}
 	if its, err := db.Iterations(row.ID); err == nil && row.Iteration < len(its) {
-		it := its[row.Iteration]
-		if it.Patch != "" {
-			label := "result"
-			if status != trace.StatusOK {
-				label = "partial, unaccepted result"
-			}
-			fmt.Fprintf(out, "  %s: %s\n  apply it from a checkout at %s: git apply --index %s\n",
-				label, it.Patch, workspace.Short(base), it.Patch)
-		}
-		if it.RecoveryRef != "" {
-			fmt.Fprintf(out, "  commits kept under %s\n", it.RecoveryRef)
-		}
+		PrintResult(out, its[row.Iteration], status == trace.StatusOK)
 	}
 	return code, status, reason, nil
 }
@@ -364,14 +348,28 @@ func release(db *trace.DB, runID string, out io.Writer) {
 	}
 }
 
+// PrintResult writes where its preserved result is: the patch, how to apply
+// it at its base, and the ref keeping its commits. ok labels the patch
+// accepted.
+func PrintResult(w io.Writer, it trace.Iteration, ok bool) {
+	if it.Patch != "" {
+		label := "result patch"
+		if !ok {
+			label = "partial, unaccepted patch"
+		}
+		fmt.Fprintf(w, "  %s %s\n    apply from a checkout at %s: git apply --index %s\n",
+			label, it.Patch, workspace.Short(it.Base), it.Patch)
+	}
+	if it.RecoveryRef != "" {
+		fmt.Fprintf(w, "  commits kept under %s\n", it.RecoveryRef)
+	}
+}
+
 // supervisor is the runner every subprocess of a writing run starts through.
 func supervisor(db *trace.DB, runID, attemptID string) (*process.Runner, error) {
-	bin := HelperBin
-	if bin == "" {
-		var err error
-		if bin, err = os.Executable(); err != nil {
-			return nil, fmt.Errorf("resolving the supervisor helper: %w", err)
-		}
+	bin, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolving the supervisor helper: %w", err)
 	}
 	return &process.Runner{Bin: bin, Registrar: launches{db: db, runID: runID, attemptID: attemptID}}, nil
 }
@@ -398,11 +396,11 @@ func (l launches) Drained(id string) error { return l.db.LaunchDrainedAt(id) }
 // the iteration's recovery ref either way. It records the cleanup state:
 // removed on success, pending with the error otherwise, in which case the
 // worktree is left in place. The worktree's writers must have stopped.
-func Settle(db *trace.DB, dataRoot string, w trace.Worktree, protected []string, keepPatch bool) error {
+func Settle(db *trace.DB, dataRoot string, w trace.Worktree, keepPatch bool) error {
 	if err := db.SetWorktreeState(w.RunID, w.Iteration, trace.WorktreeCleaning, ""); err != nil {
 		return err
 	}
-	if err := settle(db, dataRoot, w, protected, keepPatch); err != nil {
+	if err := settle(db, dataRoot, w, protectedPaths(w.Spec), keepPatch); err != nil {
 		if serr := db.SetWorktreeState(w.RunID, w.Iteration, trace.WorktreePending, err.Error()); serr != nil {
 			return errors.Join(err, serr)
 		}
@@ -520,8 +518,8 @@ func Models(spec []byte) map[string]string {
 	return models
 }
 
-// Protected is the protected-path list a recorded specification carries.
-func Protected(spec []byte) []string {
+// protectedPaths is the protected-path list a recorded specification carries.
+func protectedPaths(spec []byte) []string {
 	var s Spec
 	if json.Unmarshal(spec, &s) != nil {
 		return nil

@@ -235,10 +235,7 @@ func Open(o Options) (*Run, error) {
 	}
 	// Owner-only: reports, raw streams and patches carry repository source.
 	for _, dir := range []string{r.Work, r.Dir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, err
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := trace.Private(dir); err != nil {
 			return nil, err
 		}
 	}

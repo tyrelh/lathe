@@ -55,22 +55,13 @@ func (l Local) Launch(j Job) (string, error) {
 	return strconv.Itoa(pid), nil
 }
 
-// Alive asks the OS whether that process is still there. Signal 0 checks for
-// existence without delivering anything; EPERM means it exists and is not
-// ours, which still counts as running.
+// Alive asks the OS whether that process is still there.
 func (l Local) Alive(handle string) (bool, error) {
 	pid, err := strconv.Atoi(handle)
 	if err != nil || pid <= 0 {
 		return false, fmt.Errorf("unusable worker handle %q", handle)
 	}
-	switch err := syscall.Kill(pid, 0); err {
-	case nil, syscall.EPERM:
-		return true, nil
-	case syscall.ESRCH:
-		return false, nil
-	default:
-		return false, err
-	}
+	return process.Alive(pid)
 }
 
 // GroupLive reports whether process group pgid on this host has a member

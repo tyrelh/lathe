@@ -315,8 +315,7 @@ func printOutcome(w io.Writer, v *Validation) {
 
 // Implement plans, implements and validates a change. Reports live in the run
 // directory. The implementation is left uncommitted in the tree it ran in,
-// accepted or not. Implement never commits, pushes or opens anything. Build
-// is this run plus the three git phases that ship it.
+// accepted or not. Implement never commits, pushes or opens anything.
 func Implement(r *run.Run) int {
 	var c code
 

@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -110,7 +109,7 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	id := randomHex(8)
+	id := rand.Text()
 	argv := append([]string{cmd.Path}, cmd.Args[1:]...)
 	if err := r.Registrar.Intent(id, argv); err != nil {
 		return nil, fmt.Errorf("recording the launch intent: %w", err)
@@ -149,7 +148,7 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 		status: make(chan string, 1), ctx: ctx, stopped: make(chan struct{})}
 	go p.watch()
 
-	token := randomHex(16)
+	token := rand.Text()
 	st := bufio.NewReader(stR)
 	ready, rerr := func() (string, error) {
 		if _, err := fmt.Fprintf(ctlW, "TOKEN %s\n", token); err != nil {
@@ -221,6 +220,8 @@ func (p *Process) Wait() error {
 	}
 	p.closeCtl()
 	close(p.stopped)
+	// The supervisor has exited; any member left is a straggler, such as a
+	// child forked while the group was being killed.
 	gone := waitGroupGone(p.pgid, 10*time.Second)
 	var drainErr error
 	if gone {
@@ -285,7 +286,14 @@ func GroupAlive(pgid int) (bool, error) {
 	if pgid <= 1 {
 		return false, fmt.Errorf("unusable process group %d", pgid)
 	}
-	switch err := syscall.Kill(-pgid, 0); err {
+	return Alive(-pgid)
+}
+
+// Alive reports whether pid exists, or for a negative pid whether that
+// process group has any member. A process that exists but is not ours
+// counts as alive.
+func Alive(pid int) (bool, error) {
+	switch err := syscall.Kill(pid, 0); err {
 	case nil, syscall.EPERM:
 		return true, nil
 	case syscall.ESRCH:
@@ -355,9 +363,7 @@ func procGroupLive(pgid int) (live, ok bool) {
 }
 
 // waitGroupGone kills process group pgid until it has no live member or limit
-// passes, and reports whether it stopped. Callers have already seen its
-// supervisor exit, so any member left is a straggler, such as a child forked
-// while the group was being killed.
+// passes, and reports whether it stopped.
 func waitGroupGone(pgid int, limit time.Duration) bool {
 	deadline := time.Now().Add(limit)
 	for {
@@ -510,14 +516,6 @@ func parseHelperArgs(args []string) (dir string, argv []string, err error) {
 		return "", nil, errors.New("usage: " + HelperArg + " --dir <dir> -- <program> [args...]")
 	}
 	return args[1], args[3:], nil
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 16)
-	}
-	return hex.EncodeToString(b)
 }
 
 // The installed runner routes this process's workspace commands. A worker

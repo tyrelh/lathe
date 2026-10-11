@@ -54,7 +54,7 @@ func newManager(t *testing.T, capacity int, l Launcher) (*manager, *trace.DB, *b
 	t.Cleanup(func() { db.Close() })
 	out := &bytes.Buffer{}
 	return &manager{db: db, dataRoot: root, out: out, launcher: l,
-		capacity: capacity, uncertain: map[string]bool{}}, db, out
+		groups: Local{}, capacity: capacity, uncertain: map[string]bool{}}, db, out
 }
 
 func submit(t *testing.T, db *trace.DB, workflow, repo string) string {

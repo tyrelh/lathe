@@ -582,17 +582,7 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 			fmt.Printf("  cleanup pending: %s\n", it.CleanupError)
 		}
 	}
-	if it.Patch != "" {
-		label := "result patch"
-		if it.Status != trace.StatusOK {
-			label = "partial, unaccepted patch"
-		}
-		fmt.Printf("  %s %s\n    apply from a checkout at %s: git apply --index %s\n",
-			label, it.Patch, workspace.Short(it.Base), it.Patch)
-	}
-	if it.RecoveryRef != "" {
-		fmt.Printf("  commits kept under %s\n", it.RecoveryRef)
-	}
+	worker.PrintResult(os.Stdout, it, it.Status == trace.StatusOK)
 	if len(its) > 1 {
 		fmt.Println("  iterations:")
 		for _, x := range its {

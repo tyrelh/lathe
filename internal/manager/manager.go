@@ -233,9 +233,6 @@ func (m *manager) launch(row trace.Row, mode string) error {
 // retried too.
 func (m *manager) reconcile() error {
 	m.uncertain = map[string]bool{}
-	if m.groups == nil {
-		m.groups = Local{}
-	}
 	active, err := m.db.Active()
 	if err != nil {
 		return err
@@ -429,7 +426,7 @@ func (m *manager) cleanup(host string) (map[string]error, error) {
 			keep(fmt.Errorf("%s: %w; its worktree is kept", w.Path, err))
 			continue
 		}
-		err = worker.Settle(m.db, m.dataRoot, w, worker.Protected(w.Spec), true)
+		err = worker.Settle(m.db, m.dataRoot, w, true)
 		lock.Release()
 		if err != nil {
 			fail(fmt.Errorf("cleaning up %s: %w", w.Path, err))

@@ -120,17 +120,16 @@ func Open(dataRoot string) (*DB, error) {
 		return nil, err
 	}
 	// Created private before SQLite opens it, and tightened if it exists:
-	// the database holds supervisor stop tokens and run history.
-	for _, name := range []string{dbFile, dbFile + "-wal", dbFile + "-shm"} {
-		path := filepath.Join(dataRoot, name)
-		if name == dbFile {
-			f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-			if err != nil {
-				return nil, err
-			}
-			f.Close()
-		}
-		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+	// the database holds supervisor stop tokens and run history. SQLite
+	// gives the WAL sidecars it creates the database's mode.
+	path := filepath.Join(dataRoot, dbFile)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
@@ -163,13 +162,6 @@ func Open(dataRoot string) (*DB, error) {
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
-	}
-	// WAL sidecars appear on first write; they hold the same data.
-	for _, name := range []string{dbFile + "-wal", dbFile + "-shm"} {
-		if err := os.Chmod(filepath.Join(dataRoot, name), 0o600); err != nil && !os.IsNotExist(err) {
-			db.Close()
-			return nil, err
-		}
 	}
 	return &DB{sql: db}, nil
 }

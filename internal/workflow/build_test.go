@@ -276,7 +276,7 @@ func TestBranchUsable(t *testing.T) {
 	}{
 		{"usable", "feat/retry-backoff", ""},
 		{"trimmed", "  feat/retry-backoff\n", ""},
-		{"current branch", current, "already checked out"},
+		{"current branch", current, "already exists"},
 		{"existing branch", "feat/taken", "already exists"},
 		{"existing tag", "v1.0.0", "already exists"},
 		{"branch on origin", "feat/theirs", "already exists"},

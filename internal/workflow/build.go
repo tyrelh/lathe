@@ -59,9 +59,6 @@ func BranchUsable(e run.Envelope, r *run.Run) []string {
 		return nil
 	}
 	name := RunBranch(r, b.Name())
-	if current, err := workspace.Branch(r.Repo); err == nil && current == name {
-		return []string{fmt.Sprintf("%q is the branch that is already checked out; the change needs its own", name)}
-	}
 	switch {
 	case !workspace.ValidBranch(r.Repo, name):
 		return []string{fmt.Sprintf("git will not accept %q as a branch name", name)}
@@ -304,7 +301,7 @@ func commit(e *run.Entry, r *run.Run, c *code, paths []string) (sha, message str
 	if err != nil {
 		return "", "", err
 	}
-	if denied := protectedChanges(r, paths); len(denied) > 0 {
+	if denied, _ := permit.Partition(paths, r.Protected()); len(denied) > 0 {
 		return "", "", fmt.Errorf("refusing to commit protected paths: %s", strings.Join(denied, ", "))
 	}
 	var out CommitOutput
@@ -335,21 +332,7 @@ func RunBranch(r *run.Run, proposal string) string {
 	if r.ID == "" {
 		return proposal
 	}
-	return proposal + "-" + runSuffix(r.ID)
-}
-
-// runSuffix is the random part of a run ID.
-func runSuffix(id string) string {
-	if i := strings.LastIndex(id, "_"); i >= 0 {
-		return id[i+1:]
-	}
-	return id
-}
-
-// protectedChanges is the protected paths among paths.
-func protectedChanges(r *run.Run, paths []string) []string {
-	denied, _ := permit.Partition(paths, r.Protected())
-	return denied
+	return proposal + "-" + r.ID[strings.LastIndex(r.ID, "_")+1:]
 }
 
 // publishable refuses a push whose commits carry a protected path, checked

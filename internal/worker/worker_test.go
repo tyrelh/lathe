@@ -432,7 +432,7 @@ func TestSettleAfterCrashDuringSetup(t *testing.T) {
 	write(t, filepath.Join(path, "setup.txt"), "from setup\n")
 
 	w := trace.Worktree{RunID: "r1", Iteration: 0, Repo: dir, Path: path}
-	if err := Settle(db, dataRoot, w, nil, true); err == nil {
+	if err := Settle(db, dataRoot, w, true); err == nil {
 		t.Fatal("a worktree without a recorded base was settled")
 	}
 	if _, err := os.Stat(filepath.Join(path, "setup.txt")); err != nil {
@@ -440,7 +440,7 @@ func TestSettleAfterCrashDuringSetup(t *testing.T) {
 	}
 
 	w.Base = base
-	if err := Settle(db, dataRoot, w, nil, true); err != nil {
+	if err := Settle(db, dataRoot, w, true); err != nil {
 		t.Fatal(err)
 	}
 	patch, err := os.ReadFile(filepath.Join(ReportDir(dataRoot, "r1", 0), "result.patch"))
