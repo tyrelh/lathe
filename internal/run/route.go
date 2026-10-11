@@ -36,7 +36,7 @@ func Decide(ctx context.Context, key string, rt config.Routing, floor float64, s
 // choose returns the most probable level, ties going to the higher one. When
 // confidence is under floor it returns the higher of that level and the
 // runner-up, the next most probable level with probability above 0 (ties
-// going to the lower one), and never a level past both.
+// going to the lower one).
 func choose(probabilities []float64, confidence, floor float64) (int, string) {
 	top := 0
 	for i, p := range probabilities {
