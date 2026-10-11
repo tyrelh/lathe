@@ -182,6 +182,7 @@
   .model-costs li:last-child { border-bottom: 0; }
   .model-dot { flex: none; width: 9px; height: 9px; border-radius: 50%;
                background: var(--model-color); align-self: center; }
+  .dot-label { display: flex; gap: 8px; }
   .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-amount { margin-left: auto; white-space: nowrap; }
   #phase > details { margin-top: 14px; }
@@ -803,18 +804,22 @@ async function overview(current) {
       <td class="num cost">${money(r.cost)}</td>
       <td class="wrap lo" title="${esc(r.request)}"><span>${esc(clip(r.request, 150))}</span></td>
     </tr>`;
-  const modelRow = (m, i) => `
+  const dotLabel = (colour, label) => `<span class="dot-label"><span class="model-dot" aria-hidden="true" style="--model-color:${colour}"></span>${esc(label)}</span>`;
+  const modelRow = (m, i) => {
+    const model = m.model || 'unknown';
+    return `
     <tr data-row="${esc(JSON.stringify([m.provider, m.model]))}">
       <td class="dim">${i + 1}</td>
-      <td>${esc((m.provider || 'unknown') + '/' + (m.model || 'unknown'))}</td>
+      <td>${dotLabel(modelColour(model), (m.provider || 'unknown') + '/' + model)}</td>
       <td class="num cost">${money(m.cost)}</td>
       <td class="num dim">${pct(m.share)}</td>
       <td class="num dim lo">${count(m.phases)} phase${m.phases === 1 ? '' : 's'}</td>
     </tr>`;
+  };
   const providerRow = (p, i) => `
     <tr data-row="${esc(p.provider)}">
       <td class="dim">${i + 1}</td>
-      <td>${esc(p.provider || 'unknown')}</td>
+      <td>${dotLabel(providerColour(p.provider), p.provider || 'unknown')}</td>
       <td class="num cost">${money(p.cost)}</td>
       <td class="num dim">${pct(p.share)}</td>
       <td class="num dim lo">${count(p.phases)} phase${p.phases === 1 ? '' : 's'}</td>

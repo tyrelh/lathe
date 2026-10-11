@@ -810,6 +810,12 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(provCard.includes('>unknown<'), 'empty provider falls back to unknown');
   assert(provCard.indexOf('moonshotai') < provCard.indexOf('>unknown<'), 'providers are sorted by spend descending');
   assert(over.includes('#/projects/detail?repo=%2Frepos%2Falpha'), 'overview project links to its detail');
+  const dot = c => `<span class="dot-label"><span class="model-dot" aria-hidden="true" style="--model-color:${c}"></span>`;
+  const modelsHTML = nodes.get('rank-models').innerHTML, providersHTML = nodes.get('rank-providers').innerHTML;
+  assert(modelsHTML.includes(dot(call('modelColour', 'kimi')) + 'moonshotai/kimi</span>'), 'model row has a coloured dot');
+  assert(modelsHTML.includes(dot('#7A9EFB') + 'unknown/unknown</span>'), 'unknown model dot falls back');
+  assert(providersHTML.includes(dot('#1C81FA') + 'moonshotai</span>'), 'provider row has its full hue dot');
+  assert(providersHTML.includes(dot('#7A9EFB') + 'unknown</span>'), 'unknown provider dot falls back');
 
   response = json({...overviewData, runs: 3, cost: 12.34567});
   await evaluate('tick()');
