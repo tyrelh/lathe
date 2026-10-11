@@ -92,8 +92,8 @@ tiers:
 	if err := calibrate(context.Background(), &out, db, dataRoot, repo, "builder", 30); err != nil {
 		t.Fatal(err)
 	}
-	// Confidence under the floor moves the top level up one; only the run with
-	// a plan is asked about.
+	// Confidence under the floor picks the stronger of the two likeliest levels;
+	// only the run with a plan is asked about.
 	if len(states) != 1 || !strings.Contains(states[0], `"file_count":"a few files"`) {
 		t.Fatalf("requests = %q", states)
 	}

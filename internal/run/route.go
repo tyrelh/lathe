@@ -33,8 +33,10 @@ func Decide(ctx context.Context, key string, rt config.Routing, floor float64, s
 	return Decision{Tier: tier, Reason: reason, Answer: &a, Raw: a.Raw}
 }
 
-// choose returns the most probable level, ties going to the higher one, moved
-// up one level (capped at the top) when confidence is under floor.
+// choose returns the most probable level, ties going to the higher one. When
+// confidence is under floor it returns the higher of that level and the
+// runner-up, the next most probable level with probability above 0 (ties
+// going to the lower one).
 func choose(probabilities []float64, confidence, floor float64) (int, string) {
 	top := 0
 	for i, p := range probabilities {
@@ -42,10 +44,19 @@ func choose(probabilities []float64, confidence, floor float64) (int, string) {
 			top = i
 		}
 	}
-	if confidence < floor {
-		return min(top+1, len(probabilities)-1), "low-confidence"
+	if confidence >= floor {
+		return top, "routed"
 	}
-	return top, "routed"
+	runnerUp := -1
+	for i, p := range probabilities {
+		if i == top || p <= 0 {
+			continue
+		}
+		if runnerUp < 0 || p > probabilities[runnerUp] {
+			runnerUp = i
+		}
+	}
+	return max(top, runnerUp), "low-confidence"
 }
 
 // Routes reports whether agent has tiers in this run's captured roster.
