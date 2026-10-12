@@ -109,7 +109,10 @@ const context = vm.createContext({
     if (url === '/api/meta') return json({version: 'v0.2.0-test'});
     if (failNext) { const e = failNext; failNext = null; return {ok: false, text: async () => e}; }
     if (routeResponses?.has(url)) return routeResponses.get(url);
-    return response || await new Promise(resolve => { resolveFetch = resolve; });
+    // A run's reply is one poll's page: the page fetches the next one itself
+    // after a full page, and that request waits for the next serve().
+    if (response) { const r = response; if (url.startsWith('/api/runs/')) response = null; return r; }
+    return await new Promise(resolve => { resolveFetch = v => { resolveFetch = null; resolve(v); }; });
   },
 });
 const json = (body, headers = {}) =>
@@ -574,7 +577,14 @@ const run = {run_id:'run', workflow:'build',status:'ok',tokens:30,cost:0.3,repo:
 const iterations = [{iteration:0, request:'fix', status:'ok', worktree:'/data/worktrees/run/iteration-0', worktree_state:'removed'}];
 let id = 0;
 const event = (type, payload, phase_id='p1', name='fix') => ({event_id:++id,type,payload,phase_id,name});
-function serve(events, ps = phases, r = run) { response = json({run:r,phases:ps,events,iterations}); }
+// serve answers the request waiting for a run's next page, or else the next
+// one made.
+function serve(events, ps = phases, r = run) {
+  const body = json({run:r,phases:ps,events,iterations});
+  if (resolveFetch) resolveFetch(body); else response = body;
+}
+// drained waits for a served page that a full page already requested.
+const drained = () => new Promise(setImmediate);
 const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phase').innerHTML;
 const costs = () => nodes.get('costs').innerHTML;
 (async () => {
@@ -596,6 +606,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(nodes.get('project-title').innerHTML, '/repo/MiXeD &lt;&amp;&quot;&#39;>');
   assert.equal(nodes.get('head').innerHTML, 'fix &lt;prompt>&amp;');
   assert.equal(evaluate('done'), false, 'full page must keep polling a settled run');
+  assert(resolveFetch, 'a full page fetches the next one without waiting for the timer');
   assert(nodes.get('run-total').textContent === '$0.30' && costs().includes('unknown') && costs().includes('model') && costs().includes('$0.10'), costs());
   assert(costs().includes('Loading usage…') && !costs().includes('No usage recorded.'), 'partial rows still load');
   assert(costs().indexOf('providers') < costs().indexOf('models'), 'providers precede models');
@@ -654,8 +665,9 @@ const costs = () => nodes.get('costs').innerHTML;
          event('log','test command','p2','command'),event('log','  <b>spaced</b>\n  out','p2','output'),
          event('log','','p2','output')];
   serve(nextEvents);
-  await evaluate('tick()');
+  await drained();
   assert.equal(evaluate('done'), true);
+  assert(!resolveFetch, 'a short page waits for the timer');
   assert(tip.textContent.includes('Context (estimated): unknown tokens / 8,000 window · unknown full'),
     'polling refreshes the open block tooltip with the latest snapshot');
   assert.equal(tip.textContent, polled.dataset.tooltip);
@@ -790,7 +802,7 @@ const costs = () => nodes.get('costs').innerHTML;
     event('output',{attempt:0,report:{summary:'Ready',feedback:[]},text:'ACCEPTED RAW'},'accepted','plan-reviewer'),
   ], reportPhases);
   evaluate(`selected = 'plan'`);
-  await evaluate('tick()');
+  await drained();
   out = panel();
   for (const text of ['Initial &lt;plan>','data-panel="plan-raw" open','data-panel="plan-inputs" open']) assert(out.includes(text), text);
   assert.equal(out.split('RAW PLAN').length-1,1,'raw output must not duplicate across pages');
@@ -857,7 +869,7 @@ const costs = () => nodes.get('costs').innerHTML;
   ];
   while (priceEvents.length < 500) priceEvents.push(event('log','padding'));
   serve(priceEvents, phases, priced);
-  await evaluate('tick()');
+  await drained();
   const providerGroups = () => JSON.parse(JSON.stringify(evaluate('providerCosts()')));
   const providerCostOf = provider => providerGroups().find(p => p.provider === provider)?.cost;
   assert.equal(providerCostOf('a/b'), 0.25);
@@ -888,7 +900,7 @@ const costs = () => nodes.get('costs').innerHTML;
     event('usage',{attempt:2,seq:4,provider:'other',cost:0.03},'p2'),
     event('usage',{attempt:2,seq:5,cost:0.02},'p2'),
   ], phases, priced);
-  await evaluate('tick()');
+  await drained();
   assert.equal(evaluate('done'), true);
 
   assert.equal(providerCostOf('a'), 0.35);

@@ -505,7 +505,7 @@ const PAGE = 500;   // the server's per-poll event cap
 // How often each page asks for fresh data. Overview aggregates the whole
 // database and changes slowly; a live run's log does not. Agents load once,
 // then set done; until then they retry.
-const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 1000, agents: 5000, agent: 5000, missing: 0};
+const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 500, agents: 5000, agent: 5000, missing: 0};
 
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
@@ -864,8 +864,9 @@ async function tick() {
     stamp();
   } finally {
     polling = false;
-    // A page navigated to while this fetch was in flight has not fetched yet.
-    if (current !== generation) tick();
+    // A page navigated to while this fetch was in flight has not fetched yet,
+    // and a full page means the server holds more than one poll returns.
+    if (current !== generation || draining && !failure) tick();
   }
 }
 
