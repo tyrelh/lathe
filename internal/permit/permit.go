@@ -189,6 +189,28 @@ func Enforce(repo string, s Scope) (kept, reverted []string, err error) {
 	return kept, reverted, nil
 }
 
+// Revert puts each listed uncommitted path back to HEAD, removing it when
+// HEAD lacks it. Paths that are not uncommitted are left alone. The caller
+// is responsible for having passed Clean first and for preserving the work.
+func Revert(repo string, paths []string) error {
+	dirty, err := status(repo)
+	if err != nil {
+		return err
+	}
+	want := map[string]bool{}
+	for _, p := range paths {
+		want[Norm(p)] = true
+	}
+	for _, e := range dirty {
+		if want[e.path] {
+			if err := revert(repo, e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Changed lists every uncommitted path, including untracked files and deletions.
 // A rename arrives as both halves, so a caller checking claims sees both paths.
 func Changed(repo string) ([]string, error) {

@@ -49,6 +49,9 @@ type Spec struct {
 	// Base is the commit a writing run's worktree starts from: HEAD at
 	// submission, or the shipped commit a revision extends.
 	Base string `json:"base,omitempty"`
+	// Recovery is set, at RecoveryVersion only, on an engineer's recovery
+	// of a failed, cancelled or lost iteration.
+	Recovery *RecoverySpec `json:"recovery,omitempty"`
 }
 
 // Mode is the execution mode a recorded specification dispatches with:
@@ -70,10 +73,11 @@ func Mode(spec []byte) string {
 // mode is Mode with the refusal for runID.
 func (s Spec) mode(runID string) (string, error) {
 	writes := workflow.Writes[s.Workflow]
+	current := s.Version == SpecVersion || (s.Version == RecoveryVersion && s.Recovery != nil)
 	switch {
-	case s.Version == SpecVersion && writes:
+	case current && writes:
 		return trace.ModeWorktree, nil
-	case (s.Version == SpecVersion || s.Version == legacyVersion) && !writes:
+	case (current || s.Version == legacyVersion) && !writes:
 		return trace.ModeCheckout, nil
 	case s.Version == legacyVersion:
 		return trace.ModeReject, fmt.Errorf("run %s was queued by an older lathe (spec v%d) that ran %s in your checkout; "+
@@ -213,7 +217,13 @@ func inCheckout(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	if err := db.SetCommit(row.ID, attemptID, commit); err != nil {
 		return 0, "", "", err
 	}
-	r, err := open(ctx, db, dataRoot, row, attemptID, spec, spec.Workspace.Path, "", nil, nil, out)
+	var recovery *run.Recovery
+	if spec.Recovery != nil {
+		if recovery, err = recoveryOf(db, dataRoot, row, spec.Recovery); err != nil {
+			return 0, "", "", err
+		}
+	}
+	r, err := open(ctx, db, dataRoot, row, attemptID, spec, spec.Workspace.Path, "", nil, recovery, nil, out)
 	if err != nil {
 		return 0, "", "", err
 	}
@@ -246,6 +256,26 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	defer restore()
 
 	base := spec.Base
+	if spec.Recovery != nil {
+		if err := db.SourceStopped(row.ID, spec.Recovery.Source, attemptID, path); err != nil {
+			return 0, "", "", err
+		}
+	}
+	if spec.Recovery != nil && spec.Recovery.Publication != nil {
+		// The queued recovery's view of origin and the pull request, again.
+		pub := spec.Recovery.Publication
+		if err := recheck(spec.Workspace.Path, pub); err != nil {
+			return 0, "", "", err
+		}
+		// A revision delivered despite a lost acknowledgement: the run's
+		// shipped commit catches up with what origin verifiably holds.
+		if spec.Workflow == "revise" && row.Commit != pub.Head {
+			if err := db.SetShipped(row.ID, attemptID, pub.Branch, pub.Head); err != nil {
+				return 0, "", "", err
+			}
+			row.Commit = pub.Head
+		}
+	}
 	var revision *run.Revision
 	if spec.Workflow == "revise" {
 		// Rechecked under the claim, against origin: the pull request had
@@ -253,7 +283,19 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path, out); err != nil {
 			return 0, "", "", err
 		}
+		// Saved work applies only at the head it was made on; a moved head
+		// is refused rather than rebased onto.
+		if spec.Recovery != nil && spec.Base != "" && spec.Base != revision.Head {
+			return 0, "", "", fmt.Errorf("the recovery was submitted at %s, but the pull request's head is now %s; nothing was changed",
+				workspace.Short(spec.Base), workspace.Short(revision.Head))
+		}
 		base = revision.Head
+	}
+	var recovery *run.Recovery
+	if spec.Recovery != nil {
+		if recovery, err = recoveryOf(db, dataRoot, row, spec.Recovery); err != nil {
+			return 0, "", "", err
+		}
 	}
 	if base == "" {
 		return 0, "", "", fmt.Errorf("run %s records no commit to start from; nothing was changed", row.ID)
@@ -264,19 +306,38 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeCreating); err != nil {
 		return 0, "", "", err
 	}
-	wt := trace.Worktree{RunID: row.ID, Iteration: row.Iteration, Repo: spec.Workspace.Path, Path: path, Base: base, Spec: row.Spec}
+	wt := trace.Worktree{RunID: row.ID, Iteration: row.Iteration, Repo: spec.Workspace.Path, Path: path, Base: base, Spec: row.Spec,
+		State: trace.WorktreeCreating}
 	if _, err := workspace.CreateWorktree(dataRoot, spec.Workspace.Path, row.ID, row.Iteration, base); err != nil {
 		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeActive); err != nil {
 		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
+	wt.State = trace.WorktreeActive
 	if err := db.SetCommit(row.ID, attemptID, base); err != nil {
 		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
 	}
-	r, err := open(ctx, db, dataRoot, row, attemptID, spec, path, base, revision, runner, out)
+	// Restored into the fresh worktree, which Restore verifies clean and at
+	// base, before any agent runs.
+	if recovery != nil && spec.Recovery.Patch != "" {
+		restored, err := workspace.Restore(path, base, spec.Recovery.Patch, spec.Recovery.Digest, spec.Roster.Protected)
+		if err != nil {
+			return 0, "", "", errors.Join(fmt.Errorf("restoring iteration %d's work: %w; continue without it with lathe resume --restart %s \"guidance\"",
+				spec.Recovery.Source, err, row.ID), Settle(db, dataRoot, wt, false))
+		}
+		recovery.Restored = restored
+		// Until this lands, a later recovery restores the same evidence again.
+		if err := db.SetRestored(row.ID, attemptID); err != nil {
+			return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+		}
+	}
+	r, err := open(ctx, db, dataRoot, row, attemptID, spec, path, base, revision, recovery, runner, out)
 	if err != nil {
 		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+	}
+	if recovery != nil {
+		r.Retain(recovery.Restored)
 	}
 	// Every supervised writer has drained by the time the graph returns.
 	code := workflow.Graphs[spec.Workflow](r)
@@ -298,7 +359,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	return code, status, reason, nil
 }
 
-func open(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, repo, base string, revision *run.Revision, runner *process.Runner, out io.Writer) (*run.Run, error) {
+func open(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, repo, base string, revision *run.Revision, recovery *run.Recovery, runner *process.Runner, out io.Writer) (*run.Run, error) {
 	return run.Open(run.Options{
 		ID:       row.ID,
 		Workflow: spec.Workflow,
@@ -315,6 +376,7 @@ func open(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, att
 		Iteration: row.Iteration,
 		Attempt:   attemptID,
 		Revision:  revision,
+		Recovery:  recovery,
 		Runner:    runner,
 		Base:      base,
 	})
@@ -417,19 +479,27 @@ func settle(db *trace.DB, dataRoot string, w trace.Worktree, protected []string,
 	if err == nil && w.Base == "" {
 		return fmt.Errorf("%s exists but its base commit was never recorded, so its work cannot be exported; it was left alone", w.Path)
 	}
-	if err == nil && fi.IsDir() {
+	switch {
+	case err == nil && fi.IsDir():
+		outcome := trace.PreservedSkipped
 		if keepPatch {
 			dest := filepath.Join(ReportDir(dataRoot, w.RunID, w.Iteration), "result.patch")
 			wrote, err := workspace.SavePatch(w.Path, w.Base, dest, protected)
 			if err != nil {
 				return fmt.Errorf("saving the result patch: %w; the worktree is kept at %s", err, w.Path)
 			}
+			outcome = trace.PreservedPatch
 			if !wrote {
-				dest = ""
+				dest, outcome = "", trace.PreservedEmpty
 			}
 			if err := db.SetPatch(w.RunID, w.Iteration, dest); err != nil {
 				return err
 			}
+		}
+		// Recorded before the worktree is removed, so removal never stands
+		// in for evidence of what it held.
+		if err := db.SetPreservation(w.RunID, w.Iteration, outcome); err != nil {
+			return err
 		}
 		ref, err := workspace.PreserveHead(w.Path, w.Base, workspace.RecoveryRef(w.RunID, w.Iteration))
 		if err != nil {
@@ -439,6 +509,16 @@ func settle(db *trace.DB, dataRoot string, w trace.Worktree, protected []string,
 			if err := db.SetRecoveryRef(w.RunID, w.Iteration, ref); err != nil {
 				return err
 			}
+		}
+	case os.IsNotExist(err):
+		// Nothing to export. A worktree still being created held no work; one
+		// that existed and is gone lost whatever it held.
+		outcome := trace.PreservedMissing
+		if w.State == trace.WorktreeCreating {
+			outcome = trace.PreservedUnstarted
+		}
+		if err := db.SetPreservation(w.RunID, w.Iteration, outcome); err != nil {
+			return err
 		}
 	}
 	return workspace.RemoveWorktree(dataRoot, w.Repo, w.RunID, w.Iteration)
@@ -575,21 +655,16 @@ func Evidence(dataRoot string, row trace.Row) (workspace.Evidence, error) {
 	if row.Workflow != "build" {
 		return workspace.Evidence{}, fmt.Errorf("%s is a %s run; only a build opens a pull request to revise", row.ID, row.Workflow)
 	}
-	var pr struct {
-		URL   string `json:"url"`
-		Draft bool   `json:"draft"`
+	// The iteration that opened the pull request owns it: the first, or a
+	// recovery of it that published.
+	url, _, _ := prRecord(dataRoot, row)
+	if url == "" {
+		return workspace.Evidence{}, fmt.Errorf("%s has no recorded pull request (pr.json in %s or an iteration of it): it never opened one, or its record is gone",
+			row.ID, ReportDir(dataRoot, row.ID, 0))
 	}
-	path := filepath.Join(ReportDir(dataRoot, row.ID, 0), "pr.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return workspace.Evidence{}, fmt.Errorf("%s has no recorded pull request (%s): it never opened one, or its record is gone", row.ID, path)
-	}
-	if err := json.Unmarshal(b, &pr); err != nil || pr.URL == "" {
-		return workspace.Evidence{}, fmt.Errorf("%s does not record a pull request URL", path)
-	}
-	ev := workspace.Evidence{PR: pr.URL, Branch: row.Branch, Commit: row.Commit}
+	ev := workspace.Evidence{PR: url, Branch: row.Branch, Commit: row.Commit}
 	if ev.Branch == "" || ev.Commit == "" {
-		return ev, fmt.Errorf("%s does not record the branch and commit it shipped to %s, so lathe cannot tell whether that branch is still as it left it", row.ID, pr.URL)
+		return ev, fmt.Errorf("%s does not record the branch and commit it shipped to %s, so lathe cannot tell whether that branch is still as it left it", row.ID, url)
 	}
 	return ev, nil
 }

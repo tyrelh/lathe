@@ -49,6 +49,19 @@ func RefExists(repo, name string) bool {
 // the changed path list alongside, which has them.
 func DiffStat(repo string) (string, error) { return git(repo, "diff", "--stat", "HEAD") }
 
+// WorkingDiff is the uncommitted tracked change against HEAD, cut to limit
+// bytes. Untracked files are absent; the caller lists them separately.
+func WorkingDiff(repo string, limit int) (string, error) {
+	patch, err := git(repo, "diff", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if len(patch) > limit {
+		patch = patch[:limit] + fmt.Sprintf("\n… cut at %d bytes; read the files for the rest\n", limit)
+	}
+	return patch, nil
+}
+
 // Checkout creates branch and switches to it. It fails when the name is taken,
 // which is the same thing the gate on the proposed name already checked.
 func Checkout(repo, branch string) error { return gitRun(repo, nil, "checkout", "-b", branch) }

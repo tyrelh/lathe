@@ -17,12 +17,19 @@ import (
 // Files is the load-bearing key. It is the builder's write scope, so this
 // struct and the `## The file list` block of seed/agents/planner/user.md are one
 // contract in two files.
+//
+// Reversals, Dismissals and Tickets are optional, so a plan from an edited
+// prompt that omits them stays valid; an omitted list authorizes nothing.
 type PlanOutput struct {
 	Summary *string   `json:"summary"`
 	Steps   *[]string `json:"steps"`
 	Files   *[]string `json:"files"`
 	Risks   *[]string `json:"risks"`
 	Wrote   *[]string `json:"artifacts"`
+
+	Reversals  *[]Reversal  `json:"reversals,omitempty"`
+	Dismissals *[]Dismissal `json:"dismissals,omitempty"`
+	Tickets    *[]Ticket    `json:"future_tickets,omitempty"`
 }
 
 // Validate returns what is missing, phrased as the agent will read it. An empty
@@ -51,6 +58,27 @@ func (p *PlanOutput) validate(noFiles bool) []string {
 	}
 	if p.Wrote == nil {
 		v = append(v, `"artifacts" is missing; use [] if you wrote no files`)
+	}
+	if p.Reversals != nil {
+		for _, r := range *p.Reversals {
+			if strings.TrimSpace(r.Path) == "" || strings.TrimSpace(r.Reason) == "" {
+				v = append(v, `every reversal needs a "path" and a "reason"`)
+			}
+		}
+	}
+	if p.Dismissals != nil {
+		for _, d := range *p.Dismissals {
+			if strings.TrimSpace(d.Ref) == "" || strings.TrimSpace(d.Reason) == "" {
+				v = append(v, `every dismissal needs a "ref" and a "reason"`)
+			}
+		}
+	}
+	if p.Tickets != nil {
+		for _, t := range *p.Tickets {
+			if strings.TrimSpace(t.Title) == "" || strings.TrimSpace(t.Reason) == "" {
+				v = append(v, `every future ticket needs a "title" and a "reason"`)
+			}
+		}
 	}
 	return v
 }
@@ -131,7 +159,7 @@ func Plan(r *run.Run) int {
 	g := run.NewGraph(r)
 	g.Add(run.Node{Name: "request", Owner: "engineer"},
 		func(e *run.Entry) (string, error) { return "", e.Log("request", r.Request) })
-	addPlanNodes(g, r, &out, "")
+	addPlanNodes(g, r, &out, "", nil)
 
 	err := g.Run()
 	// The plan is the product of this workflow, so it goes to the terminal as
@@ -146,14 +174,17 @@ func Plan(r *run.Run) int {
 	return r.Finish(err == nil, reason)
 }
 
-// maxSendBacks permits four revisions to close omissions before the fifth
-// review hands any remaining objections to the builder as risks.
-const maxSendBacks = 4
+// maxSendBacks permits eight revisions per iteration to close omissions; the
+// review after the last hands any remaining objections to the builder as
+// risks. Scope requests spend from the same allowance.
+const maxSendBacks = 8
 
 // addPlanNodes appends auth, optional issue lookup, planner routing when
 // configured, planning and review.
 // A nonempty revision supplies the planner brief and permits an empty file list.
-func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
+// c is a writing workflow's state, or nil for a plan-only run; with it, the
+// plan must keep or abandon work in the tree and may answer scope requests.
+func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c *code) {
 	g.Add(run.Node{Name: "auth", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 		return "", e.AuthPreflight()
 	})
@@ -164,7 +195,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 				return "", err
 			}
 			r.Request = request
-			return "", nil
+			return "", r.Resolve(request)
 		})
 	}
 	// After issue, which rewrites r.Request. Nothing sends back here, so the
@@ -183,6 +214,15 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 	// usable. All three are read by the plan node on its way back round.
 	var feedback, blocking []string
 	var unusable bool
+	// reviewed is set when review sends the plan back, so the planner's next
+	// entry is a revision against that feedback rather than a fresh brief.
+	var reviewed bool
+	// cycle counts reviews since planning last started: at the first plan and
+	// again at each scope request. The send-back budget is not reset with it.
+	cycle := 0
+	// planned is set after the first planner entry, which alone carries a
+	// recovery's context.
+	var planned bool
 
 	var plan run.Envelope = out
 	if revision != "" {
@@ -193,7 +233,25 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 		if revision != "" {
 			request = revision
 		}
-		if e.Round > 0 {
+		if !planned {
+			request += recoveryContext(r, c)
+			planned = true
+		}
+		gates := []run.Gate{run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected())}
+		if c != nil {
+			// Work already in the tree must be kept or explicitly abandoned, and
+			// only findings still outstanding may be dismissed.
+			dirty, err := permit.Changed(r.Repo)
+			if err != nil {
+				return "", err
+			}
+			gates = append(gates, Retained(dirty), Dismissible(c.outstanding))
+			if c.scope.brief {
+				request = scopeBrief(c, r, dirty)
+				c.scope.brief, reviewed, cycle = false, false, 0
+			}
+		}
+		if reviewed {
 			var revision strings.Builder
 			revision.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
 			printPlan(&revision, out)
@@ -202,21 +260,33 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 			if unusable {
 				revision.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
 			}
+			if c != nil && c.scope.pending != nil {
+				revision.WriteString("\nThe builder's scope request above still stands; the plan must still answer it.\n")
+			}
 			request = revision.String()
+			reviewed = false
 		}
-		return "", e.Call(plan, request, run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected()))
+		return "", e.Call(plan, request, gates...)
 	})
 
 	g.Add(run.Node{Name: "review", Owner: "plan-reviewer", SendBacks: maxSendBacks}, func(e *run.Entry) (string, error) {
-		round := e.Round + 1
+		cycle++
+		round := cycle
 		var message strings.Builder
 		fmt.Fprintf(&message, "Review round %d of %d.\nYou may send this plan back %d more times.\n",
-			round, maxSendBacks+1, e.SendBacksLeft)
+			round, round+e.SendBacksLeft, e.SendBacksLeft)
 		if round > 1 {
 			message.WriteString("\nThe planner returned the following complete plan.\n")
 		}
 		fmt.Fprintf(&message, "\n## Request\n\n%s\n", r.Request)
+		if r.Recovery != nil {
+			fmt.Fprintf(&message, "\n## Recovery guidance (iteration %d ended: %s)\n\n%s\n", r.Recovery.Source, r.Recovery.Failure, r.Recovery.Guidance)
+			section(&message, "Work restored into the tree", r.Recovery.Restored)
+		}
 		printPlan(&message, out)
+		if c != nil && c.scope.pending != nil {
+			scopeReview(&message, c)
+		}
 
 		var report ReviewOutput
 		callErr := e.Call(&report, message.String(), run.ArtifactsExist, run.FilesNonEmpty)
@@ -238,17 +308,54 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 			blocking, unusable = nil, true
 		}
 		if len(feedback)+len(blocking) > 0 && e.SendBacksLeft > 0 {
+			reviewed = true
 			return "plan", nil
+		}
+		if unusable && c != nil && c.scope.pending != nil {
+			// No usable review established that the scope request is answered,
+			// so the candidate plan is kept for diagnosis and never handed on.
+			req := c.scope.pending
+			if err := writeResult(r.Dir, fmt.Sprintf("plan-%d.json", req.N), out); err != nil {
+				return "", err
+			}
+			req.Outcome = scopeUnreviewed
+			if err := saveScope(r, req); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("plan review: no usable review of the plan revised for scope request %d after %d send-backs; the builder's scope request is unresolved and the partial work is kept%s",
+				req.N, maxSendBacks, resumeHint(r))
+		}
+		if unusable && c != nil && r.Recovery != nil && !c.disposed {
+			// A recovery's plan decides what happens to restored work and
+			// prior findings; without a usable review it decides nothing.
+			if err := writeResult(r.Dir, "plan.json", out); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("plan review: no usable review of the recovery's plan after %d send-backs; the candidate plan is saved unapplied, and the restored work and prior findings are as they were%s",
+				maxSendBacks, resumeHint(r))
 		}
 		if len(blocking) > 0 {
 			// Saved for diagnosis, but never handed on: the reviewer said this
 			// plan cannot succeed, and nothing after this node could change that.
-			if err := writeResult(r.Dir, "plan.json", out); err != nil {
+			name := "plan.json"
+			if c != nil && c.scope.pending != nil {
+				// The plan the builder was blocked on stays in plan.json.
+				name = fmt.Sprintf("plan-%d.json", c.scope.pending.N)
+			}
+			if err := writeResult(r.Dir, name, out); err != nil {
 				return "", err
 			}
 			section(r.Out, "blocking objections", blocking)
-			return "", fmt.Errorf("plan review: the plan cannot succeed as written after %d revisions: %s",
+			err := fmt.Errorf("plan review: the plan cannot succeed as written after %d revisions: %s",
 				round-1, strings.Join(blocking, "; "))
+			if c != nil && c.scope.pending != nil {
+				c.scope.pending.Outcome = scopeBlocked
+				if saveErr := saveScope(r, c.scope.pending); saveErr != nil {
+					return "", saveErr
+				}
+				err = fmt.Errorf("%w; the builder's scope request %d is unresolved%s", err, c.scope.pending.N, resumeHint(r))
+			}
+			return "", err
 		}
 
 		for _, objection := range feedback {
@@ -264,6 +371,19 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string) {
 				fmt.Fprintf(r.Out, "plan revised %d times; %d objections unresolved\n", round-1, len(feedback))
 			}
 		}
+		if c != nil && c.scope.pending != nil {
+			return c.replanned(e, r)
+		}
+		if c != nil && r.Recovery != nil && !c.disposed {
+			// A recovery's first reviewed plan decides what happens to the
+			// restored work and the prior findings.
+			c.disposed = true
+			d, err := c.dispose(e, r, "abandoned-recovery.patch", 0)
+			if err != nil {
+				return "", err
+			}
+			return "", writeResult(r.Dir, "disposition.json", &d)
+		}
 		return "", nil
 	})
 }
@@ -275,6 +395,25 @@ func printPlan(w io.Writer, p *PlanOutput) {
 	section(w, "steps", *p.Steps)
 	section(w, "files the builder may write", *p.Files)
 	section(w, "risks", *p.Risks)
+	var reversals, dismissals, tickets []string
+	if p.Reversals != nil {
+		for _, r := range *p.Reversals {
+			reversals = append(reversals, r.Path+": "+r.Reason)
+		}
+	}
+	if p.Dismissals != nil {
+		for _, d := range *p.Dismissals {
+			dismissals = append(dismissals, d.Ref+": "+d.Reason)
+		}
+	}
+	if p.Tickets != nil {
+		for _, t := range *p.Tickets {
+			tickets = append(tickets, t.Title+": "+t.Reason)
+		}
+	}
+	section(w, "work to abandon (saved, then reverted)", reversals)
+	section(w, "findings dismissed by the revised plan", dismissals)
+	section(w, "proposed future tickets (not part of this run)", tickets)
 }
 
 func section(w io.Writer, title string, items []string) {

@@ -26,7 +26,8 @@ for (const id of ['app', 'status', 'note', 'version',
 // Parse only the scaffold IDs when app is replaced. In particular, do not
 // precreate #log: that would skip the first-render branch in detail().
 const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
-  'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status', 'log', 'run-total',
+  'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status',
+  'resume', 'resume-guidance', 'resume-submit', 'resume-status', 'log', 'run-total',
   'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
 const pageIDs = ['page-summary', 'average-spend', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
   'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status',

@@ -104,7 +104,7 @@ func TestImplement(t *testing.T) {
 		want, builds, calls           int
 	}{
 		{"success", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `[]`, 0, 1, len(Agents["implement"])},
-		{"needed is terminal", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, 1, 3},
+		{"needed exhausts scope send-backs", "printf 'hello world\\n' > hello.txt", `["hello.txt"]`, `["missing.txt"]`, 1, 1 + maxScopeSendBacks, 3 * (1 + maxScopeSendBacks)},
 		{"unplanned write reverted", "printf 'hello world\\n' > hello.txt; echo bad > outside.txt", `["hello.txt"]`, `[]`, 1, 1, 3},
 		{"false claim", ":", `["hello.txt"]`, `[]`, 1, 3, 5},
 		{"omitted change", "echo changed > hello.txt", `[]`, `[]`, 1, 3, 5},
@@ -252,16 +252,24 @@ func TestImplementBlockedWriteTrace(t *testing.T) {
 	t.Fatal("no blocked tool call in trace")
 }
 
-// A report that is both terminal and malformed ends the run rather than being
-// corrected: the corrected reply is free to come back without the needed list.
-// Three spawns is what says the builder was stopped rather than asked again.
+// A report that is both a scope request and malformed goes back to the
+// planner rather than being corrected: the corrected reply is free to come
+// back without the needed list. No builder turn is a correction.
 func TestImplementNeededOutranksAnInvalidEnvelope(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := implementStub(t, ":", `{"summary":"blocked","changed":[],"needed":["missing.txt"]}`)
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d; want 1", code)
 	}
-	if n := totalSpawns(t, stub); n != 3 {
-		t.Fatalf("spawn count = %d; want 3 — the builder was corrected instead of stopped", n)
+	if n := spawnsOf(t, stub, "builder"); n != 1+maxScopeSendBacks {
+		t.Fatalf("builder spawns = %d", n)
+	}
+	for i := range 1 + maxScopeSendBacks {
+		if args := stubFile(t, stub, fmt.Sprintf("args.builder.%d", i)); strings.Contains(args, "did not satisfy the output contract") {
+			t.Fatalf("builder spawn %d was a correction", i)
+		}
+	}
+	if n := totalSpawns(t, stub); n != 3*(1+maxScopeSendBacks) {
+		t.Fatalf("spawn count = %d", n)
 	}
 }

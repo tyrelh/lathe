@@ -202,12 +202,17 @@ func Build(r *run.Run) int {
 
 	g := run.NewGraph(r)
 	addRequestNode(g, r)
-	addPlanNodes(g, r, &c.plan, "")
+	addPlanNodes(g, r, &c.plan, "", &c)
 
 	// Immediately after the plan nodes, so it runs whether review accepted the
 	// plan or its send-back budget ran out and the objections became risks. The
 	// graph gives both for free; neither needs a condition.
 	g.Add(run.Node{Name: "branch", Owner: "brancher"}, func(e *run.Entry) (string, error) {
+		// A recovery of published work continues its verified branch.
+		if pub := publication(r); pub != nil {
+			branch = pub.Branch
+			return "", e.Log("branch", fmt.Sprintf("continues %s at %s; no branch is created", branch, short(pub.Head)))
+		}
 		var out BranchOutput
 		if err := e.Call(&out, branchRequest(r.Request, &c.plan),
 			run.ArtifactsExist, run.FilesNonEmpty, BranchUsable); err != nil {
@@ -226,6 +231,19 @@ func Build(r *run.Run) int {
 		paths, err := permit.Changed(r.Repo)
 		if err != nil {
 			return "", err
+		}
+		if pub := publication(r); pub != nil {
+			// An existing pull request takes accepted work only.
+			if pub.PR != "" && !c.v.Accepted() {
+				printOutcome(r.Out, &c.v)
+				return "", fmt.Errorf("validation %s: %s; the changes are left uncommitted (saved as the iteration's result patch) and pull request %s is unchanged",
+					c.v.Outcome, c.v.Reason, pub.PR)
+			}
+			// Already-delivered work needs no new commit.
+			if len(paths) == 0 && pub.Head != "" {
+				sha = pub.Head
+				return "", e.Log("commit", "validated the published work with no further changes; nothing to commit")
+			}
 		}
 		if len(paths) == 0 {
 			return "", fmt.Errorf("the tree holds no changes to commit")
@@ -248,27 +266,17 @@ func Build(r *run.Run) int {
 		if err := publishable(r); err != nil {
 			return "", err
 		}
+		if pub := publication(r); pub != nil {
+			var err error
+			url, err = continuePR(e, r, &c, pub, sha, message)
+			return "", err
+		}
 		if err := workspace.Push(r.Repo, branch); err != nil {
 			return "", err
 		}
-		var out PROutput
-		if err := e.Call(&out, prRequest(&c, branch, message),
-			run.ArtifactsExist, run.FilesNonEmpty); err != nil {
-			return "", err
-		}
-		draft := !c.v.Accepted()
-		body := *out.Body
-		if draft {
-			body += validationReport(&c.v)
-		}
-		body += verificationCallout(&c.v)
-		created, err := workspace.CreatePR(r.Repo, branch, *out.Title, body, draft)
-		if err != nil {
-			return "", err
-		}
-		url = created
-		return "", writeResult(r.Dir, "pr.json", prResult{
-			PROutput: &out, URL: url, Draft: draft, Validation: c.v.Outcome})
+		var err error
+		url, err = openPR(e, r, &c, branch, message)
+		return "", err
 	})
 
 	err := g.Run()
@@ -286,6 +294,32 @@ func Build(r *run.Run) int {
 		reason += fmt.Sprintf(" (the change is committed on %s as %s)", branch, short(sha))
 	}
 	return r.Finish(false, reason)
+}
+
+// openPR has the pr-author write the pull request for branch, already
+// pushed, and opens it under build policy: a draft carrying the validation
+// report when the work is unaccepted. It records the intent before gh runs,
+// so a lost acknowledgement can be recognised, and pr.json after. It returns
+// the URL.
+func openPR(e *run.Entry, r *run.Run, c *code, branch, message string) (string, error) {
+	var out PROutput
+	if err := e.Call(&out, prRequest(c, branch, message), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+		return "", err
+	}
+	draft := !c.v.Accepted()
+	body := *out.Body
+	if draft {
+		body += validationReport(&c.v)
+	}
+	body += verificationCallout(&c.v)
+	if err := writeResult(r.Dir, "pr-intent.json", map[string]any{"branch": branch, "draft": draft, "validation": c.v.Outcome}); err != nil {
+		return "", err
+	}
+	url, err := workspace.CreatePR(r.Repo, branch, *out.Title, body, draft)
+	if err != nil {
+		return "", err
+	}
+	return url, writeResult(r.Dir, "pr.json", prResult{PROutput: &out, URL: url, Draft: draft, Validation: c.v.Outcome})
 }
 
 // commit has the committer write the message for paths and lathe make the

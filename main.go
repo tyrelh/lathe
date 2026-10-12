@@ -41,6 +41,11 @@ commands:
   revise <id> "<change>"
                       plan, validate and push another change to a build's open
                       pull request, as the next iteration of the same run
+  resume <id> "<guidance>"
+                      continue a failed, cancelled or lost run as a new
+                      iteration; writing runs plan again from the earlier
+                      work and your guidance (--restart [--base <ref>] starts
+                      over without restoring that work)
   manager             run the scheduler and the dashboard in the foreground
   runs                list recent runs, from every repo
   show <id>           state, outcome, iterations and reports for one run
@@ -112,6 +117,8 @@ func dispatch(args []string) int {
 		return submit(cmd, args[1:])
 	case "revise":
 		return reviseCmd(args[1:])
+	case "resume":
+		return resumeCmd(args[1:])
 	case "manager":
 		return managerCmd()
 	case "worker":
@@ -560,7 +567,8 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(map[string]any{"run": row, "iteration": n, "iterations": views,
-			"dir": dir, "reports_iteration": from, "reports": present})
+			"dir": dir, "reports_iteration": from, "reports": present,
+			"recovery": recoveryLines(db, row, its, dataRoot, n)})
 		return outcome(it.Status)
 	}
 
@@ -596,8 +604,11 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 			fmt.Printf("    %d  %-9s %s%s\n", x.N, x.Status, clip(x.Request, 72), commit)
 		}
 	}
+	for _, line := range recoveryLines(db, row, its, dataRoot, n) {
+		fmt.Printf("  %s\n", line)
+	}
 	if from != n {
-		fmt.Printf("  iteration %d is %s; the reports below are iteration %d's\n", n, it.Status, from)
+		fmt.Printf("  iteration %d is %s; the reports below are prior, from iteration %d\n", n, it.Status, from)
 	}
 	for _, name := range present {
 		b, err := os.ReadFile(filepath.Join(dir, name))
@@ -633,7 +644,7 @@ func managerCmd() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	actions := dashboard.Actions{
-		Submit: prepareAndSubmit, Revise: dashboardRevise, Cancel: dashboardCancel,
+		Submit: prepareAndSubmit, Revise: dashboardRevise, Resume: dashboardResume, Cancel: dashboardCancel,
 		SavePrompt: func(key, body, baseHash string) error {
 			home, err := agentconfig.Home()
 			if err != nil {

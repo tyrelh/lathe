@@ -99,7 +99,8 @@ func Scout(r *run.Run) int {
 	g.Add(run.Node{Name: "request", Owner: "engineer"},
 		func(e *run.Entry) (string, error) { return "", e.Log("request", r.Request) })
 	g.Add(run.Node{Name: "scout", Owner: "scout"}, func(e *run.Entry) (string, error) {
-		if err := e.Call(&out, r.Request, run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+		// A recovery rescouts read-only, with the prior evidence and guidance.
+		if err := e.Call(&out, r.Request+recoveryContext(r, nil), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 			return "", err
 		}
 		return "", writeResult(r.Dir, "result.json", &out)

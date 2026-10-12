@@ -109,6 +109,8 @@ type Run struct {
 	// Revision is what a revision inherits from the run it extends; nil for
 	// every other workflow.
 	Revision *Revision
+	// Recovery is what a recovery continues from; nil otherwise.
+	Recovery *Recovery
 
 	// PiBin overrides the `pi` found on PATH. Tests set it; production does not.
 	PiBin string
@@ -174,6 +176,7 @@ type Options struct {
 	Iteration int
 	Attempt   string
 	Revision  *Revision
+	Recovery  *Recovery
 	// Runner launches every Pi invocation under a gated supervisor. A worker
 	// executing in a managed worktree always sets it.
 	Runner *process.Runner
@@ -191,6 +194,38 @@ type Revision struct {
 	Base   string // its base branch, what the branch diff is taken against
 	Head   string // the commit lathe last published; the push's expected remote head
 	Prior  []Prior
+}
+
+// Recovery is an engineer's continuation of a failed, cancelled or lost
+// iteration: the guidance, the iteration it continues, every earlier
+// iteration, and the uncommitted paths restored into the tree.
+type Recovery struct {
+	Guidance string
+	Source   int
+	Restart  bool
+	// Failure is how the source iteration ended.
+	Failure string
+	// Restored lists paths restored from the source iteration's patch;
+	// Unavailable says what work a restart or empty restoration left out.
+	Restored    []string
+	Unavailable string
+	Prior       []Prior
+	// Publication is the branch, and any pull request, the run already owns;
+	// nil when it owns none.
+	Publication *Publication
+}
+
+// Publication is the branch a recovered build owns. Head is where origin's
+// branch must be before lathe delivers to it: lathe's delivered work, or ""
+// for a branch origin does not have yet. PR is the pull request verified as
+// lathe's, if any. LatheDraft is set only when lathe recorded opening that
+// draft for unaccepted work.
+type Publication struct {
+	Branch     string `json:"branch"`
+	Head       string `json:"head"`
+	PR         string `json:"pr,omitempty"`
+	Draft      bool   `json:"draft,omitempty"`
+	LatheDraft bool   `json:"lathe_draft,omitempty"`
 }
 
 // Prior is one earlier iteration: what was asked, and where its reports are.
@@ -220,6 +255,7 @@ func Open(o Options) (*Run, error) {
 
 		Iteration: o.Iteration,
 		Revision:  o.Revision,
+		Recovery:  o.Recovery,
 		attempt:   o.Attempt,
 		runner:    o.Runner,
 		base:      o.Base,
@@ -414,6 +450,29 @@ func (r *Run) sweep(h *Handle) ([]string, error) {
 	r.db.Event(r.ID, h.phase.ID, "permit", h.phase.Name,
 		map[string]any{"kept": kept, "reverted": reverted})
 	return reverted, nil
+}
+
+// Resolve records the task this iteration resolved to, so a later recovery
+// reuses it instead of refetching an issue body that may have changed.
+func (r *Run) Resolve(request string) error {
+	if r.attempt == "" {
+		return nil
+	}
+	return r.db.SetResolved(r.ID, r.attempt, request)
+}
+
+// Retain registers paths already in the tree, such as restored work, as
+// accepted, so later phases keep them under enforcement. The tree must have
+// been verified clean before the work was placed in it.
+func (r *Run) Retain(paths []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clean = true
+	for _, p := range paths {
+		if p = permit.Norm(p); !slices.Contains(r.accepted, p) {
+			r.accepted = append(r.accepted, p)
+		}
+	}
 }
 
 // Shipped records the branch and commit a run's work landed on, for a workflow
@@ -613,9 +672,10 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		// A terminal failure is not an output-format slip, so it is checked
 		// ahead of Validate: a reply that reports one and also forgets a key
 		// must end the phase, not be corrected into a reply that no longer
-		// reports it. No guard on violations, because decode zeroes out before
-		// it parses — a reply that did not parse reports no failure here.
-		if failed, ok := out.(Failing); ok {
+		// reports it. Only a reply that decoded cleanly is consulted: a JSON
+		// type error can leave other fields populated, and a report that did
+		// not decode is an ordinary invalid report, corrected like any other.
+		if failed, ok := out.(Failing); ok && len(violations) == 0 {
 			if err := failed.Failure(); err != nil {
 				r.db.Event(r.ID, h.phase.ID, "envelope", agent.Name, out)
 				return err
