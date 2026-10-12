@@ -138,6 +138,13 @@ func Open(dataRoot string) (*DB, error) {
 			return nil, err
 		}
 	}
+	// Two connections switching a fresh database to WAL at once can fail
+	// with SQLITE_IOERR rather than busy, so initialization is serialized.
+	unlock, err := lockInit(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	// Transactions take the write lock when they begin. A deferred one that
 	// reads and then writes fails at once with SQLITE_BUSY if another process
 	// wrote in between, and busy_timeout cannot wait that out.
@@ -173,6 +180,22 @@ func Open(dataRoot string) (*DB, error) {
 		return nil, err
 	}
 	return &DB{sql: db}, nil
+}
+
+// lockInit takes an exclusive lock on a file beside the database at path,
+// shared by every process, and returns its release. It blocks until the lock
+// is free.
+func lockInit(path string) (func(), error) {
+	f, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("locking %s: %w", path, err)
+	}
+	// Closing the file releases the flock.
+	return func() { f.Close() }, nil
 }
 
 // initRetries bounds how often a pragma that SQLite refused for contention
