@@ -510,7 +510,7 @@ const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 10
 // phase_id -> {model, tokens, cost}, summed from the usage events as they
 // stream past. A phase spends once per model response, so a corrected phase is
 // the sum of every response in every try — which is the number worth seeing.
-const spend = new Map(), contexts = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map();
+const spend = new Map(), contexts = new Map(), inputs = new Map(), outputs = new Map(), responses = new Map(), thinking = new Map();
 // phase_id -> every usage payload, and every captured command output tail, in
 // event order. A phase in tails ran a command even while its list is empty.
 const usage = new Map(), tails = new Map();
@@ -800,7 +800,7 @@ function navigate() {
   agentShown = null; promptBoxes.clear();
   generation++;
   after = 0; done = false; failure = '';
-  spend.clear(); contexts.clear(); inputs.clear(); outputs.clear(); responses.clear();
+  spend.clear(); contexts.clear(); inputs.clear(); outputs.clear(); responses.clear(); thinking.clear();
   usage.clear(); tails.clear(); panels.clear();
   draining = false; shown = null; selected = '';
   projectRows = []; projectMore = false; projectLoaded = false; projectLoading = false; projectSummary = null;
@@ -1456,6 +1456,11 @@ async function detail(current) {
       inputs.set(e.phase_id, (inputs.get(e.phase_id) || '') +
         `<p>${e.type === 'input' ? (e.name === 'jev' ? 'Jev request' : 'Agent turn') : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
     }
+    if (e.type === 'input' && e.name !== 'jev') {
+      const level = e.payload?.thinking;
+      if (typeof level === 'string' && level) thinking.set(e.phase_id, level);
+      else thinking.delete(e.phase_id);
+    }
     if (isCommand(e)) bucket(tails, e.phase_id);
     if (e.type === 'log' && e.name === 'output') bucket(tails, e.phase_id).push(text(e.payload));
     if (e.type === 'output') outputs.set(e.phase_id, e.payload?.report);
@@ -1917,7 +1922,8 @@ function block(p, t, g) {
   const s = spend.get(p.phase_id);
   const name = [`#${p.seq} ${p.name}`, s?.model, t.status, s && money(s.cost)].filter(Boolean).join(' · ');
   const description = [`#${p.seq} ${p.name}`, `Status: ${t.status}`,
-    s?.model && `Model: ${s.model}`, s && `Cost: ${money(s.cost)}`,
+    s?.model && `Model: ${s.model}`,
+    thinking.get(p.phase_id) && `Thinking: ${thinking.get(p.phase_id)}`, s && `Cost: ${money(s.cost)}`,
     t.end >= t.start && `Duration: ${dur(t.end - t.start)}`,
     p.owner !== 'engineer' && contextEstimate(contexts.get(p.phase_id))].filter(Boolean).join('\n');
   const at = ` style="--hue:${modelColour(s?.model)}${g ? `;left:min(${g.left.toFixed(3)}%, calc(100% - 2px));width:max(2px, ${g.width.toFixed(3)}%)` : ''}"`;
@@ -2063,7 +2069,8 @@ function details(p, r, now) {
   const facts = `<table class="facts">
       <tr><th>Started</th><td>${esc(p.started_at || 'Not recorded')}</td></tr>
       <tr><th>Ended</th><td>${esc(p.ended_at || 'Not recorded')}${t.bound && owner?.ended_at ? ` <span class="dim">· ${t.by === 'iteration' ? 'iteration' : 'run'} ended ${esc(owner.ended_at)}</span>` : ''}</td></tr>
-      <tr><th>Duration</th><td>${took}</td></tr>
+      <tr><th>Duration</th><td>${took}</td></tr>${thinking.get(id) ? `
+      <tr><th>Thinking</th><td>${esc(thinking.get(id))}</td></tr>` : ''}
     </table>`;
 
   // The first line stays in the summary, so a collapsed error still reads.

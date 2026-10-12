@@ -828,7 +828,7 @@ const costs = () => nodes.get('costs').innerHTML;
   await new Promise(setImmediate);
   assert.equal(failNext, null, 'navigation during a fetch fetches the new page');
   assert.equal(evaluate('after'),0);
-  for (const name of ['usage', 'tails', 'outputs', 'spend', 'contexts']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
+  for (const name of ['usage', 'tails', 'outputs', 'spend', 'contexts', 'thinking']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
   assert.equal(nodes.has('costs'), false, 'navigation removes the old cost panel');
 
   // A different run starts with no usage. Its total is authoritative even
@@ -949,6 +949,42 @@ const costs = () => nodes.get('costs').innerHTML;
     if (count > rows) assert(providersHtml.includes(`1–${rows} of ${count}`), `${count} providers page ${rows} at a time`);
   }
   evaluate('usage.clear(); pagers.clear()');
+
+  // Thinking comes from the latest input event per phase, independent of usage.
+  const thoughtPhases = [...phases, ...[3, 4, 5, 6].map(n => ({...ph(n,'fix',T(65),T(70)), phase_id:'p'+n}))];
+  context.location.hash = '#/runs/thought';
+  response = json({run:{...run, run_id:'thought'}, phases:thoughtPhases, iterations, events:[
+    event('input',{prompt:'a',thinking:'low'},'p1'), event('input',{prompt:'b',thinking:'high'},'p1'),
+    event('usage',{attempt:0,seq:1,model:'m',cost:0.1},'p1'),
+    event('input',{prompt:'c',thinking:'<x>'},'p2'),
+    event('input',{prompt:'d',thinking:'off'},'p3'),
+    event('input',{prompt:'e',thinking:'medium'},'p4'), event('input',{prompt:'f',thinking:''},'p4'),
+    event('input',{prompt:'g',thinking:'medium'},'p5'), event('input',{prompt:'h'},'p5'),
+    event('input',{prompt:'i'},'p6')]});
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  const tipOf = p => chart().match(new RegExp(`data-phase="${p}"[^>]*data-tooltip="([^"]*)"`))[1];
+  assert(tipOf('p1').includes('Model: m\nThinking: high\nCost: $0.10'), tipOf('p1'));
+  assert(!tipOf('p1').includes('low'), 'latest input wins');
+  assert(tipOf('p2').includes('Thinking: &lt;x>') && !tipOf('p2').includes('Model:'), tipOf('p2'));
+  assert(tipOf('p3').includes('Thinking: off'), tipOf('p3'));
+  for (const p of ['p4', 'p5', 'p6']) assert(!tipOf(p).includes('Thinking'), `${p} has no recorded level`);
+  assert.equal(evaluate('spend.has("p2")'), false, 'input alone makes no usage');
+  evaluate(`pick('p1')`);
+  assert(panel().includes('<tr><th>Thinking</th><td>high</td></tr>'), panel());
+  evaluate(`pick('p2')`);
+  assert(panel().includes('<tr><th>Thinking</th><td>&lt;x></td></tr>'), panel());
+  evaluate(`pick('p3')`);
+  assert(panel().includes('<td>off</td>'), panel());
+  for (const p of ['p4', 'p5', 'p6']) {
+    evaluate(`pick('${p}')`);
+    assert(!panel().includes('<th>Thinking</th>'), `${p} details omit thinking`);
+  }
+  context.location.hash = '#/runs/empty';
+  response = json({run:{...run, run_id:'empty', cost:0.5}, phases:[], events:[]});
+  evaluate('navigate()');
+  await new Promise(setImmediate);
+  assert.equal(evaluate('thinking.size'), 0, 'navigation clears thinking');
 
   // Runs: the summary says displayed versus total, and says whose numbers those are.
   context.location.hash = '#/runs';
