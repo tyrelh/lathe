@@ -1516,7 +1516,12 @@ async function detail(current) {
           <form id="revise" onsubmit="reviseRun(event)" hidden>
             <label for="revise-request">Request changes</label><textarea id="revise-request" rows="3" placeholder="What should change in this pull request"></textarea>
             <p><button class="more" id="revise-submit" type="submit">Request changes</button></p></form>
-          <p id="revise-status" role="status"></p></section>
+          <p id="revise-status" role="status"></p>
+          <form id="resume" onsubmit="resumeRun(event)" hidden>
+            <label for="resume-guidance">Resume run</label><textarea id="resume-guidance" rows="3" placeholder="How should the run continue"></textarea>
+            <p class="dim">Continues this run as a new recovery iteration. Writing runs reconsider the plan from the earlier work and your guidance before building again.</p>
+            <p><button class="more" id="resume-submit" type="submit">Resume run</button></p></form>
+          <p id="resume-status" role="status"></p></section>
       </aside></div></div>`;
     $('event-controls').appendChild(followLabel);
     resized.observe($('run-side'));
@@ -1530,6 +1535,9 @@ async function detail(current) {
   // whether it is offered changes. A build whose latest iteration succeeded is
   // the only run that may qualify, and the server checks the rest.
   $('revise').hidden = !(r.workflow === 'build' && r.status === 'ok');
+  // A failed, cancelled or lost latest iteration may be resumed; the server
+  // enforces the rest.
+  $('resume').hidden = !['fail', 'cancelled', 'lost'].includes(r.status);
   $('run-cancel').hidden = !live(r.status);
   const eventBody = $('events-body');
   const visibleEvents = activeTab === 'events' && eventBody.clientHeight > 0;
@@ -1655,6 +1663,37 @@ async function reviseRun(e) {
     if (current === generation) {
       reviseSubmitting = false;
       $('revise-submit').disabled = false;
+    }
+  }
+}
+
+// resumeRun is lathe resume: guidance is required and the page keeps polling,
+// so the queued recovery iteration shows as it runs.
+let resumeSubmitting = false;
+async function resumeRun(e) {
+  e.preventDefault();
+  if (resumeSubmitting) return;
+  const guidance = $('resume-guidance').value.trim();
+  const status = (html, error = false) => { $('resume-status').className = error ? 'fail' : ''; $('resume-status').innerHTML = html; };
+  if (!guidance) return status('Say how the run should continue.', true);
+  const current = generation;
+  resumeSubmitting = true;
+  $('resume-submit').disabled = true;
+  status('Queuing…');
+  try {
+    const {ok, body, error} = await send('/api/runs/' + encodeURIComponent(view.id) + '/recoveries', {guidance});
+    if (current !== generation) return;
+    if (!ok) return status(esc(error), true);
+    $('resume-guidance').value = '';
+    status(`Queued recovery iteration ${esc(body.iteration)}.`);
+    done = false;
+    tick();
+  } catch (err) {
+    if (current === generation) status(esc(String(err)), true);
+  } finally {
+    if (current === generation) {
+      resumeSubmitting = false;
+      $('resume-submit').disabled = false;
     }
   }
 }

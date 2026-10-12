@@ -28,6 +28,9 @@ type Finding struct {
 	Evidence    string `json:"evidence"`
 	Explanation string `json:"explanation"`
 	Outcome     string `json:"outcome"`
+	// From is the iteration that raised a finding a recovery carried in;
+	// nil for one this iteration raised. Refs repeat across iterations.
+	From *int `json:"from_iteration,omitempty"`
 }
 
 // CodeReviewOutput is what each code reviewer returns. An empty findings list
@@ -319,6 +322,10 @@ type Validation struct {
 	Scope      []ScopeAddition `json:"scope,omitempty"`
 	Amendments []Amendment     `json:"amendments,omitempty"`
 	Unresolved []Finding       `json:"unresolved,omitempty"`
+	// Dismissals are findings a plan revised for a scope request made moot.
+	Dismissals []Dismissal `json:"dismissals,omitempty"`
+	// ScopeRequests is how many scope requests the builder made.
+	ScopeRequests int `json:"scope_requests,omitempty"`
 }
 
 func (v *Validation) current() *Round { return v.Rounds[len(v.Rounds)-1] }
@@ -392,6 +399,7 @@ func reviewRequest(c *code) string {
 	evidence(&b, c)
 	previousDecision(&b, c)
 	dismissedFindings(&b, c)
+	section(&b, "\n### Findings a revised plan dismissed", dismissalLines(c.v.Dismissals))
 	b.WriteString("\nInspect the code as it is now. Anything you concluded in an earlier round may be stale.\n")
 	return b.String()
 }
@@ -448,7 +456,21 @@ func adjudicationRequest(c *code, request string, round, left int) string {
 			section(&b, "### Decisions", decisionLines(*a.Decisions))
 		}
 	}
+	section(&b, "\n## Findings a revised plan dismissed (raise them again if they still apply)", dismissalLines(c.v.Dismissals))
 	return b.String()
+}
+
+// dismissalLines renders planner dismissals one per line.
+func dismissalLines(dismissals []Dismissal) []string {
+	var lines []string
+	for _, d := range dismissals {
+		by := fmt.Sprintf("the plan revised for scope request %d", d.Request)
+		if d.Request == 0 {
+			by = "the recovery's reviewed plan"
+		}
+		lines = append(lines, fmt.Sprintf("%s: dismissed by %s (%s)", d.Ref, by, d.Reason))
+	}
+	return lines
 }
 
 // decisionLines renders decisions one per line, as every later round sees them.
@@ -550,6 +572,7 @@ func validationReport(v *Validation) string {
 			}
 		}
 	}
+	dismissed = append(dismissed, dismissalLines(v.Dismissals)...)
 	section(&b, "\n### Dismissed findings", dismissed)
 	var scope, amendments []string
 	for _, s := range v.Scope {

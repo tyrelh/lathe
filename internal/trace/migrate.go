@@ -3,6 +3,7 @@ package trace
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // migrations run in order; PRAGMA user_version counts how many have been
@@ -101,31 +102,69 @@ CREATE TABLE IF NOT EXISTS launches (
 CREATE INDEX IF NOT EXISTS launches_attempt ON launches (attempt_id, state);
 CREATE INDEX IF NOT EXISTS iterations_worktree ON iterations (worktree_state);
 `,
+	// An iteration records why it exists: a submission, a revision, or a
+	// recovery or restart of an earlier iteration, with the engineer's
+	// guidance. The task an issue resolved to is kept, so a recovery never
+	// refetches an issue body that may have changed. NULL kind predates this.
+	`
+ALTER TABLE iterations ADD COLUMN kind TEXT;
+ALTER TABLE iterations ADD COLUMN source_iteration INTEGER;
+ALTER TABLE iterations ADD COLUMN guidance TEXT;
+ALTER TABLE iterations ADD COLUMN resolved_request TEXT;
+ALTER TABLE iterations ADD COLUMN restored INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE iterations ADD COLUMN preservation TEXT;
+`,
 }
 
 // migrate applies every migration the database has not seen yet.
+//
+// The version is read inside each migration's transaction, after it holds
+// the write lock (the connection begins transactions IMMEDIATE), so another
+// opener that migrated meanwhile is seen and its migration not repeated.
 func migrate(db *sql.DB) error {
+	for {
+		done, err := migrateOne(db)
+		if err != nil || done {
+			return err
+		}
+	}
+}
+
+// migrateOne applies the next pending migration and its version in one
+// transaction, and reports whether none was pending.
+func migrateOne(db *sql.DB) (bool, error) {
+	tx, err := beginRetrying(db)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
 	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return err
+	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return false, err
 	}
-	for i := version; i < len(migrations); i++ {
-		tx, err := db.Begin()
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(migrations[i]); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("migration %d: %w", i+1, err)
-		}
-		// PRAGMA takes no bound parameter, and i is an index into a literal.
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("migration %d: %w", i+1, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+	if version >= len(migrations) {
+		return true, nil
 	}
-	return nil
+	if _, err := tx.Exec(migrations[version]); err != nil {
+		return false, fmt.Errorf("migration %d: %w", version+1, err)
+	}
+	// PRAGMA takes no bound parameter, and version indexes a literal.
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", version+1)); err != nil {
+		return false, fmt.Errorf("migration %d: %w", version+1, err)
+	}
+	return false, tx.Commit()
+}
+
+// beginRetrying begins a transaction, retrying contention the busy timeout
+// does not wait out, as execRetrying does.
+func beginRetrying(db *sql.DB) (*sql.Tx, error) {
+	var err error
+	for try := 0; try <= initRetries; try++ {
+		var tx *sql.Tx
+		if tx, err = db.Begin(); err == nil || !contended(err) {
+			return tx, err
+		}
+		time.Sleep(time.Duration(try+1) * 25 * time.Millisecond)
+	}
+	return nil, err
 }

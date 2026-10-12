@@ -365,6 +365,28 @@ func TestRevisionWithNoChanges(t *testing.T) {
 	}
 }
 
+// A revision that completes with no new commit still checks the pull
+// request and origin after validation: a branch moved or a pull request
+// closed meanwhile refuses completion.
+func TestNoChangeRevisionRechecksPublication(t *testing.T) {
+	for _, tc := range []struct{ name, tester string }{
+		{"moved", "c=$(git commit-tree HEAD^{tree} -p HEAD -m external); git push -q -f origin $c:refs/heads/$(cat \"$d/gh-head\")\n"},
+		{"closed", "printf 'CLOSED\\n' > \"$d/gh-states\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, repo, _, stub := revisable(t)
+			write(t, filepath.Join(stub, "planner.1"), planReply(t, ""))
+			write(t, filepath.Join(stub, "tester.sh"), tc.tester)
+			if code := revise(t, cfg, repo, "confirm the greeting needs nothing else"); code != 1 {
+				t.Fatalf("code = %d", code)
+			}
+			if reason := latestRun(t).Reason; !strings.Contains(reason, "nothing was published") {
+				t.Fatalf("reason = %q", reason)
+			}
+		})
+	}
+}
+
 // Unaccepted and cancelled revisions keep their work and reports locally,
 // publish nothing, and end the run's revisions.
 func TestUnfinishedRevisionsPublishNothing(t *testing.T) {

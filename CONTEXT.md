@@ -15,7 +15,10 @@ One submitted request against a run and what became of it: its request, the conf
 A further change requested against a build whose latest iteration succeeded and whose pull request is still open. It is the next iteration of the same run, not a new run: planned, validated and published to the same pull request, and published only if accepted.
 
 **Recovery**:
-An engineer-requested continuation of a failed, cancelled, or lost run as a new iteration of the same run. The unsuccessful iteration remains inspectable; the recovery has its own request, captured agent configuration, and bounded allowances.
+An engineer-requested continuation of a failed, cancelled, or lost run as a new iteration of the same run. The unsuccessful iteration remains inspectable; the recovery has its own request, captured agent configuration, and bounded allowances. It continues the run's original resolved task with the engineer's guidance, restores saved work that was never published, and keeps the branch and pull request the run already owns. An iteration records its kind (submission, revision, recovery or restart), so a nonzero iteration is not necessarily a revision.
+
+**Publication ownership**:
+The branch, and pull request, a recovered build verifiably owns: recorded by lathe or uniquely matched on origin's repository and branch at the expected head. A recovery delivers only to what it owns, rechecks it immediately before every delivery, and carries it into later recoveries.
 
 **Restart**:
 An engineer-requested recovery from a verified base when the previous iteration's expected work cannot be restored. The new iteration records which prior work is unavailable rather than silently treating it as recovered.
@@ -109,7 +112,10 @@ The exact repository files the plan permits the builder to write. Listing a
 file grants permission; it does not require a change to that file.
 
 **Scope request**:
-A builder's report that the current plan omits files needed to complete the request. It asks the planner to reconsider the plan; the planner may choose another approach instead of granting the requested files.
+A builder's report that the current plan omits files needed to complete the request. It asks the planner to reconsider the plan; the planner may choose another approach instead of granting the requested files. Two are answered per iteration; the third ends it.
+
+**Disposition**:
+What a reviewed plan does with work it finds: uncommitted paths it keeps in its files or abandons as reversals (saved, then reverted), and outstanding findings it dismisses with a reason. It is applied only after review, before the builder runs.
 
 **Branch**:
 The branch a build creates for its change before anything is written, named to

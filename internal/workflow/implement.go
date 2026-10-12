@@ -11,11 +11,14 @@ import (
 )
 
 // ImplementOutput describes the work left in the tree and any missing permission.
+// Explanation is optional: why the plan cannot complete the request without
+// Needed. The summary stands in for it when absent.
 type ImplementOutput struct {
-	Summary *string   `json:"summary"`
-	Changed *[]string `json:"changed"`
-	Needed  *[]string `json:"needed"`
-	Wrote   *[]string `json:"artifacts"`
+	Summary     *string   `json:"summary"`
+	Changed     *[]string `json:"changed"`
+	Needed      *[]string `json:"needed"`
+	Wrote       *[]string `json:"artifacts"`
+	Explanation *string   `json:"explanation,omitempty"`
 }
 
 func (b *ImplementOutput) Validate() []string {
@@ -42,14 +45,22 @@ func (b *ImplementOutput) Artifacts() []string {
 	return *b.Wrote
 }
 
-// Failure makes ImplementOutput a run.Failing: a missing permission is terminal
-// even when the rest of the report needs correction, because correcting it would
-// turn a plan that was never sufficient into an apparently successful run.
+// Failure makes ImplementOutput a run.Failing: a nonempty needed list is a
+// *ScopeError even when the rest of the report needs correction, because
+// correcting it would turn a plan that was never sufficient into an
+// apparently successful run.
 func (b *ImplementOutput) Failure() error {
-	if b.Needed != nil && len(*b.Needed) > 0 {
-		return fmt.Errorf("plan missed files the builder needs: %s", strings.Join(*b.Needed, ", "))
+	if b.Needed == nil || len(*b.Needed) == 0 {
+		return nil
 	}
-	return nil
+	err := &ScopeError{Needed: append([]string{}, *b.Needed...)}
+	switch {
+	case b.Explanation != nil && strings.TrimSpace(*b.Explanation) != "":
+		err.Explanation = strings.TrimSpace(*b.Explanation)
+	case b.Summary != nil:
+		err.Explanation = strings.TrimSpace(*b.Summary)
+	}
+	return err
 }
 
 // ChangesMatchClaim compares both directions against Git, not the plan: files
@@ -117,12 +128,22 @@ const maxRepairs = 10
 // implementation summary are what a commit message and a pull request body are
 // written from, and neither is recoverable from the tree. v says whether what
 // they ship was accepted.
+//
+// mode says why the builder is next entered. outstanding is the findings the
+// last adjudication asked to fix and changes its requested changes, carried
+// across a scope send-back.
 type code struct {
-	plan     PlanOutput
-	out      ImplementOutput
-	handoff  string
-	feedback string
-	v        Validation
+	plan        PlanOutput
+	out         ImplementOutput
+	handoff     string
+	feedback    string
+	v           Validation
+	mode        builderMode
+	outstanding []Finding
+	changes     string
+	scope       scopeLoop
+	// disposed is set once a recovery's reviewed plan has been applied.
+	disposed bool
 }
 
 // patchNote says where a managed worktree's result is saved, or "" for a run
@@ -141,6 +162,16 @@ func addRequestNode(g *run.Graph, r *run.Run) {
 	g.Add(run.Node{Name: "request", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 		if err := e.Log("request", r.Request); err != nil {
 			return "", err
+		}
+		if r.Recovery != nil {
+			if err := e.Log("recovery", fmt.Sprintf("continues iteration %d: %s", r.Recovery.Source, r.Recovery.Guidance)); err != nil {
+				return "", err
+			}
+			// The worktree was verified clean before the prior work was
+			// restored and registered as retained.
+			if len(r.Recovery.Restored) > 0 {
+				return "", e.Log("restored", strings.Join(r.Recovery.Restored, "\n"))
+			}
 		}
 		return "", r.EnsureClean()
 	})
@@ -167,34 +198,55 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			return "", e.Route("builder", BuildRouteState(r.Request, &c.plan))
 		})
 	}
-	g.Add(run.Node{Name: "implement", Owner: "builder"}, func(e *run.Entry) (string, error) {
-		request := c.feedback
-		if e.Round == 0 {
-			// The plan is settled by the time anything reaches here: review only
-			// ever sends back to the planner, never past this node.
+	// A scope request sends back to the planner; review then forwards straight
+	// here, past branch creation and routing, which are settled for the
+	// iteration. Rounds count completed implementations, not entries.
+	g.Add(run.Node{Name: "implement", Owner: "builder", SendBacks: maxScopeSendBacks}, func(e *run.Entry) (string, error) {
+		var request string
+		switch c.mode {
+		case buildRepair:
+			request = c.feedback
+		case buildReplanned:
+			c.handoff = implementRequest(r.Request, &c.plan, c.v.Amendments)
+			request = replannedRequest(c)
+		default:
 			c.handoff = implementRequest(r.Request, &c.plan, nil)
 			request = c.handoff
+			// A recovery carries prior findings the plan did not dismiss.
+			if len(c.outstanding) > 0 {
+				var b strings.Builder
+				b.WriteString("\n### Findings from prior validation still to fix\n")
+				for _, f := range c.outstanding {
+					writeFinding(&b, f)
+				}
+				request += b.String()
+			}
+			if r.Recovery != nil && len(r.Recovery.Restored) > 0 {
+				request += "\nThe tree already holds the prior iteration's work on the paths the plan keeps; continue from it.\n"
+			}
+		}
+		if c.mode != buildRepair && len(*c.plan.Files) == 0 {
 			// Only a revision's plan can permit nothing. A builder that may write
 			// nothing has nothing to do, so the branch is validated as it stands.
-			if len(*c.plan.Files) == 0 {
-				summary, none := "No code changes: "+*c.plan.Summary, []string{}
-				c.out = ImplementOutput{Summary: &summary, Changed: &none, Needed: &none, Wrote: &none}
-				c.v.Rounds = append(c.v.Rounds, newRound(e.Round))
-				return "", writeResult(r.Dir, "implement.json", &c.out)
-			}
+			summary, none := "No code changes: "+*c.plan.Summary, []string{}
+			c.out = ImplementOutput{Summary: &summary, Changed: &none, Needed: &none, Wrote: &none}
+			c.v.Rounds = append(c.v.Rounds, newRound(len(c.v.Rounds)))
+			return "", writeResult(r.Dir, "implement.json", &c.out)
 		}
 		e.Scope(*c.plan.Files)
 		err := e.Call(&c.out, request, run.ArtifactsExist, run.FilesNonEmpty, ChangesMatchClaim)
-		// Keep a terminal needed report alongside the plan for diagnosis.
-		if err == nil || c.out.Failure() != nil {
-			if saveErr := writeResult(r.Dir, "implement.json", &c.out); saveErr != nil {
-				return "", saveErr
-			}
+		var scope *ScopeError
+		if errors.As(err, &scope) {
+			return c.blocked(e, r, scope)
 		}
-		if err == nil {
-			c.v.Rounds = append(c.v.Rounds, newRound(e.Round))
+		if err != nil {
+			return "", err
 		}
-		return "", err
+		if err := writeResult(r.Dir, "implement.json", &c.out); err != nil {
+			return "", err
+		}
+		c.v.Rounds = append(c.v.Rounds, newRound(len(c.v.Rounds)))
+		return "", nil
 	})
 
 	// The tester reassesses the command every round, runs it and reports its
@@ -218,11 +270,12 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 	}}}
 	for _, name := range reviewers {
 		workers = append(workers, run.Worker{Name: name, Owner: name, Run: func(e *run.Entry) error {
-			report := c.v.current().Reports[name]
+			cur := c.v.current()
+			report := cur.Reports[name]
 			if err := e.Call(report, reviewRequest(c), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 				return err
 			}
-			report.stamp(name, e.Round)
+			report.stamp(name, cur.Round)
 			return nil
 		}})
 	}
@@ -283,6 +336,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		cur.Adjudication = &out
 
 		if *out.Verdict == verdictAccept {
+			c.outstanding, c.changes = nil, ""
 			c.v.settle(outcomeAccepted, "")
 			return "", writeResult(r.Dir, "validation.json", &c.v)
 		}
@@ -298,6 +352,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		}
 		c.amend(r.Request, &out)
 		c.feedback = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
+		c.mode, c.outstanding, c.changes = buildRepair, fixes, *out.Changes
 		if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
 			return "", err
 		}
@@ -321,7 +376,7 @@ func Implement(r *run.Run) int {
 
 	g := run.NewGraph(r)
 	addRequestNode(g, r)
-	addPlanNodes(g, r, &c.plan, "")
+	addPlanNodes(g, r, &c.plan, "", &c)
 	addCodeNodes(g, r, &c)
 
 	if err := g.Run(); err != nil {

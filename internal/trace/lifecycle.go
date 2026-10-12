@@ -525,6 +525,19 @@ type Iteration struct {
 	Patch         string `json:"patch"`
 	RecoveryRef   string `json:"recovery_ref"`
 	Spec          []byte `json:"-"`
+	// Kind is why the iteration exists (KindSubmission, KindRevision,
+	// KindRecovery or KindRestart); Source is the iteration a recovery
+	// continues, or -1. Resolved is the task an issue resolved to.
+	Kind     string `json:"kind"`
+	Source   int    `json:"source_iteration"`
+	Guidance string `json:"guidance"`
+	Resolved string `json:"resolved_request"`
+	// Restored is whether a recovery finished restoring the work its
+	// specification carries.
+	Restored bool `json:"restored"`
+	// Preservation is how cleanup preserved the worktree's work: one of the
+	// Preserved constants, or "" when nothing recorded it.
+	Preservation string `json:"preservation"`
 }
 
 // Iterations is every iteration of a run, oldest first.
@@ -534,7 +547,10 @@ func (d *DB) Iterations(runID string) ([]Iteration, error) {
 		        COALESCE(submitted_at, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''),
 		        COALESCE(base_commit, ''), COALESCE(commit_sha, ''), COALESCE(remote_sha, ''),
 		        COALESCE(worktree_path, ''), COALESCE(worktree_state, ''), COALESCE(worktree_error, ''),
-		        COALESCE(patch_path, ''), COALESCE(recovery_ref, ''), COALESCE(spec, '')
+		        COALESCE(patch_path, ''), COALESCE(recovery_ref, ''), COALESCE(spec, ''),
+		        COALESCE(kind, CASE WHEN iteration = 0 THEN 'submission' ELSE 'revision' END),
+		        COALESCE(source_iteration, -1), COALESCE(guidance, ''), COALESCE(resolved_request, ''), restored,
+		        COALESCE(preservation, '')
 		 FROM iterations WHERE run_id = ? ORDER BY iteration`, runID)
 	if err != nil {
 		return nil, err
@@ -546,7 +562,8 @@ func (d *DB) Iterations(runID string) ([]Iteration, error) {
 		var spec string
 		if err := rows.Scan(&it.N, &it.Request, &it.Status, &it.Reason, &it.Submitted, &it.Started,
 			&it.Ended, &it.Base, &it.Commit, &it.Remote, &it.Worktree, &it.WorktreeState,
-			&it.CleanupError, &it.Patch, &it.RecoveryRef, &spec); err != nil {
+			&it.CleanupError, &it.Patch, &it.RecoveryRef, &spec,
+			&it.Kind, &it.Source, &it.Guidance, &it.Resolved, &it.Restored, &it.Preservation); err != nil {
 			return nil, err
 		}
 		it.Spec = []byte(spec)
@@ -643,6 +660,8 @@ type Worktree struct {
 	// Current is whether this is the run's latest iteration.
 	Current bool
 	Spec    []byte
+	// State is the cleanup state recorded when it was read.
+	State string
 }
 
 // SetWorktree records the attempt's iteration worktree, the base commit it
@@ -682,7 +701,7 @@ func (d *DB) SetRecoveryRef(runID string, iteration int, ref string) error {
 func (d *DB) Worktrees() ([]Worktree, error) {
 	rows, err := d.sql.Query(
 		`SELECT i.run_id, i.iteration, COALESCE(r.repo, ''), i.worktree_path, COALESCE(i.base_commit, ''),
-		        COALESCE(r.status, ''), i.iteration = r.iteration, COALESCE(i.spec, '')
+		        COALESCE(r.status, ''), i.iteration = r.iteration, COALESCE(i.spec, ''), COALESCE(i.worktree_state, '')
 		 FROM iterations i JOIN runs r ON r.run_id = i.run_id
 		 WHERE COALESCE(i.worktree_path, '') != '' AND COALESCE(i.worktree_state, '') != 'removed'
 		 ORDER BY i.submitted_at, i.run_id, i.iteration`)
@@ -695,7 +714,7 @@ func (d *DB) Worktrees() ([]Worktree, error) {
 		var w Worktree
 		var spec string
 		if err := rows.Scan(&w.RunID, &w.Iteration, &w.Repo, &w.Path, &w.Base,
-			&w.RunStatus, &w.Current, &spec); err != nil {
+			&w.RunStatus, &w.Current, &spec, &w.State); err != nil {
 			return nil, err
 		}
 		w.Spec = []byte(spec)

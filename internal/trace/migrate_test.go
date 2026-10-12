@@ -1,10 +1,87 @@
 package trace
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 )
+
+// An existing database one migration behind, opened by many connections
+// and processes at once, is upgraded exactly once: each opener reads the
+// version under the write lock, so none repeats a migration another already
+// committed, and every opener succeeds.
+func TestConcurrentUpgrade(t *testing.T) {
+	for round := range 3 {
+		dataRoot := t.TempDir()
+		db, err := Open(dataRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Back to the schema before the last migration.
+		for _, column := range []string{"kind", "source_iteration", "guidance", "resolved_request", "restored", "preservation"} {
+			if _, err := db.sql.Exec("ALTER TABLE iterations DROP COLUMN " + column); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := db.sql.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(migrations)-1)); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make(chan error, 12)
+		for i := range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				db, err := Open(dataRoot)
+				if err != nil {
+					errs <- fmt.Errorf("round %d connection %d: %w", round, i, err)
+					return
+				}
+				db.Close()
+			}()
+		}
+		for i := range 4 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				cmd := exec.Command(os.Args[0], "-test.run=^TestOpenHelper$")
+				cmd.Env = append(os.Environ(), "LATHE_TRACE_OPEN="+dataRoot)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					errs <- fmt.Errorf("round %d process %d: %v: %s", round, i, err, out)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+
+		db, err = Open(dataRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var version int
+		if err := db.sql.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != len(migrations) {
+			t.Fatalf("user_version = %d, %v; want %d", version, err, len(migrations))
+		}
+		rows, err := db.sql.Query(`SELECT kind, source_iteration, guidance, resolved_request, restored, preservation FROM iterations LIMIT 1`)
+		if err != nil {
+			t.Fatalf("upgraded schema: %v", err)
+		}
+		rows.Close()
+		db.Close()
+	}
+}
 
 // A fresh database carries every migration: worktree reporting columns on
 // iterations, an execution mode on attempts that defaults to the legacy

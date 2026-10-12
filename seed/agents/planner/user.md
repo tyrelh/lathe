@@ -12,7 +12,7 @@ If the request above looks like a well-formed plan already just review it for co
 
 ## The file list
 
-`files` is the load-bearing key. **Every path you list is a path the builder is allowed to write, and a path you omit is one it cannot.** A write outside the list is blocked and the run fails. The builder has no way to ask for more.
+`files` is the load-bearing key. **Every path you list is a path the builder is allowed to write, and a path you omit is one it cannot.** A write outside the list is blocked. A builder that needs more stops and sends the plan back, which costs a round, and the run fails after a few.
 
 So alongside the source files you expect to change, list:
 
@@ -40,3 +40,9 @@ End your reply with a single fenced `json` block, and nothing after it:
 ```
 
 All five keys are required. `artifacts` lists repo-relative paths of files you wrote; a planner writes nothing, so leave it empty. Claiming a file you did not write fails the run.
+
+Three optional keys apply when the request shows uncommitted work or outstanding findings, or when you see adjacent work:
+
+- `reversals`: `[{"path": "...", "reason": "..."}]`. Every path listed as work in the tree must stay in `files` or appear here; lathe saves abandoned work, then reverts it.
+- `dismissals`: `[{"ref": "...", "reason": "..."}]`, only for outstanding findings the revised approach makes moot.
+- `future_tickets`: `[{"title": "...", "reason": "..."}]`, adjacent work that belongs in a separate run. It grants no scope and creates nothing.

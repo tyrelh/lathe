@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite" // pure Go: cross-compiles without a C toolchain
+	"modernc.org/sqlite" // pure Go: cross-compiles without a C toolchain
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // dbFile is the database this release writes. The v0.2 runs.db is left where
@@ -97,6 +99,9 @@ CREATE TABLE IF NOT EXISTS events (
 // openers set it, so it is one literal.
 const busyTimeout = "PRAGMA busy_timeout=5000"
 
+// busyMillis is busyTimeout's wait, for the DSN.
+const busyMillis = 5000
+
 // DataRoot is where the database and per-run artifacts live: $XDG_DATA_HOME/lathe,
 // falling back to ~/.local/share/lathe.
 func DataRoot() (string, error) {
@@ -133,10 +138,21 @@ func Open(dataRoot string) (*DB, error) {
 			return nil, err
 		}
 	}
+	// Two connections switching a fresh database to WAL at once can fail
+	// with SQLITE_IOERR rather than busy, so initialization is serialized.
+	unlock, err := lockInit(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	// Transactions take the write lock when they begin. A deferred one that
 	// reads and then writes fails at once with SQLITE_BUSY if another process
 	// wrote in between, and busy_timeout cannot wait that out.
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, dbFile)+"?_txlock=immediate")
+	//
+	// The busy timeout is in the DSN so it holds on every connection before
+	// its first statement: switching to WAL takes a lock, and a second lathe
+	// opening the same database meanwhile must wait rather than fail.
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, dbFile)+"?_txlock=immediate&_pragma=busy_timeout("+strconv.Itoa(busyMillis)+")")
 	if err != nil {
 		return nil, err
 	}
@@ -145,17 +161,17 @@ func Open(dataRoot string) (*DB, error) {
 	// wait its turn instead of failing.
 	db.SetMaxOpenConns(1)
 	for _, pragma := range []string{
+		busyTimeout,
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL", // WAL keeps this crash-safe without a per-statement fsync
-		busyTimeout,
 		"PRAGMA foreign_keys=ON",
 	} {
-		if _, err := db.Exec(pragma); err != nil {
+		if err := execRetrying(db, pragma); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", pragma, err)
 		}
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := execRetrying(db, schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
@@ -164,6 +180,56 @@ func Open(dataRoot string) (*DB, error) {
 		return nil, err
 	}
 	return &DB{sql: db}, nil
+}
+
+// lockInit takes an exclusive lock on a file beside the database at path,
+// shared by every process, and returns its release. It blocks until the lock
+// is free.
+func lockInit(path string) (func(), error) {
+	f, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("locking %s: %w", path, err)
+	}
+	// Closing the file releases the flock.
+	return func() { f.Close() }, nil
+}
+
+// initRetries bounds how often a pragma that SQLite refused for contention
+// is tried again. Some lock waits, such as WAL recovery by another
+// connection (SQLITE_BUSY_RECOVERY), return busy without the busy handler.
+const initRetries = 20
+
+// execRetrying runs stmt, retrying contention with growing pauses up to
+// initRetries times. Any other error is returned at once.
+func execRetrying(db *sql.DB, stmt string) error {
+	var err error
+	for try := 0; try <= initRetries; try++ {
+		if _, err = db.Exec(stmt); err == nil || !contended(err) {
+			return err
+		}
+		time.Sleep(time.Duration(try+1) * 25 * time.Millisecond)
+	}
+	return err
+}
+
+// contended reports whether err is SQLite reporting a lock held by another
+// connection rather than a fault.
+func contended(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	// The primary code; extended ones such as SQLITE_BUSY_RECOVERY carry it
+	// in their low byte.
+	switch se.Code() & 0xff {
+	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+		return true
+	}
+	return false
 }
 
 // Private creates dir with owner-only access, or tightens an existing one to

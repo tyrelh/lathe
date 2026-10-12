@@ -66,13 +66,106 @@ type PR struct {
 	State string `json:"state"` // OPEN, CLOSED or MERGED
 	Head  string `json:"headRefName"`
 	Base  string `json:"baseRefName"`
+	Draft bool   `json:"isDraft"`
+	// HeadOid is the commit the pull request's head points at, and Cross is
+	// whether that head lives in a repository other than its base's.
+	HeadOid string `json:"headRefOid"`
+	Cross   bool   `json:"isCrossRepository"`
+}
+
+// prFields is every field PR decodes.
+const prFields = "url,state,headRefName,baseRefName,isDraft,headRefOid,isCrossRepository"
+
+// CheckPublication establishes, fail-closed, that origin's branch is at head
+// (absent when head is "") and, with url, that the pull request is open,
+// comes from branch in origin's own repository, and points at head. It is
+// what a recovery checks before every delivery and at submission.
+func CheckPublication(repo, branch, head, url string) (PR, error) {
+	remote, err := RemoteHead(repo, branch)
+	if err != nil {
+		return PR{}, err
+	}
+	if remote != head {
+		return PR{}, fmt.Errorf("origin/%s is at %s, not %s where lathe left it: it moved outside lathe", branch, orNone(Short(remote)), orNone(Short(head)))
+	}
+	if url == "" {
+		return PR{}, nil
+	}
+	pr, err := ViewPR(repo, url)
+	if err != nil {
+		return PR{}, err
+	}
+	return pr, OwnsPR(pr, branch, head)
+}
+
+// OwnsPR refuses a pull request that is not open, or whose head is not
+// branch in its base repository at head.
+func OwnsPR(pr PR, branch, head string) error {
+	switch {
+	case pr.State != "OPEN":
+		return fmt.Errorf("pull request %s is %s; reopening or follow-up work needs a separate request", pr.URL, strings.ToLower(pr.State))
+	case pr.Cross:
+		return fmt.Errorf("pull request %s comes from another repository; lathe does not own it", pr.URL)
+	case pr.Head != branch:
+		return fmt.Errorf("pull request %s comes from %s, not %s", pr.URL, pr.Head, branch)
+	case pr.HeadOid == "" || pr.HeadOid != head:
+		return fmt.Errorf("pull request %s points at %s, not %s; its ownership cannot be established", pr.URL, orNone(Short(pr.HeadOid)), Short(head))
+	}
+	return nil
+}
+
+// FindPR is the one pull request, in any state, whose head is branch in
+// repo's GitHub repository. It returns false when there is none and refuses
+// more than one: ownership must be unambiguous.
+func FindPR(repo, branch string) (PR, bool, error) {
+	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--state", "all", "--json", prFields)
+	cmd.Dir = repo
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := process.Output(cmd)
+	if err != nil {
+		return PR{}, false, fmt.Errorf("gh pr list --head %s: %w: %s", branch, err, strings.TrimSpace(stderr.String()))
+	}
+	var prs []PR
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return PR{}, false, fmt.Errorf("decode gh pr list: %w", err)
+	}
+	var match []PR
+	for _, pr := range prs {
+		if pr.Head != branch {
+			continue
+		}
+		// A fork may use the same branch name; that alone makes the
+		// match ambiguous.
+		if pr.Cross {
+			return PR{}, false, fmt.Errorf("pull request %s from another repository also uses branch %s; lathe cannot establish which pull request is its own", pr.URL, branch)
+		}
+		match = append(match, pr)
+	}
+	switch len(match) {
+	case 0:
+		return PR{}, false, nil
+	case 1:
+		return match[0], true, nil
+	}
+	return PR{}, false, fmt.Errorf("%d pull requests come from %s; lathe cannot tell which is its own", len(match), branch)
+}
+
+// ReadyPR marks a draft pull request ready for review.
+func ReadyPR(repo, url string) error {
+	cmd := exec.Command("gh", "pr", "ready", url)
+	cmd.Dir = repo
+	if out, err := process.CombinedOutput(cmd); err != nil {
+		return fmt.Errorf("gh pr ready %s: %w: %s", url, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // ViewPR reads a pull request's state now. Publication calls it on both sides
 // of a push, because pushing and closing a pull request are separate
 // operations and someone else may do the second in between.
 func ViewPR(repo, url string) (PR, error) {
-	cmd := exec.Command("gh", "pr", "view", url, "--json", "url,state,headRefName,baseRefName")
+	cmd := exec.Command("gh", "pr", "view", url, "--json", prFields)
 	cmd.Dir = repo
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

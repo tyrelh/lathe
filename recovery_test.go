@@ -375,6 +375,156 @@ func TestSimultaneousBuilds(t *testing.T) {
 	}
 }
 
+// recoveryStub is buildStub without the builder barrier: each builder turn
+// writes a distinct greeting, the tester's first turn reports an environment
+// failure when tester-fails exists, and gh fails its first pr create when
+// gh-fail-once exists. gh pr view reports the recorded head at origin's head.
+func recoveryStub(t *testing.T) string {
+	t.Helper()
+	d := buildStub(t)
+	os.WriteFile(filepath.Join(d, "tester-env"), []byte(agentReply(t, map[string]any{"summary": "discovered",
+		"command": "missing-tool", "exit_code": 127, "output": "not found", "failures": []string{}, "coverage": "none",
+		"artifacts": []string{}})), 0o644)
+	pi := fmt.Sprintf(`#!/bin/sh
+d=%q
+if [ "$1 $2" = "auth check" ]; then printf '{"provider":"%%s","status":"ready","authType":"api_key"}\n' "$4"; exit 0; fi
+a=unknown
+for name in planner plan-reviewer brancher builder tester code-review-general code-review-security code-review-slop code-review-adversarial adjudicator committer pr-author; do
+  case "$*" in *"You are the $name "*) a=$name; break ;; esac
+done
+if [ "$a" = builder ]; then
+  n=0; [ ! -f "$d/builds" ] || n=$(cat "$d/builds"); echo $((n+1)) > "$d/builds"
+  printf 'hello world %%s\n' "$n" > hello.txt
+  cat "$d/builder"; exit 0
+fi
+if [ "$a" = tester ] && [ -f "$d/tester-fails" ] && [ ! -f "$d/tested" ]; then touch "$d/tested"; cat "$d/tester-env"; exit 0; fi
+cat "$d/$a"
+`, d)
+	gh := fmt.Sprintf(`#!/bin/sh
+d=%q
+head=""; prev=""
+for a in "$@"; do [ "$prev" = "--head" ] && head=$a; prev=$a; done
+case "$1 $2" in
+"pr list") echo '[]' ;;
+"pr view") h=$(cat "$d/gh-head"); oid=$(git ls-remote origin "refs/heads/$h" | cut -f1)
+  printf '{"url":"%%s","state":"OPEN","headRefName":"%%s","baseRefName":"main","isDraft":false,"headRefOid":"%%s","isCrossRepository":false}\n' "$3" "$h" "$oid" ;;
+"pr create") echo "$head" > "$d/gh-head"
+  if [ -f "$d/gh-fail-once" ]; then rm "$d/gh-fail-once"; echo "network down" >&2; exit 1; fi
+  echo created >> "$d/gh-creates"; echo https://github.com/acme/widget/pull/7 ;;
+*) exit 1 ;;
+esac
+`, d)
+	os.WriteFile(filepath.Join(d, "pi"), []byte(pi), 0o755)
+	os.WriteFile(filepath.Join(d, "gh"), []byte(gh), 0o755)
+	return d
+}
+
+// recoveryRepo is a checkout with an origin that has main, and the lathe
+// environment for one test.
+func recoveryRepo(t *testing.T) (repo, origin, home string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	repo = gitRepo(t, "")
+	gitIn(t, repo, "config", "user.name", "T")
+	gitIn(t, repo, "config", "user.email", "t@example.com")
+	origin = t.TempDir()
+	gitIn(t, origin, "init", "-q", "--bare")
+	gitIn(t, repo, "remote", "add", "origin", origin)
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+	return repo, origin, home
+}
+
+// lathe resume continues a failed implement through the CLI: it waits for
+// the iteration it submitted, restores the saved work and succeeds, and the
+// failed iteration stays in the history.
+func TestResumeCommandRecoversAFailedImplement(t *testing.T) {
+	bin := buildLathe(t)
+	repo, _, home := recoveryRepo(t)
+	stub := recoveryStub(t)
+	os.WriteFile(filepath.Join(stub, "tester-fails"), nil, 0o644)
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, code := lathe(t, bin, "implement", "--detach", "--repo", repo, "--provider", "stub", "--model", "m", "greet the world")
+	if code != 0 {
+		t.Fatalf("submission exited %d:\n%s", code, out)
+	}
+	id := queuedID(out)
+	if out, code := lathe(t, bin, "wait", id); code != 1 {
+		t.Fatalf("first iteration exited %d:\n%s\n%s", code, out, managerLog(home))
+	}
+	if out, code := lathe(t, bin, "resume", id); code != 2 || !strings.Contains(out, "guidance") {
+		t.Fatalf("resume without guidance exited %d:\n%s", code, out)
+	}
+	out, code = lathe(t, bin, "resume", "--provider", "stub", "--model", "m", id, "install the tool and keep the greeting")
+	if code != 0 || !strings.Contains(out, "iteration 1 queued") {
+		shown, _ := lathe(t, bin, "show", id)
+		t.Fatalf("resume exited %d:\n%s\n%s\n%s", code, out, shown, managerLog(home))
+	}
+	shown, _ := lathe(t, bin, "show", "--json", id)
+	var report struct {
+		Iterations []struct {
+			Status, Kind string
+			Source       int `json:"source_iteration"`
+		} `json:"iterations"`
+	}
+	if err := json.Unmarshal([]byte(shown), &report); err != nil {
+		t.Fatalf("show --json: %v\n%s", err, shown)
+	}
+	if its := report.Iterations; len(its) != 2 || its[0].Status != "fail" || its[1].Status != "ok" || its[1].Kind != "recovery" || its[1].Source != 0 {
+		t.Fatalf("iterations = %+v", report.Iterations)
+	}
+	if out, code := lathe(t, bin, "resume", id, "again"); code == 0 || !strings.Contains(out, "succeeded") {
+		t.Fatalf("resuming a succeeded run exited %d:\n%s", code, out)
+	}
+}
+
+// A build whose pull request creation failed after its push is resumed,
+// continues on its branch, opens one pull request, and then takes a
+// revision against that pull request.
+func TestRecoverPublishRevise(t *testing.T) {
+	bin := buildLathe(t)
+	repo, origin, home := recoveryRepo(t)
+	stub := recoveryStub(t)
+	os.WriteFile(filepath.Join(stub, "gh-fail-once"), nil, 0o644)
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, code := lathe(t, bin, "build", "--detach", "--repo", repo, "--provider", "stub", "--model", "m", "greet the world")
+	if code != 0 {
+		t.Fatalf("submission exited %d:\n%s", code, out)
+	}
+	id := queuedID(out)
+	if out, code := lathe(t, bin, "wait", id); code != 1 {
+		t.Fatalf("build exited %d:\n%s\n%s", code, out, managerLog(home))
+	}
+	branch := strings.TrimSpace(readFile(filepath.Join(stub, "gh-head")))
+	first := strings.TrimSpace(gitIn(t, origin, "rev-parse", branch))
+
+	if out, code := lathe(t, bin, "resume", "--provider", "stub", "--model", "m", id, "open the pull request"); code != 0 {
+		shown, _ := lathe(t, bin, "show", id)
+		t.Fatalf("resume exited %d:\n%s\n%s\n%s", code, out, shown, managerLog(home))
+	}
+	if n := strings.Count(readFile(filepath.Join(stub, "gh-creates")), "created"); n != 1 {
+		t.Fatalf("pull requests created: %d", n)
+	}
+	if got := strings.TrimSpace(readFile(filepath.Join(stub, "gh-head"))); got != branch {
+		t.Fatalf("the recovery opened its pull request from %s, not %s", got, branch)
+	}
+	second := strings.TrimSpace(gitIn(t, origin, "rev-parse", branch))
+	if second == first || strings.TrimSpace(gitIn(t, origin, "rev-parse", second+"^")) != first {
+		t.Fatal("the recovery did not continue the published branch")
+	}
+
+	if out, code := lathe(t, bin, "revise", "--provider", "stub", "--model", "m", id, "greet again"); code != 0 {
+		shown, _ := lathe(t, bin, "show", id)
+		t.Fatalf("revise exited %d:\n%s\n%s\n%s", code, out, shown, managerLog(home))
+	}
+	if third := strings.TrimSpace(gitIn(t, origin, "rev-parse", branch)); strings.TrimSpace(gitIn(t, origin, "rev-parse", third+"^")) != second {
+		t.Fatal("the revision did not extend the recovered pull request's branch")
+	}
+}
+
 // buildStub is a directory holding a pi that answers every build agent and
 // holds each builder until two are building, and a gh that records the
 // branch each pull request is opened from.

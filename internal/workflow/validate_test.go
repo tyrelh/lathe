@@ -61,7 +61,8 @@ if [ "$1 $2" = "pr view" ]; then
   fi
   base=main; [ ! -f %[1]q/gh-base ] || base=$(cat %[1]q/gh-base)
   head=feat/greet-the-world; [ ! -f %[1]q/gh-head ] || head=$(cat %[1]q/gh-head)
-  printf '{"url":"%[2]s","state":"%%s","headRefName":"%%s","baseRefName":"%%s"}\n' "$state" "$head" "$base"
+  oid=$(git ls-remote origin "refs/heads/$head" 2>/dev/null | cut -f1)
+  printf '{"url":"%[2]s","state":"%%s","headRefName":"%%s","baseRefName":"%%s","headRefOid":"%%s","isCrossRepository":false}\n' "$state" "$head" "$base" "$oid"
   exit 0
 fi
 echo created >> %[1]q/gh-creates

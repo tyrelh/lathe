@@ -46,7 +46,7 @@ func Revise(r *run.Run) int {
 	var sha string
 	g := run.NewGraph(r)
 	addRequestNode(g, r)
-	addPlanNodes(g, r, &c.plan, revisionBrief(r.Request, rev, r.Repo))
+	addPlanNodes(g, r, &c.plan, revisionBrief(r.Request, rev, r.Repo), &c)
 	addCodeNodes(g, r, &c)
 
 	// The stricter rule a revision holds to: build publishes unaccepted work
@@ -78,6 +78,11 @@ func Revise(r *run.Run) int {
 
 	g.Add(run.Node{Name: "publish", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 		if sha == "" {
+			// Completing with no new commit still vouches for the head the
+			// pull request has now, so it must be the one validated.
+			if _, err := workspace.CheckPublication(r.Repo, rev.Branch, rev.Head, rev.PR); err != nil {
+				return "", fmt.Errorf("%w; nothing was published", err)
+			}
 			return "", nil
 		}
 		return "", publish(e, r, rev, sha)
@@ -124,6 +129,11 @@ func publish(e *run.Entry, r *run.Run, rev *run.Revision, sha string) error {
 		}
 		return fmt.Errorf("origin/%s is at %s, not %s where lathe left it; nothing was pushed, and %s",
 			rev.Branch, short(remote), short(rev.Head), local)
+	}
+	// The same ownership a recovery's delivery requires: origin's own
+	// branch, at the head lathe left it.
+	if err := workspace.OwnsPR(pr, rev.Branch, rev.Head); err != nil {
+		return fmt.Errorf("%w; nothing was pushed, and %s", err, local)
 	}
 
 	pushErr := workspace.PushExpecting(r.Repo, rev.Branch, rev.Head)

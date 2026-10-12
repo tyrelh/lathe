@@ -52,7 +52,7 @@ Configure credentials for every provider in the captured agent roster, including
 The plan, implement, build and revise workflows share a read-only review loop:
 
 ```
-request → auth → [issue] → plan → review → [plan → review, up to four send-backs]
+request → auth → [issue] → plan → review → [plan → review, up to eight send-backs]
 plan:      → print the reviewed plan
 implement: → implement → validate → adjudicate → [implement → validate → adjudicate, up to ten repairs]
 build:     → branch → implement → validate → adjudicate → [...] → commit → pr (draft when unaccepted)
@@ -61,8 +61,12 @@ revise:    → implement → validate → adjudicate → [...] → commit → pu
 
 `validate` runs `test`, `code-review-general`, `code-review-security`, `code-review-slop` and `code-review-adversarial` at once, each traced as its own phase. An ordinary worker failure is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete. Reported test exits 126/127 are the exception: they produce terminal `environment_failed`, with one tester attempt, no adjudication or repairs, and no commit, push or PR, including drafts. Already-running reviewers finish before cleanup. The tester report, with its command, exit code and output, remains in `validation.json`. Install the required executable, check the worker's `PATH` and executable permissions, then rerun. This policy applies even if the suite uses those statuses for another purpose. Other nonzero test results remain red suites for adjudication, not worker failures. `environment_failed` is not retryable and must not be treated as publishable `incomplete` validation.
 
-The reviewer checks the plan against the repository, including the builder's file list. Empty feedback accepts it. The fifth review ends the loop; remaining objections or a failed final review become risks in the saved plan and builder handoff. An objection the reviewer marks blocking, because the plan cannot succeed as written, is the exception: if it survives the fifth review the run fails before the builder starts, with the plan saved for diagnosis. Failed reviews consume a send-back and remain visible as failed phases
+The reviewer checks the plan against the repository, including the builder's file list. Empty feedback accepts it. The ninth review ends the loop; remaining objections or a failed final review become risks in the saved plan and builder handoff. An objection the reviewer marks blocking, because the plan cannot succeed as written, is the exception: if it survives the last review the run fails before the builder starts, with the plan saved for diagnosis. Failed reviews consume a send-back and remain visible as failed phases
 even when the run succeeds. Planner failures and cancellation stop the run.
+
+A builder that needs a file the plan does not allow stops and reports it in `needed`; the plan goes back to the planner and reviewer (a scope request), then the builder resumes in the same session with the revised plan, skipping branch creation and routing. Two scope send-backs are allowed per iteration; the third request fails the iteration without publishing anything. Each request is saved as `scope-<n>.json` and each revised plan as `plan-<n>.json`. Malformed paths fail at once; protected paths are never granted.
+
+A failed, cancelled or lost run can be continued with `lathe resume <id> "guidance"` (guidance required; `--detach` and `--json` work as for other commands). It appends a recovery iteration to the same run: the saved `result.patch` is restored into a fresh worktree at the recorded base, then planning, review, implementation and full validation start again with the earlier reports and your guidance. `--restart [--base <ref>]` starts over without restoring that work. Recovery is refused while any worker, launch, reservation or cleanup of the run is unsettled, when the saved work is missing or damaged (use `--restart`), when an issue's task was never captured, and when the failed iteration already made a commit, which may be published. `lathe show` prints scope requests and whether the run may be resumed.
 
 ## Writing the request
 

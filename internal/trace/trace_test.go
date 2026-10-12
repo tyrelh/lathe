@@ -2,7 +2,11 @@ package trace
 
 import (
 	"database/sql"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -106,6 +110,120 @@ func TestWriteFakeRun(t *testing.T) {
 }
 
 // A phase belonging to no run is a bug in the caller, and the schema says so.
+// Many connections and processes opening a fresh database at once all
+// initialize it: switching to WAL and migrating wait out each other's locks
+// instead of failing with "database is locked".
+func TestConcurrentOpenInitializes(t *testing.T) {
+	for round := range 3 {
+		dataRoot := t.TempDir()
+		var wg sync.WaitGroup
+		errs := make(chan error, 16)
+		for i := range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				db, err := Open(dataRoot)
+				if err != nil {
+					errs <- fmt.Errorf("round %d connection %d: %w", round, i, err)
+					return
+				}
+				if _, err := db.Submit(Request{Workflow: "scout", Repo: "/repo", Request: "look"}); err != nil {
+					errs <- fmt.Errorf("round %d connection %d submit: %w", round, i, err)
+				}
+				db.Close()
+			}()
+		}
+		for i := range 4 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				cmd := exec.Command(os.Args[0], "-test.run=^TestOpenHelper$")
+				cmd.Env = append(os.Environ(), "LATHE_TRACE_OPEN="+dataRoot)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					errs <- fmt.Errorf("round %d process %d: %v: %s", round, i, err, out)
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+		db, err := Open(dataRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		if err := db.sql.QueryRow(`SELECT count(*) FROM runs`).Scan(&n); err != nil || n != 12 {
+			t.Fatalf("round %d: %d runs recorded, %v; want 12", round, n, err)
+		}
+		db.Close()
+	}
+}
+
+// TestOpenHelper is the separate process TestConcurrentOpenInitializes
+// starts: it opens the database named by LATHE_TRACE_OPEN and records a run.
+func TestOpenHelper(t *testing.T) {
+	dataRoot := os.Getenv("LATHE_TRACE_OPEN")
+	if dataRoot == "" {
+		t.Skip("run by TestConcurrentOpenInitializes")
+	}
+	db, err := Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Submit(Request{Workflow: "scout", Repo: "/repo", Request: "look"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Only the driver's lock contention is retried: a busy error SQLite itself
+// raised, wrapped or not, but neither another SQLite error nor an arbitrary
+// error worded like contention.
+func TestContendedIsOnlyLockContention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "contended.db")
+	holder, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.Exec("CREATE TABLE t (x)"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := holder.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	waiter, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+	_, busy := waiter.Begin()
+	if busy == nil {
+		t.Fatal("a second writer began while the first held the lock")
+	}
+	_, missing := waiter.Exec("SELECT * FROM nope")
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"driver busy":         {busy, true},
+		"wrapped driver busy": {fmt.Errorf("opening: %w", busy), true},
+		"driver other error":  {missing, false},
+		"lookalike text":      {fmt.Errorf("database is locked (261) SQLITE_BUSY"), false},
+	} {
+		if tc.err == nil {
+			t.Fatalf("%s: no error produced", name)
+		}
+		if got := contended(tc.err); got != tc.want {
+			t.Errorf("%s: contended(%v) = %v", name, tc.err, got)
+		}
+	}
+}
+
 func TestPhaseRequiresItsRun(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {

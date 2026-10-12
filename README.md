@@ -27,6 +27,8 @@ lathe implement "add retry"              # plan, implement, test; save it as res
 lathe build "add retry"                  # implement, then branch, commit and open a PR
 lathe build --detach "add retry"         # queue it and exit
 lathe revise <id> "log the retry count"  # push another change to that build's pull request
+lathe resume <id> "include the tests"    # continue a failed, cancelled or lost run with guidance
+lathe resume --restart <id> "guidance"   # continue without restoring its saved work
 
 lathe runs                               # recent runs, every repo
 lathe show <id>                          # outcome, iterations and reports (--json, --iteration n)
@@ -37,8 +39,9 @@ lathe route-calibrate --agent builder    # compare routing picks against past ru
 ```
 
 ```
-plan:      request → auth → [issue] → [route-plan] → plan → review   (up to 4 send-backs)
-implement: … → [route-build] → implement → validate → adjudicate   (up to 10 repairs)
+plan:      request → auth → [issue] → [route-plan] → plan → review   (up to 8 send-backs)
+implement: … → [route-build] → implement → validate → adjudicate   (up to 10 repairs;
+           a builder needing more files sends back to plan → review, up to 2 times)
 build:     … → branch → [route-build] → implement → validate → adjudicate → commit → pr
 revise:    request → auth → [route-plan] → plan → review → [route-build] → implement → validate → adjudicate → commit → push to the same pr
 ```

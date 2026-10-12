@@ -52,6 +52,7 @@ type Submit func(workflow, repo, prompt, issue string) (string, error)
 type Actions struct {
 	Submit      Submit
 	Revise      func(runID, request string) (int, error)
+	Resume      func(runID, guidance string) (int, error)
 	Cancel      func(runID string) (string, error)
 	SavePrompt  func(key, body, baseHash string) error
 	ResetPrompt func(key, baseHash string) error
@@ -128,6 +129,9 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 	}
 	if actions.Revise != nil {
 		mux.HandleFunc("POST /api/runs/{id}/revisions", reviseRun(actions.Revise))
+	}
+	if actions.Resume != nil {
+		mux.HandleFunc("POST /api/runs/{id}/recoveries", resumeRun(actions.Resume))
 	}
 	if actions.Cancel != nil {
 		mux.HandleFunc("POST /api/runs/{id}/cancel", cancelRun(actions.Cancel))
@@ -357,6 +361,37 @@ func reviseRun(revise func(runID, request string) (int, error)) http.HandlerFunc
 		n, err := revise(id, request)
 		switch {
 		case errors.Is(err, trace.ErrNotRevisable):
+			submitError(w, http.StatusConflict, err.Error())
+			return
+		case err != nil:
+			submitError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"run_id": id, "iteration": n})
+	}
+}
+
+// resumeRun is lathe resume for the run page, with the same protections as
+// a revision. Guidance is required; eligibility is the server's to enforce.
+func resumeRun(resume func(runID, guidance string) (int, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Guidance string `json:"guidance"`
+		}
+		if !browserJSON(w, r, &body) {
+			return
+		}
+		guidance := strings.TrimSpace(body.Guidance)
+		if guidance == "" {
+			submitError(w, http.StatusBadRequest, "say how the run should continue")
+			return
+		}
+		id := r.PathValue("id")
+		n, err := resume(id, guidance)
+		switch {
+		case errors.Is(err, trace.ErrNotRecoverable):
 			submitError(w, http.StatusConflict, err.Error())
 			return
 		case err != nil:

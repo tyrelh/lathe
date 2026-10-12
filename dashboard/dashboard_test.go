@@ -465,6 +465,65 @@ func TestSubmitRun(t *testing.T) {
 // protections, go through the actions handed in, and map refusals to
 // statuses the page can explain. The run payload carries the iterations and
 // the models each ran with.
+// The recovery route keeps the browser protections, requires guidance,
+// passes it to the shared submission and maps refusals to a conflict.
+func TestResumeRoute(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, attempt, token := claimed(t, db, "build", "/repos/alpha", "greet")
+	if err := db.Complete(id, attempt, token, trace.StatusFail, "push failed"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	ro, err := trace.OpenRO(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	var resumed []string
+	var resumeErr error
+	h := handler(ro, "dev", Actions{Resume: func(runID, guidance string) (int, error) {
+		resumed = append(resumed, runID+": "+guidance)
+		return 1, resumeErr
+	}}, Sources{})
+	post := func(origin, body string) (int, string) {
+		r := local("POST", "/api/runs/"+id+"/recoveries", strings.NewReader(body))
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	if code, _ := post("", `{"guidance":"x"}`); code != http.StatusForbidden {
+		t.Errorf("no origin: %d", code)
+	}
+	if code, _ := post("http://"+Addr, `{"guidance":"  "}`); code != http.StatusBadRequest {
+		t.Errorf("empty guidance: %d", code)
+	}
+	if code, body := post("http://"+Addr, `{"guidance":" include the tests "}`); code != http.StatusCreated || !strings.Contains(body, `"iteration":1`) {
+		t.Errorf("resume: %d %s", code, body)
+	}
+	if len(resumed) != 1 || resumed[0] != id+": include the tests" {
+		t.Fatalf("resumed = %v", resumed)
+	}
+	resumeErr = fmt.Errorf("%w: still running", trace.ErrNotRecoverable)
+	if code, _ := post("http://"+Addr, `{"guidance":"again"}`); code != http.StatusConflict {
+		t.Errorf("refusal: %d", code)
+	}
+	r := local("POST", "/api/runs/"+id+"/recoveries", strings.NewReader(`{}`))
+	r.Header.Set("Origin", "http://"+Addr)
+	w := httptest.NewRecorder()
+	handler(ro, "dev", Actions{}, Sources{}).ServeHTTP(w, r)
+	if w.Code == http.StatusCreated {
+		t.Error("the route exists without the action")
+	}
+}
+
 func TestReviseAndCancelRoutes(t *testing.T) {
 	root := t.TempDir()
 	db, err := trace.Open(root)
