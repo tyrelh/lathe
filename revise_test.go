@@ -75,6 +75,42 @@ func TestWaitTargetsItsOwnIteration(t *testing.T) {
 	}
 }
 
+// The text report of one iteration exits with that iteration's outcome, not
+// the run's latest.
+func TestWaitTargetsItsOwnIterationInText(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := trace.Open(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(trace.Request{Workflow: "build", Repo: "/r", Request: "greet", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(t, db, id, trace.StatusOK)
+	if _, err := db.Revise(id, 0, "louder", nil); err != nil {
+		t.Fatal(err)
+	}
+	finish(t, db, id, trace.StatusOK)
+	if _, err := db.Revise(id, 1, "louder still", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var code int
+	stdout(t, func() { code = block(db, dataRoot, id, 1, false) })
+	if code != 0 {
+		t.Fatalf("iteration 1 with iteration 2 queued = exit %d, want its own success", code)
+	}
+	if _, err := db.RequestCancel(id); err != nil {
+		t.Fatal(err)
+	}
+	stdout(t, func() { code = block(db, dataRoot, id, 1, false) })
+	if code != 0 {
+		t.Fatalf("iteration 1 with iteration 2 cancelled = exit %d, want its own success", code)
+	}
+}
+
 // Submission refuses what the records rule out before touching the checkout,
 // and says why.
 func TestSubmitRevisionRefusesFromTheRecords(t *testing.T) {

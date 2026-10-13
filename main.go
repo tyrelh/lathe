@@ -631,7 +631,7 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 		}
 		fmt.Printf("  %s  %s\n", name, out.Summary)
 	}
-	return outcome(row.Status)
+	return outcome(it.Status)
 }
 
 func managerCmd() int {
