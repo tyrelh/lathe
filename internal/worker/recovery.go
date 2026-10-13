@@ -247,6 +247,38 @@ func Resume(db *trace.DB, dataRoot, runID, guidance string, o ResumeOptions, cap
 	return db.Recover(runID, rec)
 }
 
+// CheckRecoverable checks what of row and its iterations its rules out for any
+// recovery, without contacting origin. It returns the latest iteration and its
+// parsed specification.
+func CheckRecoverable(db *trace.DB, row trace.Row, its []trace.Iteration) (trace.Iteration, Spec, error) {
+	if err := trace.Recoverable(row); err != nil {
+		return trace.Iteration{}, Spec{}, err
+	}
+	if err := db.Stopped(row.ID, row.Iteration); err != nil {
+		return trace.Iteration{}, Spec{}, err
+	}
+	n := row.Iteration
+	if n >= len(its) {
+		return trace.Iteration{}, Spec{}, fmt.Errorf("%w: iteration %d is not recorded", trace.ErrNotRecoverable, n)
+	}
+	src := its[n]
+	var spec Spec
+	if err := json.Unmarshal(src.Spec, &spec); err != nil || spec.Workflow == "" {
+		return trace.Iteration{}, Spec{}, fmt.Errorf("%w: iteration %d records no readable specification", trace.ErrNotRecoverable, n)
+	}
+	if _, ok := workflow.Graphs[spec.Workflow]; !ok {
+		return trace.Iteration{}, Spec{}, fmt.Errorf("%w: unknown workflow %q", trace.ErrNotRecoverable, spec.Workflow)
+	}
+	if err := spec.Workspace.Check(); err != nil {
+		return trace.Iteration{}, Spec{}, err
+	}
+	if spec.Issue != "" && src.Resolved == "" {
+		return trace.Iteration{}, Spec{}, fmt.Errorf("%w: iteration %d never resolved issue %s, so its task was not captured; lathe will not substitute the issue as it reads now. Submit a new run instead",
+			trace.ErrNotRecoverable, n, spec.Issue)
+	}
+	return src, spec, nil
+}
+
 // PrepareRecovery checks that runID may be resumed and builds the recovery
 // iteration to append, without writing anything.
 func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOptions, capture Capture) (trace.Recovery, error) {
@@ -263,39 +295,19 @@ func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOpt
 	} else if err != nil {
 		return trace.Recovery{}, err
 	}
-	if err := trace.Recoverable(row); err != nil {
-		return trace.Recovery{}, err
-	}
-	if err := db.Stopped(runID, row.Iteration); err != nil {
-		return trace.Recovery{}, err
-	}
 	its, err := db.Iterations(runID)
 	if err != nil {
 		return trace.Recovery{}, err
 	}
-	n := row.Iteration
-	if n >= len(its) {
-		return trace.Recovery{}, fmt.Errorf("%w: iteration %d is not recorded", trace.ErrNotRecoverable, n)
-	}
-	src := its[n]
-	var spec Spec
-	if err := json.Unmarshal(src.Spec, &spec); err != nil || spec.Workflow == "" {
-		return trace.Recovery{}, fmt.Errorf("%w: iteration %d records no readable specification", trace.ErrNotRecoverable, n)
-	}
-	if _, ok := workflow.Graphs[spec.Workflow]; !ok {
-		return trace.Recovery{}, fmt.Errorf("%w: unknown workflow %q", trace.ErrNotRecoverable, spec.Workflow)
-	}
-	if err := spec.Workspace.Check(); err != nil {
+	src, spec, err := CheckRecoverable(db, row, its)
+	if err != nil {
 		return trace.Recovery{}, err
 	}
+	n := row.Iteration
 
 	// The task is the one the run resolved, never a refetched issue body.
 	request := spec.Request
 	if spec.Issue != "" {
-		if src.Resolved == "" {
-			return trace.Recovery{}, fmt.Errorf("%w: iteration %d never resolved issue %s, so its task was not captured; lathe will not substitute the issue as it reads now. Submit a new run instead",
-				trace.ErrNotRecoverable, n, spec.Issue)
-		}
 		request = src.Resolved
 	}
 
