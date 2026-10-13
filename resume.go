@@ -104,12 +104,10 @@ func recoveryLines(db *trace.DB, row trace.Row, its []trace.Iteration, dataRoot 
 		lines = append(lines, fmt.Sprintf("scope send-backs spent: %d", spent))
 	}
 	if trace.Terminal(row.Status) {
-		if err := trace.Recoverable(row); err != nil {
-			lines = append(lines, "recovery: "+err.Error())
-		} else if err := db.Stopped(row.ID, row.Iteration); err != nil {
+		if _, _, err := worker.CheckRecoverable(db, row, its); err != nil {
 			lines = append(lines, "recovery: "+err.Error())
 		} else {
-			lines = append(lines, fmt.Sprintf("recovery: eligible; lathe resume %s \"guidance\"", row.ID))
+			lines = append(lines, fmt.Sprintf("recovery: may be resumed; lathe resume %s \"guidance\"", row.ID))
 		}
 	}
 	return lines

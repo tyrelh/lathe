@@ -1471,5 +1471,10 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(!clean.prevented, 'nothing to lose, nothing to ask');
   routeResponses = null;
 
+  // Leaving a page drops every form's in-flight flag, so its button works on
+  // the next page.
+  evaluate('runSubmitting = reviseSubmitting = resumeSubmitting = true; navigate()');
+  assert(!evaluate('runSubmitting || reviseSubmitting || resumeSubmitting'), 'navigate left a form in flight');
+
   console.log('dashboard client checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

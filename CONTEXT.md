@@ -123,8 +123,9 @@ the repository's own convention. Lathe creates it; the agent only names it.
 
 **Commit message**:
 The complete message — subject and body — for the single commit a build makes
-once its tests pass. Lathe stages the accepted scope and makes the commit; the
-agent only writes the message.
+for its change, whether validation accepted it or it ships as a draft. Lathe
+stages the accepted scope and makes the commit; the agent only writes the
+message.
 
 **Pull request**:
 The title and body a build opens its pushed branch with, following the

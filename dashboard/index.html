@@ -523,9 +523,10 @@ let after = 0, done = false;
 // has stopped. selected: the phase_id in the details card, or ''.
 let draining = false, shown = null, selected = '';
 let projectRows = [], projectMore = false, projectLoaded = false, projectLoading = false, projectSummary = null;
-// runSubmitting: a New run POST is in flight. Everything else the form shows
-// lives in its own DOM, which polling never rewrites.
-let runSubmitting = false, reviseSubmitting = false;
+// runSubmitting, reviseSubmitting, resumeSubmitting: that form's POST is in
+// flight. Everything else the forms show lives in their own DOM, which polling
+// never rewrites.
+let runSubmitting = false, reviseSubmitting = false, resumeSubmitting = false;
 let generation = 0, polling = false, fresh = 0, failure = '';
 let view = route(), viewHash = '', viewAt = 0;
 
@@ -805,7 +806,7 @@ function navigate() {
   draining = false; shown = null; selected = '';
   projectRows = []; projectMore = false; projectLoaded = false; projectLoading = false; projectSummary = null;
   resized.disconnect(); observed = null;
-  runSubmitting = reviseSubmitting = false;
+  runSubmitting = reviseSubmitting = resumeSubmitting = false;
   // A project page is built once, as three parts: polling redraws the summary
   // and the runs around the form, so a draft and its focus survive.
   $('follow-home').appendChild(followLabel);
@@ -1670,7 +1671,6 @@ async function reviseRun(e) {
 
 // resumeRun is lathe resume: guidance is required and the page keeps polling,
 // so the queued recovery iteration shows as it runs.
-let resumeSubmitting = false;
 async function resumeRun(e) {
   e.preventDefault();
   if (resumeSubmitting) return;
