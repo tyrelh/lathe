@@ -59,6 +59,22 @@ revise:    request → auth → [route-plan] → plan → review → [route-buil
 - A test exit of 126 or 127 means something is wrong with the environment (missing executable, bad `PATH`), so the run stops there with no repairs and no commit.
 - Traces live in `~/.local/share/lathe/lathe.db`.
 
+## Dashboard
+
+`lathe manager` serves a dashboard at http://127.0.0.1:4700 from the same traces.
+
+The overview covers every run in every repository: average spend per PR, and the top projects, runs, models and providers by spend.
+
+![Dashboard overview](./assets/dashboard-overview.png)
+
+A project's page has its lifetime metrics, its runs, and a form to start a new one.
+
+![Project runs](./assets/dashboard-project-runs.png)
+
+A run's page lays its phases out on a timeline, with every send-back and repair loop. It also has the run's cost by provider and model, and you can request changes to its pull request from there.
+
+![Run phases](./assets/dashboard-run-phases.png)
+
 ## Agent configuration
 
 Everything an agent is told and runs on lives in plain files under `~/.lathe`, one directory per agent:
