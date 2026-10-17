@@ -61,8 +61,6 @@ type Params struct {
 	Name, Owner string
 	// SessionID continues an earlier agent phase; empty starts a new session.
 	SessionID string
-	// RevertOnly tolerates test-generated dirt after enforcement.
-	RevertOnly bool
 }
 
 // Envelope is an agent's typed output. Validate returns what is missing —
@@ -423,14 +421,7 @@ func (r *Run) enforce(h *Handle) ([]string, error) {
 	if !r.clean || r.frozen {
 		return nil, nil
 	}
-	reverted, err := r.sweep(h)
-	// Tolerance is a property of the phase, so it is settled here rather than
-	// at each call site: a later phase that needs it gets it by declaring it,
-	// not by remembering to repeat the check.
-	if err != nil || h.params.RevertOnly {
-		return nil, err
-	}
-	return reverted, nil
+	return r.sweep(h)
 }
 
 // sweep reverts whatever neither h's scope nor an earlier phase accepted, and
