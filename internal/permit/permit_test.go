@@ -78,17 +78,9 @@ func gitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	write(t, dir, "tracked.txt", "original\n")
-	for _, args := range [][]string{
-		{"init", "-q", "-b", "main"},
-		{"-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"},
-		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-	}
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-qm", "init")
 	return dir
 }
 

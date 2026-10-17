@@ -16,6 +16,7 @@ const fixture = JSON.parse(readFileSync(new URL("./testdata/denied.json", import
 	cases: { path: string; want: boolean; why: string }[];
 };
 const shipped = fixture.protected;
+const kind = (got: { reason: string } | undefined, outside: RegExp) => got === undefined ? "allowed" : /protected/.test(got.reason) ? "protected" : outside.test(got.reason) ? "outside" : got.reason;
 for (const { path, want, why } of fixture.cases) {
 	assert.equal(denied(path, shipped) !== undefined, want, `denied(${path}): ${why}`);
 }
@@ -89,8 +90,8 @@ for (
 	] as [string, string | undefined, string][]
 ) {
 	const got = decide(tool, { path }, inRepo, { ...scope, readRoots: roots });
-	const kind = got === undefined ? "allowed" : /protected/.test(got.reason) ? "protected" : /outside the folders/.test(got.reason) ? "outside" : got.reason;
-	assert.equal(kind, want, `${tool}(${path})`);
+	const actual = kind(got, /outside the folders/);
+	assert.equal(actual, want, `${tool}(${path})`);
 }
 assert.match(unreadable(join(outside, "id_ed25519"), inRepo, roots, shipped)!, /outside the folders this agent may read: .*repo/, "a refusal names the roots");
 assert.equal(decide("write", { path: "allowed.go" }, repo, { ...scope, readRoots: roots }), undefined, "read roots leave writes to the allow list");
@@ -190,8 +191,8 @@ for (
 	] as [string, string][]
 ) {
 	const got = decide("write", { path }, wt, wtScope);
-	const kind = got === undefined ? "allowed" : /protected/.test(got.reason) ? "protected" : /outside the repository/.test(got.reason) ? "outside" : got.reason;
-	assert.equal(kind, want, `write(${path}) in a worktree`);
+	const actual = kind(got, /outside the repository/);
+	assert.equal(actual, want, `write(${path}) in a worktree`);
 }
 const gitdir = readFileSync(join(wt, ".git"), "utf8").slice("gitdir: ".length).trim();
 for (
@@ -206,8 +207,8 @@ for (
 	] as [string, string][]
 ) {
 	const got = decide("read", { path }, wt, { ...wtScope, readRoots: [wt] });
-	const kind = got === undefined ? "allowed" : /protected/.test(got.reason) ? "protected" : /outside the folders/.test(got.reason) ? "outside" : got.reason;
-	assert.equal(kind, want, `read(${path}) in a worktree`);
+	const actual = kind(got, /outside the folders/);
+	assert.equal(actual, want, `read(${path}) in a worktree`);
 }
 
 console.log("guard.ts: ok");
