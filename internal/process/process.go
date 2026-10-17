@@ -35,6 +35,26 @@ import (
 // supervisor helper.
 const HelperArg = "__lathe-supervise"
 
+// Supervisor wire protocol. Each message is one line: a verb, then
+// space-separated fields.
+const (
+	// Parent to helper, on the control pipe.
+	msgToken = "TOKEN"
+	msgGo    = "GO"
+
+	// Helper to parent, on the status pipe.
+	msgReady    = "READY"
+	msgExit     = "EXIT"
+	msgSignal   = "SIGNAL"
+	msgStartErr = "STARTERR"
+	msgStopped  = "STOPPED"
+
+	// Stop endpoint request and replies.
+	msgStop     = "STOP"
+	replyOK     = "OK"
+	replyDenied = "DENIED"
+)
+
 // Registration is what a running, not yet admitted, helper reports about
 // itself: where it runs and how to stop it.
 type Registration struct {
@@ -151,7 +171,7 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 	token := rand.Text()
 	st := bufio.NewReader(stR)
 	ready, rerr := func() (string, error) {
-		if _, err := fmt.Fprintf(ctlW, "TOKEN %s\n", token); err != nil {
+		if _, err := fmt.Fprintf(ctlW, msgToken+" %s\n", token); err != nil {
 			return "", err
 		}
 		return st.ReadString('\n')
@@ -175,7 +195,7 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 		stR.Close()
 		p.status <- string(rest)
 	}()
-	if _, err := io.WriteString(ctlW, "GO\n"); err != nil {
+	if _, err := io.WriteString(ctlW, msgGo+"\n"); err != nil {
 		p.Wait()
 		return nil, fmt.Errorf("admitting the launch: %w", err)
 	}
@@ -247,7 +267,7 @@ func interpret(status string, werr error) error {
 	for _, line := range strings.Split(status, "\n") {
 		kind, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
 		switch kind {
-		case "EXIT":
+		case msgExit:
 			n, err := strconv.Atoi(rest)
 			if err != nil {
 				return fmt.Errorf("the supervisor reported an unreadable status %q", line)
@@ -256,12 +276,12 @@ func interpret(status string, werr error) error {
 				return nil
 			}
 			return &ExitError{Code: n}
-		case "SIGNAL":
+		case msgSignal:
 			n, _ := strconv.Atoi(rest)
 			return &ExitError{Code: -1, Signal: syscall.Signal(n)}
-		case "STARTERR":
+		case msgStartErr:
 			return errors.New(rest)
-		case "STOPPED":
+		case msgStopped:
 			return ErrStopped
 		}
 	}
@@ -270,7 +290,7 @@ func interpret(status string, werr error) error {
 
 func parseReady(line string) (Registration, error) {
 	f := strings.Fields(line)
-	if len(f) != 4 || f[0] != "READY" {
+	if len(f) != 4 || f[0] != msgReady {
 		return Registration{}, fmt.Errorf("unexpected handshake %q", strings.TrimSpace(line))
 	}
 	pid, err1 := strconv.Atoi(f[2])
@@ -388,14 +408,14 @@ func RequestStop(endpoint, token string) error {
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := fmt.Fprintf(c, "STOP %s\n", token); err != nil {
+	if _, err := fmt.Fprintf(c, msgStop+" %s\n", token); err != nil {
 		return err
 	}
 	reply, err := bufio.NewReader(c).ReadString('\n')
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(reply) != "OK" {
+	if strings.TrimSpace(reply) != replyOK {
 		return fmt.Errorf("the supervisor at %s refused the stop request", endpoint)
 	}
 	return nil
@@ -421,7 +441,7 @@ func Helper(args []string) int {
 	}
 	rd := bufio.NewReader(ctl)
 	line, err := rd.ReadString('\n')
-	token, ok := strings.CutPrefix(strings.TrimSpace(line), "TOKEN ")
+	token, ok := strings.CutPrefix(strings.TrimSpace(line), msgToken+" ")
 	if err != nil || !ok || token == "" {
 		return 125
 	}
@@ -433,10 +453,10 @@ func Helper(args []string) int {
 	if err != nil {
 		return 125
 	}
-	if _, err := fmt.Fprintf(st, "READY %s %d %d\n", ln.Addr().String(), os.Getpid(), pgid); err != nil {
+	if _, err := fmt.Fprintf(st, msgReady+" %s %d %d\n", ln.Addr().String(), os.Getpid(), pgid); err != nil {
 		return 125
 	}
-	if line, err = rd.ReadString('\n'); err != nil || strings.TrimSpace(line) != "GO" {
+	if line, err = rd.ReadString('\n'); err != nil || strings.TrimSpace(line) != msgGo {
 		// Not admitted: nothing was started, so there is nothing to stop.
 		return 125
 	}
@@ -445,7 +465,7 @@ func Helper(args []string) int {
 	cmd.Dir = dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(st, "STARTERR %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		fmt.Fprintf(st, msgStartErr+" %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
 		return 127
 	}
 	stop := make(chan string, 3)
@@ -462,7 +482,7 @@ func Helper(args []string) int {
 	case err := <-done:
 		fmt.Fprint(st, exitLine(cmd, err))
 	case reason := <-stop:
-		fmt.Fprintf(st, "STOPPED %s\n", reason)
+		fmt.Fprintf(st, msgStopped+" %s\n", reason)
 	}
 	// Leftover descendants go with the group, and so does this helper.
 	syscall.Kill(-pgid, syscall.SIGKILL)
@@ -472,15 +492,15 @@ func Helper(args []string) int {
 func exitLine(cmd *exec.Cmd, err error) string {
 	if ps := cmd.ProcessState; ps != nil {
 		if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			return fmt.Sprintf("SIGNAL %d\n", int(ws.Signal()))
+			return fmt.Sprintf(msgSignal+" %d\n", int(ws.Signal()))
 		}
-		return fmt.Sprintf("EXIT %d\n", ps.ExitCode())
+		return fmt.Sprintf(msgExit+" %d\n", ps.ExitCode())
 	}
-	return fmt.Sprintf("STARTERR %s\n", strings.ReplaceAll(fmt.Sprint(err), "\n", " "))
+	return fmt.Sprintf(msgStartErr+" %s\n", strings.ReplaceAll(fmt.Sprint(err), "\n", " "))
 }
 
 func serve(ln net.Listener, token string, stop chan<- string) {
-	want := []byte("STOP " + token)
+	want := []byte(msgStop + " " + token)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -491,10 +511,10 @@ func serve(ln net.Listener, token string, stop chan<- string) {
 			c.SetDeadline(time.Now().Add(5 * time.Second))
 			l, _ := bufio.NewReader(c).ReadString('\n')
 			if subtle.ConstantTimeCompare(bytes.TrimSpace([]byte(l)), want) != 1 {
-				fmt.Fprintln(c, "DENIED")
+				fmt.Fprintln(c, replyDenied)
 				return
 			}
-			fmt.Fprintln(c, "OK")
+			fmt.Fprintln(c, replyOK)
 			select {
 			case stop <- "REQUEST":
 			default:
