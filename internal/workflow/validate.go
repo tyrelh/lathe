@@ -330,6 +330,14 @@ type Validation struct {
 
 func (v *Validation) current() *Round { return v.Rounds[len(v.Rounds)-1] }
 
+// previous is the round before the current one, or nil when there is none.
+func (v *Validation) previous() *Round {
+	if len(v.Rounds) < 2 {
+		return nil
+	}
+	return v.Rounds[len(v.Rounds)-2]
+}
+
 // Accepted is the one question every outcome's handling asks: may this ship as
 // finished work? Only accepted says yes; every other outcome is unfinished.
 func (v *Validation) Accepted() bool { return v.Outcome == outcomeAccepted }
@@ -353,13 +361,11 @@ func evidence(w io.Writer, c *code) {
 // previousDecision renders the last adjudication, which every worker in the
 // next round is shown alongside the implementer's response to it.
 func previousDecision(w io.Writer, c *code) {
-	if len(c.v.Rounds) < 2 {
+	p := c.v.previous()
+	if p == nil || p.Adjudication == nil {
 		return
 	}
-	last := c.v.Rounds[len(c.v.Rounds)-2].Adjudication
-	if last == nil {
-		return
-	}
+	last := p.Adjudication
 	fmt.Fprintf(w, "\n## Previous adjudication\n\n%s\n\n### Requested changes\n\n%s\n", *last.Summary, *last.Changes)
 	section(w, "### Decisions", decisionLines(*last.Decisions))
 	fmt.Fprintf(w, "\nThe implementer's response to it is the implementation summary above.\n")
@@ -368,11 +374,8 @@ func previousDecision(w io.Writer, c *code) {
 // dismissedFindings renders in full every finding the last adjudication
 // dismissed, so a reviewer can argue one again whoever raised it.
 func dismissedFindings(w io.Writer, c *code) {
-	if len(c.v.Rounds) < 2 {
-		return
-	}
-	prev := c.v.Rounds[len(c.v.Rounds)-2]
-	if prev.Adjudication == nil {
+	prev := c.v.previous()
+	if prev == nil || prev.Adjudication == nil {
 		return
 	}
 	dismissed := map[string]bool{}
@@ -410,10 +413,8 @@ func testRequest(c *code) string {
 	var b strings.Builder
 	b.WriteString(c.handoff)
 	evidence(&b, c)
-	if n := len(c.v.Rounds); n > 1 {
-		if prev := c.v.Rounds[n-2].Tests; prev != nil {
-			fmt.Fprintf(&b, "\n## Previous test run\n\nCommand: %s\nResult: %s\n", *prev.Command, prev.Result())
-		}
+	if p := c.v.previous(); p != nil && p.Tests != nil {
+		fmt.Fprintf(&b, "\n## Previous test run\n\nCommand: %s\nResult: %s\n", *p.Tests.Command, p.Tests.Result())
 	}
 	previousDecision(&b, c)
 	b.WriteString("\nReassess the test command for the code as it is now, then run it.\n")
