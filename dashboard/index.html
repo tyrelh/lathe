@@ -336,6 +336,10 @@
     .totals { gap: 12px; }
     .run-table .timestamp, #log td:nth-child(3) { display: none; }
   }
+.task-board { display:grid; grid-template-columns:repeat(5,minmax(230px,1fr)); gap:12px; overflow:auto; min-height:0; flex:1; align-items:start; }
+.task-lane { min-width:0; padding:8px; }
+.task-card { padding:12px; margin-bottom:12px; overflow-wrap:anywhere; }
+.task-card h3 { margin-top:0; }
 </style>
 
 <header>
@@ -361,6 +365,7 @@
       <path d="M1.5 4.5h5l1.5 2h6.5v7h-13zM1.5 4.5v-2h5l1.5 2"/>
     </svg><span class="label">Projects</span>
   </a>
+  <a id="nav-tasks" href="#/tasks" title="Tasks">Tasks</a>
   <a id="nav-agents" href="#/agents" title="Agents">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
       <rect x="2.5" y="5" width="11" height="8.5" rx="1.5"/>
@@ -511,6 +516,7 @@ const PAGE = 500;   // the server's per-poll event cap, dashboard.go's eventPage
 // no shell: its first poll builds the scaffold.
 const PAGES = {
   overview: {poll: 5000, nav: 'overview', load: loadOverview, shell: () => overviewShell()},
+  tasks: {poll: 5000, nav: 'tasks', load: loadTasks, shell: () => tasksShell()},
   projects: {poll: 5000, nav: 'projects', load: loadProjects, shell: () => listShell('projects by spend')},
   project: {poll: 5000, nav: 'projects', load: loadProject, shell: () => projectShell(view.repo)},
   runs: {poll: 2000, nav: 'runs', load: loadRuns, shell: () => listShell('latest runs')},
@@ -547,6 +553,7 @@ let after = 0, done = false;
 // shown: the last poll's run and phases, so a click can redraw after polling
 // has stopped. selected: the phase_id in the details card, or ''.
 let draining = false, shown = null, selected = '';
+let taskProjects = null;
 let projectRows = [], projectMore = false, projectLoaded = false, projectLoading = false, projectSummary = null;
 // runSubmitting, reviseSubmitting, resumeSubmitting: that form's POST is in
 // flight. Everything else the forms show lives in their own DOM, which polling
@@ -567,6 +574,7 @@ let configBox = null;
 // observed: the phase chart the resize observer is watching.
 let observed = null;
 function resetPageState() {
+  taskProjects = null;
   agentShown = null; promptBoxes.clear(); configBox = null;
   after = 0; done = false; failure = '';
   spend.clear(); contexts.clear(); inputs.clear(); outputs.clear(); responses.clear(); thinking.clear();
@@ -816,6 +824,7 @@ function route() {
   if (h === '' || h === '/' || h === '/overview') return {page: 'overview'};
   if (h === '/runs') return {page: 'runs'};
   if (h.startsWith('/runs/')) return {page: 'run', id: h.slice(6)};
+  if (h === '/tasks' || h.startsWith('/tasks?')) return {page: 'tasks', repo: new URLSearchParams(h.split('?')[1] || '').get('repo') || ''};
   if (h === '/projects') return {page: 'projects'};
   if (h === '/agents') return {page: 'agents'};
   if (h.startsWith('/agents/')) {
@@ -855,7 +864,7 @@ function navigate() {
   bar.textContent = '';
   followBox.checked = false;
   followLabel.style.display = 'none';
-  for (const page of ['overview', 'runs', 'projects', 'agents']) {
+  for (const page of ['overview', 'runs', 'projects', 'tasks', 'agents']) {
     const id = 'nav-' + page;
     // Runs stays selected while a single run is open: a run is something
     // inside Runs, not a third place to be.
@@ -918,9 +927,11 @@ function stamp() {
   note.className = '';
   note.textContent = !done ? 'updated ' + ago() : view.page === 'run' ? 'run complete' : 'loaded · reload to refresh';
 }
-const ago = () => {
-  const s = Math.max(0, Math.round((Date.now() - fresh) / 1000));
-  return s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago';
+const ago = (from = fresh) => {
+  const s = Math.max(0, Math.floor((Date.now() - from) / 1000));
+  if (!Number.isFinite(s)) return 'unknown activity';
+  return s < 60 ? s + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago'
+    : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
 };
 
 // missing renders a not-found page from HTML: what is missing and where to go.
@@ -1287,7 +1298,39 @@ async function loadAgent(current) {
   done = true;
 }
 
+const tasksHref = repo => '#/tasks' + (repo ? '?' + projectQuery(repo) : '');
+const taskLanes = ['Backlog', 'In progress', 'Blocked', 'Ready for review', 'Done'];
+function tasksShell() {
+  return `<div class="page"><div class="card page-summary"><h1>Tasks</h1><label for="task-project">Project</label>
+    <select id="task-project" onchange="location.hash=tasksHref(this.value)"><option value="">All projects</option></select></div>
+    <div id="task-board" class="task-board" tabindex="0" aria-label="Task lanes"></div></div>`;
+}
+function taskCard(t) {
+  const r = t.current_run, issue = t.issue;
+  return `<article class="card task-card"><h3>${esc(issue?.title || (t.text || '').split('\n')[0])}</h3>
+    <p>${safeHref(issue?.url) ? `<a href="${esc(issue.url)}">Issue</a> · ` : ''}${safeHref(r?.pr_url) ? `<a href="${esc(r.pr_url)}">PR</a> · ` : ''}<span class="dim">${esc(ago(Date.parse(t.activity_at)))}</span></p>
+    ${r ? `<p>Current run: ${runLink(r.run_id)}</p>` : ''}
+    ${t.runs.length ? `<details><summary>Earlier runs (${t.runs.length})</summary>${t.runs.map(runLink).join('<br>')}</details>` : ''}</article>`;
+}
+async function loadTasks(current) {
+  const repo = view.repo;
+  const projectsLoad = taskProjects !== null ? Promise.resolve(taskProjects) : get('/api/projects').then(({body}) => {
+    if (current === generation) taskProjects = body;
+    return body;
+  });
+  const [projects, {body: tasks}] = await Promise.all([
+    projectsLoad, get('/api/tasks' + (repo ? '?' + projectQuery(repo) : '')),
+  ]);
+  if (current !== generation) return;
+  const repos = [...new Set([...projects.map(p => p.repo), ...tasks.map(t => t.repo), ...(repo ? [repo] : [])])];
+  swap($('task-project'), '<option value="">All projects</option>' + repos.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join(''));
+  $('task-project').value = repo;
+  swap($('task-board'), taskLanes.map(lane => `<section class="task-lane"><h2>${lane}</h2>${tasks.filter(t => t.lane === lane).map(taskCard).join('') || '<p class="dim">No tasks</p>'}</section>`).join(''));
+  bar.textContent = tasks.length + ' tasks';
+}
+
 const projectQuery = repo => 'repo=' + encodeURIComponent(repo);
+const safeHref = u => /^https?:\/\//i.test(u || '') ? u : '';
 const runListRow = r => `<tr class="run" data-row="${esc(r.run_id)}" onclick="location.hash='/runs/${esc(r.run_id)}'">
   <td class="dim timestamp">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
   <td class="${cls(r.status)}">${esc(r.status)}</td>
@@ -1613,7 +1656,7 @@ async function loadRun(current) {
 // d offers.
 function renderRunHeader(d) {
   const r = d.run;
-  $('project-title').innerHTML = esc(r.repo || 'unknown repo');
+  $('project-title').innerHTML = esc(r.repo || 'unknown repo') + (r.task_id ? ` · <a href="${esc(tasksHref(r.repo))}">Tasks</a>` : '');
   $('head').innerHTML = esc(r.request);
   $('run-total').textContent = money(r.cost);
   // The form lives in the scaffold, so a draft survives every poll; only
@@ -1631,7 +1674,7 @@ function renderRunSummary(r) {
   $('summary').innerHTML = [
     stat('workflow', esc(r.workflow)),
     stat('status', esc(r.status), cls(r.status)),
-    ...(/^https?:\/\//i.test(r.pr_url) ? [stat('pull request', `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a> · ${esc(r.pr_state || 'not checked')}`)] : []),
+    ...(safeHref(r.pr_url) ? [stat('pull request', `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a> · ${esc(r.pr_state || 'not checked')}`)] : []),
     stat('tokens', count(r.tokens)),
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),

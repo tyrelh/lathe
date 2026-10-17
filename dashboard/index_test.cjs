@@ -21,7 +21,7 @@ class Element {
   focus(options) { this.focused = options; }
 }
 for (const id of ['app', 'status', 'note', 'version',
-                  'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'nav-agents', 'follow-box', 'follow-label',
+                  'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'nav-tasks', 'nav-agents', 'follow-box', 'follow-label',
                   'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
 // Every ID in app's markup is registered when app is replaced, and the last
 // write's are dropped. Nothing precreates #log: that would skip the
@@ -185,6 +185,7 @@ assert.equal(tip.hidden, true, 'touch does not create a hover tooltip');
 // an unknown hash that must not be mistaken for a run id.
 for (const [hash, want] of [
   ['', 'overview'], ['#/', 'overview'], ['#/overview', 'overview'], ['#/runs', 'runs'],
+  ['#/tasks', 'tasks'], ['#/tasks?repo=%2Frepo', 'tasks'],
   ['#/projects', 'projects'], ['#/projects/detail?repo=%2Frepos%2Falpha', 'project'],
   ['#/runs/20260920T120000Z_build_1', 'run'], ['#20260920T120000Z_build_1', 'run'],
   ['#/nope', 'missing'], ['#/agents', 'agents'], ['#/agents/route-plan', 'agent'], ['#/agents/', 'missing'],
@@ -1493,6 +1494,109 @@ let area = 'run page';
   // the next page.
   evaluate('runSubmitting = reviseSubmitting = resumeSubmitting = true; navigate()');
   assert(!evaluate('runSubmitting || reviseSubmitting || resumeSubmitting'), 'navigate left a form in flight');
+
+  area = 'tasks board';
+  if (resolveFetch) resolveFetch(json([]));
+  await settle();
+  const taskRepo = '/repos/space &\"\' project';
+  let taskRows = [{id:'t1', repo:taskRepo, text:'ignored', lane:'Ready for review', activity_at:new Date(Date.now()-120000).toISOString(),
+    issue:{title:'Issue <title>', url:'https://github.com/o/r/issues/42'},
+    current_run:{run_id:'current', pr_url:'https://github.com/o/r/pull/1'}, runs:['previous','oldest']},
+    {id:'t2', repo:'/backlog-only', text:'First <line>\nSecond line', lane:'Backlog', activity_at:new Date().toISOString(), issue:null, current_run:null, runs:[]}];
+  const taskURL = '/api/tasks?repo=' + encodeURIComponent(taskRepo);
+  let projectReads = 0, taskReads = 0;
+  context.fetch = async url => {
+    if (url === '/api/projects') { projectReads++; return json([{repo:taskRepo}]); }
+    if (url === '/api/tasks' || url === taskURL || url === '/api/tasks?repo=%2Fbacklog-only') { taskReads++; return json(taskRows); }
+    throw Error('unexpected tasks request ' + url);
+  };
+  await visit('#/tasks');
+  assert.equal(nodes.get('nav-tasks').attrs.get('aria-current'), 'page');
+  assert(nodes.has('task-project') && nodes.has('task-board'), 'task IDs registered');
+  let board = nodes.get('task-board').innerHTML;
+  for (const lane of ['Backlog','In progress','Blocked','Ready for review','Done']) assert(board.includes('<h2>'+lane+'</h2>'));
+  assert(board.includes('Issue &lt;title>') && board.includes('First &lt;line>') && !board.includes('Second line'));
+  assert(board.includes('>Issue</a>') && board.includes('>PR</a>') && board.includes('2m ago'));
+  for (const id of ['current','previous','oldest']) assert(board.includes('#/runs/'+id));
+  assert(nodes.get('task-project').innerHTML.includes('All projects'));
+  assert(nodes.get('task-project').innerHTML.includes('value="/backlog-only"'), 'backlog-only project is selectable');
+  assert.equal(projectReads, 1);
+  assert.equal(taskReads, 1);
+  assert.equal(evaluate('PAGES.tasks.poll'), 5000);
+  taskRows[0].current_run.pr_url = 'javascript:alert(1)';
+  taskRows[0].issue.url = 'javascript:alert(2)';
+  await evaluate('tick()'); await settle();
+  assert(!nodes.get('task-board').innerHTML.includes('javascript:'));
+  assert(!nodes.get('task-board').innerHTML.includes('>PR</a>'));
+  assert(!nodes.get('task-board').innerHTML.includes('>Issue</a>'));
+  taskRows[0].issue.url = 'https://github.com/o/r/issues/42';
+  assert.equal(projectReads, 1, 'poll does not reload projects');
+  assert.equal(taskReads, 2, 'poll reloads tasks');
+  taskRows[0].current_run.pr_url = 'https://github.com/o/r/pull/1';
+  assert(nodes.get('task-project').innerHTML.includes('&amp;&quot;&#39;'));
+  assert(appHTML.includes('onchange="location.hash=tasksHref(this.value)"'));
+  await visit(call('tasksHref', '/backlog-only'));
+  assert.equal(nodes.get('task-project').value, '/backlog-only');
+  await visit(call('tasksHref', taskRepo));
+  assert.equal(projectReads, 3, 'each board visit loads projects');
+  assert.equal(evaluate('view.repo'), taskRepo);
+  assert.equal(nodes.get('task-project').value, taskRepo);
+  const shell = appHTML;
+  taskRows[0].lane = 'Done';
+  await evaluate('tick()'); await settle();
+  board = nodes.get('task-board').innerHTML;
+  assert(board.indexOf('Issue &lt;title>') > board.indexOf('<h2>Done</h2>'));
+  assert.equal(appHTML, shell, 'stable board shell');
+  assert.equal(projectReads, 3, 'lane polling reuses project options');
+  assert.equal(taskReads, 5);
+  assert.equal(evaluate('done'), false, 'settled board keeps polling');
+  context.fetch = async () => ({ok:false, text:async ()=>'tasks unavailable'});
+  await evaluate('tick()'); await settle();
+  assert(nodes.get('note').textContent.includes('tasks unavailable'));
+  assert.equal(nodes.get('task-board').innerHTML, board, 'error retains cards');
+  context.fetch = async () => json([]);
+  await evaluate('tick()'); await settle();
+  assert.equal((nodes.get('task-board').innerHTML.match(/No tasks/g)||[]).length, 5);
+  assert.equal(evaluate('done'), false, 'empty board keeps polling');
+
+  let retryProjects = 0, retryTasks = 0;
+  context.fetch = async url => {
+    if (url === '/api/projects') {
+      retryProjects++;
+      return retryProjects === 1 ? {ok:false, text:async ()=>'projects unavailable'} : json([{repo:taskRepo}]);
+    }
+    retryTasks++;
+    return json(taskRows);
+  };
+  await visit('#/tasks');
+  assert(nodes.get('note').textContent.includes('projects unavailable'));
+  assert.equal(retryProjects, 1);
+  assert.equal(retryTasks, 1);
+  await evaluate('tick()'); await settle();
+  assert.equal(retryProjects, 2, 'failed projects load retries');
+  assert.equal(retryTasks, 2, 'tasks still poll during retry');
+  assert(nodes.get('task-project').innerHTML.includes('value="/backlog-only"'));
+  await evaluate('tick()'); await settle();
+  assert.equal(retryProjects, 2, 'successful retry is cached');
+  assert.equal(retryTasks, 3);
+
+  let releaseTasks;
+  context.fetch = async url => url === '/api/projects' ? json([]) : await new Promise(resolve => { releaseTasks = resolve; });
+  evaluate('tick()'); await settle();
+  await visit('#/nope');
+  releaseTasks(json(taskRows)); await settle();
+  // Navigation's loader waits for the in-flight poll before rendering.
+  assert(appHTML.includes('No page at <code>#/nope</code>'), 'destination rendered after late tasks reply');
+  const missingHTML = appHTML;
+  await settle();
+  assert.equal(appHTML, missingHTML, 'late tasks response cannot replace another page');
+  assert(!nodes.has('task-board'));
+  context.fetch = async () => json({run:{...run, repo:taskRepo, task_id:'t1'}, phases:[], events:[], iterations});
+  await visit('#/runs/current');
+  assert(nodes.get('project-title').innerHTML.includes(call('esc', call('tasksHref', taskRepo))));
+  call('renderRunHeader', {run:{...run, task_id:null}});
+  assert(!nodes.get('project-title').innerHTML.includes('>Tasks</a>'));
+  context.fetch = readFetch;
 
   console.log('dashboard client checks passed');
 })().catch(error => { console.error(`${area}:`, error); process.exitCode = 1; });

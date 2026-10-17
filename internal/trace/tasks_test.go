@@ -9,6 +9,34 @@ import (
 	"testing"
 )
 
+func TestTaskLane(t *testing.T) {
+	open, closed, merged := "open", "closed", "merged"
+	for _, tc := range []struct {
+		status  string
+		prState *string
+		hasPR   bool
+		want    string
+	}{
+		{StatusRunning, &merged, true, LaneDone},
+		{StatusFail, &merged, true, LaneDone},
+		{StatusQueued, nil, false, LaneInProgress},
+		{StatusStarting, &closed, true, LaneInProgress},
+		{StatusRunning, &open, true, LaneInProgress},
+		{StatusOK, &open, true, LaneReadyForReview},
+		{StatusOK, nil, true, LaneReadyForReview},
+		{StatusOK, nil, false, LaneBlocked},
+		{StatusOK, &closed, true, LaneBlocked},
+		{StatusFail, &open, true, LaneBlocked},
+		{StatusCancelled, nil, false, LaneBlocked},
+		{StatusLost, nil, false, LaneBlocked},
+		{"unknown", nil, true, LaneBlocked},
+	} {
+		if got := TaskLane(tc.status, tc.prState, tc.hasPR); got != tc.want {
+			t.Errorf("TaskLane(%q, %v, %v) = %q, want %q", tc.status, tc.prState, tc.hasPR, got, tc.want)
+		}
+	}
+}
+
 // issueSpec returns a run spec recording issue ref.
 func issueSpec(ref string) []byte {
 	spec, _ := json.Marshal(map[string]string{"issue": ref})

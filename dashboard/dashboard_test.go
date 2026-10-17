@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,112 @@ import (
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 )
+
+func TestTasksAPI(t *testing.T) {
+	var current, earlier, taskID string
+	db := readOnly(t, func(db *trace.DB, root string) {
+		var err error
+		earlier, err = db.Submit(trace.Request{Workflow: "build", Repo: repo, Request: "change"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, err := db.Get(earlier)
+		if err != nil {
+			t.Fatal(err)
+		}
+		taskID = *row.TaskID
+		current, err = db.Submit(trace.Request{Workflow: "build", Repo: repo, TaskID: taskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := sql.Open("sqlite", filepath.Join(root, "lathe.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		for _, q := range []string{
+			`INSERT INTO tasks (id,repo,text,created_at,updated_at) VALUES ('backlog','/other','later','2030','2030')`,
+			`INSERT INTO tasks (id,repo,text,created_at,updated_at,archived_at) VALUES ('archived','/other','hidden','2040','2040','2040')`,
+		} {
+			if _, err := s.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.Exec(`UPDATE runs SET submitted_at='2020', activity_at='2040', iteration=5 WHERE run_id=?`, earlier); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Exec(`UPDATE runs SET submitted_at='2021', activity_at='2029', iteration=2, status='ok', pr_state='open' WHERE run_id=?`, current); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Exec(`UPDATE tasks SET tracker='github', issue_ref='42', issue_url='https://github.com/o/r/issues/42', issue_title='Issue', issue_body='Body' WHERE id=?`, taskID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	h := handler(db, "test", Actions{}, Sources{PRURL: func(r trace.Row) string {
+		if r.ID != current {
+			return ""
+		}
+		return "https://github.com/o/r/pull/1"
+	}})
+	for _, tc := range []struct {
+		query string
+		count int
+	}{{"", 2}, {"?repo=" + url.QueryEscape(repo), 1}, {"?repo=/rep", 0}, {"?repo=/unknown", 0}} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local("GET", "/api/tasks"+tc.query, nil))
+		var got []taskView
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != 200 || got == nil || len(got) != tc.count {
+			t.Fatalf("tasks %s: %d %s", tc.query, w.Code, w.Body.String())
+		}
+		for _, v := range got {
+			if v.ID == "backlog" {
+				if v.Lane != trace.LaneBacklog || v.Activity != "2030" || v.CurrentRun != nil || v.Issue != nil || v.Runs == nil {
+					t.Fatalf("backlog: %+v", v)
+				}
+			} else if v.ID != taskID || v.Lane != trace.LaneReadyForReview || v.Activity != "2029" || v.CurrentRun.ID != current || v.CurrentRun.Iteration != 2 || v.CurrentRun.Status != "ok" || *v.CurrentRun.PRState != "open" || v.CurrentRun.PRURL == "" || !reflect.DeepEqual(v.Runs, []string{earlier}) || *v.Issue.Title != "Issue" || *v.Issue.Body != "Body" {
+				t.Fatalf("task: %+v", v)
+			}
+		}
+		if tc.query == "" && got[0].ID != "backlog" {
+			t.Fatal("not activity ordered")
+		}
+	}
+	for _, path := range []string{"/api/tasks", "/api/tasks/" + taskID, "/api/tasks/" + taskID + "/start"} {
+		assertNoWriteRoute(t, h, "POST", path)
+	}
+	w := httptest.NewRecorder()
+	r := local("GET", "/api/tasks", nil)
+	r.Host = "evil.example"
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatal("unprotected tasks")
+	}
+	for _, id := range []string{current, earlier} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local("GET", "/api/runs/"+id, nil))
+		var detail struct {
+			Run trace.Row `json:"run"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.Run.TaskID == nil || *detail.Run.TaskID != taskID {
+			t.Fatal("run task link missing")
+		}
+	}
+}
+
+func TestTasksEmpty(t *testing.T) {
+	h := handler(readOnly(t, nil), "test", Actions{}, Sources{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, local("GET", "/api/tasks", nil))
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("empty tasks: %d %s", w.Code, w.Body.String())
+	}
+}
 
 func TestRunPRObservation(t *testing.T) {
 	root := t.TempDir()
