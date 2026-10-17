@@ -119,19 +119,30 @@ func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int,
 		 VALUES (?, ?, ?, ?, 'queued', ?, ?)`, runID, next, request, string(spec), at, KindRevision); err != nil {
 		return 0, err
 	}
+	if err := requeue(tx, runID, n, next, spec, at, `status = '`+StatusOK+`'`,
+		fmt.Errorf("%w: its state changed while the request was being recorded", ErrNotRevisable)); err != nil {
+		return 0, err
+	}
+	return next, tx.Commit()
+}
+
+// requeue points runID at its new iteration next and queues it, provided the
+// run is still at iteration from and matches statusPred. It returns changed
+// when the run no longer matches.
+func requeue(tx *sql.Tx, runID string, from, next int, spec []byte, at, statusPred string, changed error) error {
 	// ended_at, reason and cancel_at describe the iteration that just ended;
 	// that is kept on its own row, and the run now follows the new one.
 	res, err := tx.Exec(
 		`UPDATE runs SET status = 'queued', iteration = ?, spec = ?, activity_at = ?,
 		   reason = NULL, ended_at = NULL, cancel_at = NULL
-		 WHERE run_id = ? AND iteration = ? AND status = '`+StatusOK+`'`, next, string(spec), at, runID, n)
+		 WHERE run_id = ? AND iteration = ? AND `+statusPred, next, string(spec), at, runID, from)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if err := claimed(res); err != nil {
-		return 0, fmt.Errorf("%w: its state changed while the request was being recorded", ErrNotRevisable)
+		return changed
 	}
-	return next, tx.Commit()
+	return nil
 }
 
 // Revisable is the run-state half of revision eligibility: the latest

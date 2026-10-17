@@ -177,6 +177,7 @@ const runColumns = `SELECT run_id, workflow, repo, request, status,
 // queryer is a *sql.DB or *sql.Tx.
 type queryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // getRow reads one run through q. A missing run is sql.ErrNoRows.

@@ -83,16 +83,9 @@ func (d *DB) Recover(runID string, rec Recovery) (int, error) {
 		runID, next, rec.Guidance, string(rec.Spec), at, rec.Kind, rec.Source, rec.Guidance, nullIfEmpty(rec.Resolved)); err != nil {
 		return 0, err
 	}
-	res, err := tx.Exec(
-		`UPDATE runs SET status = 'queued', iteration = ?, spec = ?, activity_at = ?,
-		   reason = NULL, ended_at = NULL, cancel_at = NULL
-		 WHERE run_id = ? AND iteration = ? AND `+recoverableStatus,
-		next, string(rec.Spec), at, runID, n)
-	if err != nil {
+	if err := requeue(tx, runID, n, next, rec.Spec, at, recoverableStatus,
+		fmt.Errorf("%w: its state changed while the request was being recorded", ErrNotRecoverable)); err != nil {
 		return 0, err
-	}
-	if err := claimed(res); err != nil {
-		return 0, fmt.Errorf("%w: its state changed while the request was being recorded", ErrNotRecoverable)
 	}
 	return next, tx.Commit()
 }
@@ -108,35 +101,68 @@ func (d *DB) Stopped(runID string, n int) error {
 	return stopped(tx, runID, n)
 }
 
+// writerEvidence is what the record shows of an iteration's writers and
+// cleanup.
+type writerEvidence struct {
+	open, unsettled, held int
+	path, state           sql.NullString
+}
+
+// worktreeUnsettled reports whether the iteration's worktree exists and is
+// not yet preserved and removed.
+func (e writerEvidence) worktreeUnsettled() bool {
+	return e.path.String != "" && e.state.String != WorktreeRemoved
+}
+
+// collectEvidence reads runID's open launches, unsettled attempts and
+// reservations, and iteration n's worktree. A nonempty exceptAttempt ignores
+// that attempt's launches and attempt row; a nonempty exceptPath ignores
+// that reservation. A missing iteration is sql.ErrNoRows.
+func collectEvidence(q queryer, runID string, n int, exceptAttempt, exceptPath string) (writerEvidence, error) {
+	var e writerEvidence
+	launches, attempts, args := `SELECT count(*) FROM launches WHERE run_id = ?`, `SELECT count(*) FROM attempts WHERE run_id = ?`, []any{runID}
+	if exceptAttempt != "" {
+		launches += ` AND attempt_id != ?`
+		attempts += ` AND attempt_id != ?`
+		args = append(args, exceptAttempt)
+	}
+	if err := q.QueryRow(launches+` AND `+openLaunch, args...).Scan(&e.open); err != nil {
+		return e, err
+	}
+	if err := q.QueryRow(attempts+` AND outcome IS NULL`, args...).Scan(&e.unsettled); err != nil {
+		return e, err
+	}
+	reservations, rargs := `SELECT count(*) FROM reservations WHERE run_id = ?`, []any{runID}
+	if exceptPath != "" {
+		reservations += ` AND path != ?`
+		rargs = append(rargs, exceptPath)
+	}
+	if err := q.QueryRow(reservations, rargs...).Scan(&e.held); err != nil {
+		return e, err
+	}
+	err := q.QueryRow(`SELECT worktree_path, worktree_state FROM iterations WHERE run_id = ? AND iteration = ?`, runID, n).
+		Scan(&e.path, &e.state)
+	return e, err
+}
+
 // stopped is Stopped inside tx. Terminal status and expired leases are not
 // evidence: every supervised launch must be drained or revoked, every
 // attempt settled, the run's reservation released and the iteration's
 // worktree preserved and removed.
 func stopped(tx *sql.Tx, runID string, n int) error {
-	var open, unsettled, held int
-	if err := tx.QueryRow(`SELECT count(*) FROM launches WHERE run_id = ? AND `+openLaunch, runID).Scan(&open); err != nil {
-		return err
-	}
-	if err := tx.QueryRow(`SELECT count(*) FROM attempts WHERE run_id = ? AND outcome IS NULL`, runID).Scan(&unsettled); err != nil {
-		return err
-	}
-	if err := tx.QueryRow(`SELECT count(*) FROM reservations WHERE run_id = ?`, runID).Scan(&held); err != nil {
-		return err
-	}
-	var path, state sql.NullString
-	if err := tx.QueryRow(`SELECT worktree_path, worktree_state FROM iterations WHERE run_id = ? AND iteration = ?`, runID, n).
-		Scan(&path, &state); err != nil {
+	e, err := collectEvidence(tx, runID, n, "", "")
+	if err != nil {
 		return err
 	}
 	switch {
-	case open > 0:
-		return fmt.Errorf("%w: %d supervised process(es) of the run are not confirmed stopped; let the manager settle them first", ErrNotRecoverable, open)
-	case unsettled > 0:
+	case e.open > 0:
+		return fmt.Errorf("%w: %d supervised process(es) of the run are not confirmed stopped; let the manager settle them first", ErrNotRecoverable, e.open)
+	case e.unsettled > 0:
 		return fmt.Errorf("%w: an attempt of the run has no recorded outcome, so its worker is not known to have stopped", ErrNotRecoverable)
-	case held > 0:
+	case e.held > 0:
 		return fmt.Errorf("%w: the run still holds a checkout reservation; its worker is not confirmed stopped", ErrNotRecoverable)
-	case path.String != "" && state.String != WorktreeRemoved:
-		return fmt.Errorf("%w: iteration %d's worktree is %s, not yet preserved and removed; let the manager finish its cleanup first", ErrNotRecoverable, n, cmp.Or(state.String, "in an unknown state"))
+	case e.worktreeUnsettled():
+		return fmt.Errorf("%w: iteration %d's worktree is %s, not yet preserved and removed; let the manager finish its cleanup first", ErrNotRecoverable, n, cmp.Or(e.state.String, "in an unknown state"))
 	}
 	return nil
 }
@@ -145,22 +171,11 @@ func stopped(tx *sql.Tx, runID string, n int) error {
 // iteration under the recovering attempt's claim, ignoring that attempt's
 // own launches and its reservation of path.
 func (d *DB) SourceStopped(runID string, source int, attemptID, path string) error {
-	var open, unsettled, held int
-	if err := d.sql.QueryRow(`SELECT count(*) FROM launches WHERE run_id = ? AND attempt_id != ? AND `+openLaunch, runID, attemptID).Scan(&open); err != nil {
+	e, err := collectEvidence(d.sql, runID, source, attemptID, path)
+	if err != nil {
 		return err
 	}
-	if err := d.sql.QueryRow(`SELECT count(*) FROM attempts WHERE run_id = ? AND attempt_id != ? AND outcome IS NULL`, runID, attemptID).Scan(&unsettled); err != nil {
-		return err
-	}
-	if err := d.sql.QueryRow(`SELECT count(*) FROM reservations WHERE run_id = ? AND path != ?`, runID, path).Scan(&held); err != nil {
-		return err
-	}
-	var wt, state sql.NullString
-	if err := d.sql.QueryRow(`SELECT worktree_path, worktree_state FROM iterations WHERE run_id = ? AND iteration = ?`, runID, source).
-		Scan(&wt, &state); err != nil {
-		return err
-	}
-	if open > 0 || unsettled > 0 || held > 0 || (wt.String != "" && state.String != WorktreeRemoved) {
+	if e.open > 0 || e.unsettled > 0 || e.held > 0 || e.worktreeUnsettled() {
 		return fmt.Errorf("iteration %d's writers or cleanup are no longer confirmed settled; nothing was changed", source)
 	}
 	return nil
@@ -200,4 +215,3 @@ func (d *DB) SetResolved(runID, attemptID, request string) error {
 	return d.guarded(runID, attemptID, "", nil,
 		`UPDATE iterations SET resolved_request = ?`, []any{request})
 }
-
