@@ -189,50 +189,9 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	restore := process.Install(runner)
 	defer restore()
 
-	base := spec.Base
-	if spec.Recovery != nil {
-		if err := db.SourceStopped(row.ID, spec.Recovery.Source, attemptID, path); err != nil {
-			return result{}, err
-		}
-	}
-	if spec.Recovery != nil && spec.Recovery.Publication != nil {
-		// The queued recovery's view of origin and the pull request, again.
-		pub := spec.Recovery.Publication
-		if err := recheck(spec.Workspace.Path, pub); err != nil {
-			return result{}, err
-		}
-		// A revision delivered despite a lost acknowledgement: the run's
-		// shipped commit catches up with what origin verifiably holds.
-		if spec.Workflow == workflow.NameRevise && row.Commit != pub.Head {
-			if err := db.SetShipped(row.ID, attemptID, pub.Branch, pub.Head); err != nil {
-				return result{}, err
-			}
-			row.Commit = pub.Head
-		}
-	}
-	var revision *run.Revision
-	if spec.Workflow == workflow.NameRevise {
-		// Rechecked under the claim, against origin: the pull request had
-		// people around it the whole time the request waited.
-		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path); err != nil {
-			return result{}, err
-		}
-		// Saved work applies only at the head it was made on; a moved head
-		// is refused rather than rebased onto.
-		if spec.Recovery != nil && spec.Base != "" && spec.Base != revision.Head {
-			return result{}, fmt.Errorf("the recovery was submitted at %s, but the pull request's head is now %s; nothing was changed",
-				workspace.Short(spec.Base), workspace.Short(revision.Head))
-		}
-		base = revision.Head
-	}
-	var recovery *run.Recovery
-	if spec.Recovery != nil {
-		if recovery, err = recoveryOf(db, dataRoot, row, spec.Recovery); err != nil {
-			return result{}, err
-		}
-	}
-	if base == "" {
-		return result{}, fmt.Errorf("run %s records no commit to start from; nothing was changed", row.ID)
+	base, revision, recovery, err := startOf(db, dataRoot, row, attemptID, spec, path)
+	if err != nil {
+		return result{}, err
 	}
 
 	// Ownership and base in one write, before the worktree exists: a crash
@@ -295,6 +254,56 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 		PrintResult(out, its[row.Iteration], res.status == trace.StatusOK)
 	}
 	return res, nil
+}
+
+// startOf rechecks a queued recovery's source and publication and a revision's
+// pull request under the claim, and returns the commit the worktree at path
+// starts from with the revision and recovery the run continues, if any.
+func startOf(db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, path string) (base string, revision *run.Revision, recovery *run.Recovery, err error) {
+	base = spec.Base
+	if spec.Recovery != nil {
+		if err := db.SourceStopped(row.ID, spec.Recovery.Source, attemptID, path); err != nil {
+			return "", nil, nil, err
+		}
+	}
+	if spec.Recovery != nil && spec.Recovery.Publication != nil {
+		// The queued recovery's view of origin and the pull request, again.
+		pub := spec.Recovery.Publication
+		if err := recheck(spec.Workspace.Path, pub); err != nil {
+			return "", nil, nil, err
+		}
+		// A revision delivered despite a lost acknowledgement: the run's
+		// shipped commit catches up with what origin verifiably holds.
+		if spec.Workflow == workflow.NameRevise && row.Commit != pub.Head {
+			if err := db.SetShipped(row.ID, attemptID, pub.Branch, pub.Head); err != nil {
+				return "", nil, nil, err
+			}
+			row.Commit = pub.Head
+		}
+	}
+	if spec.Workflow == workflow.NameRevise {
+		// Rechecked under the claim, against origin: the pull request had
+		// people around it the whole time the request waited.
+		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path); err != nil {
+			return "", nil, nil, err
+		}
+		// Saved work applies only at the head it was made on; a moved head
+		// is refused rather than rebased onto.
+		if spec.Recovery != nil && spec.Base != "" && spec.Base != revision.Head {
+			return "", nil, nil, fmt.Errorf("the recovery was submitted at %s, but the pull request's head is now %s; nothing was changed",
+				workspace.Short(spec.Base), workspace.Short(revision.Head))
+		}
+		base = revision.Head
+	}
+	if spec.Recovery != nil {
+		if recovery, err = recoveryOf(db, dataRoot, row, spec.Recovery); err != nil {
+			return "", nil, nil, err
+		}
+	}
+	if base == "" {
+		return "", nil, nil, fmt.Errorf("run %s records no commit to start from; nothing was changed", row.ID)
+	}
+	return base, revision, recovery, nil
 }
 
 // options is the run options every execution shares; the caller sets where
