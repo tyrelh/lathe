@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -42,83 +41,91 @@ func TestEvidence(t *testing.T) {
 	}
 }
 
+type shippedFixture struct {
+	stub, dir, dataRoot, origin, sha, id string
+	db                                   *trace.DB
+	roster                               config.Snapshot
+	ws                                   workspace.Desc
+}
+
+func shippedBuild(t *testing.T, withBase bool, ghBase string) shippedFixture {
+	t.Helper()
+	f := shippedFixture{stub: t.TempDir(), dir: repo(t), dataRoot: t.TempDir(), origin: t.TempDir()}
+	stubBin(t, f.stub, "pi", "#!/bin/sh\ntouch "+filepath.Join(f.stub, "spawned")+"\n")
+	stubBin(t, f.stub, "gh", "#!/bin/sh\necho '{\"url\":\"u\",\"state\":\"OPEN\",\"headRefName\":\"feat/x\",\"baseRefName\":\""+ghBase+"\"}'\n")
+	t.Setenv("PATH", f.stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	git(t, f.origin, "init", "-q", "--bare")
+	git(t, f.dir, "checkout", "-qb", "feat/x")
+	git(t, f.dir, "remote", "add", "origin", f.origin)
+	git(t, f.dir, "push", "-q", "origin", "main", "feat/x")
+	f.sha = strings.TrimSpace(git(t, f.dir, "rev-parse", "HEAD"))
+	var err error
+	f.roster, err = seeded(t).Capture([]string{"planner"}, config.Overrides{})
+	must(t, err)
+	f.ws, err = workspace.Local(f.dir)
+	must(t, err)
+	base := ""
+	if withBase {
+		base = f.sha
+	}
+	spec, err := (Spec{Version: SpecVersion, Workflow: "build", Request: "r", Workspace: f.ws, Roster: f.roster, Base: base}).Marshal()
+	must(t, err)
+	f.db, err = trace.Open(f.dataRoot)
+	must(t, err)
+	t.Cleanup(func() { _ = f.db.Close() })
+	f.id, err = f.db.Submit(trace.Request{Workflow: "build", Repo: f.ws.Path, Request: "r", Branch: "feat/x", Spec: spec})
+	must(t, err)
+	attempt, token := trace.NewAttemptID(f.id), trace.NewClaimToken()
+	must(t, f.db.Reserve(f.id, attempt, ""))
+	_, err = f.db.Claim(attempt, token, "host", 1, Lease)
+	must(t, err)
+	must(t, f.db.SetShipped(f.id, attempt, "feat/x", f.sha))
+	must(t, f.db.Complete(f.id, attempt, token, trace.StatusOK, ""))
+	must(t, os.MkdirAll(ReportDir(f.dataRoot, f.id, 0), 0o700))
+	write(t, filepath.Join(ReportDir(f.dataRoot, f.id, 0), "pr.json"), `{"url":"u"}`)
+	return f
+}
+
 // A revision queued against a pull request that has since moved on fails
 // when its worker starts, before any agent runs, and changes nothing.
 func TestRevisionRechecksBeforeAnyAgent(t *testing.T) {
-	stub := t.TempDir()
-	write(t, filepath.Join(stub, "pi"), "#!/bin/sh\ntouch "+filepath.Join(stub, "spawned")+"\n")
-	write(t, filepath.Join(stub, "gh"), `#!/bin/sh
-echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}'
-`)
-	os.Chmod(filepath.Join(stub, "pi"), 0o755)
-	os.Chmod(filepath.Join(stub, "gh"), 0o755)
-	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	dir, dataRoot, origin := repo(t), t.TempDir(), t.TempDir()
-	git(t, origin, "init", "-q", "--bare")
-	git(t, dir, "checkout", "-qb", "feat/x")
-	git(t, dir, "remote", "add", "origin", origin)
-	git(t, dir, "push", "-q", "origin", "main", "feat/x")
-	sha := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
-
-	cfg := seeded(t)
-	roster, err := cfg.Capture([]string{"planner"}, config.Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws, _ := workspace.Local(dir)
-	spec, _ := Spec{Version: SpecVersion, Workflow: "build", Request: "r", Workspace: ws, Roster: roster}.Marshal()
-	db, err := trace.Open(dataRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	id, _ := db.Submit(trace.Request{Workflow: "build", Repo: ws.Path, Request: "r", Branch: "feat/x", Spec: spec})
-	attempt := trace.NewAttemptID(id)
-	db.Reserve(id, attempt, "")
-	token := trace.NewClaimToken()
-	db.Claim(attempt, token, "host", 1, Lease)
-	db.SetShipped(id, attempt, "feat/x", sha)
-	db.Complete(id, attempt, token, trace.StatusOK, "")
-	os.MkdirAll(ReportDir(dataRoot, id, 0), 0o755)
-	b, _ := json.Marshal(map[string]string{"url": "u"})
-	write(t, filepath.Join(ReportDir(dataRoot, id, 0), "pr.json"), string(b))
-
-	revision, _ := Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: ws, Roster: roster, Base: sha}.Marshal()
-	if _, err := db.Revise(id, 0, "more", revision); err != nil {
+	f := shippedBuild(t, false, "main")
+	revision, err := (Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: f.ws, Roster: f.roster, Base: f.sha}).Marshal()
+	must(t, err)
+	if _, err := f.db.Revise(f.id, 0, "more", revision); err != nil {
 		t.Fatal(err)
 	}
 	// After queueing, someone pushes to the pull request's branch by hand, and
 	// leaves the checkout dirty, which on its own would not matter.
-	write(t, filepath.Join(dir, "hello.txt"), "mine\n")
-	git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "manual")
-	git(t, dir, "push", "-q", "origin", "feat/x")
-	write(t, filepath.Join(dir, "hello.txt"), "dirty\n")
-	manual := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	write(t, filepath.Join(f.dir, "hello.txt"), "mine\n")
+	git(t, f.dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "manual")
+	git(t, f.dir, "push", "-q", "origin", "feat/x")
+	write(t, filepath.Join(f.dir, "hello.txt"), "dirty\n")
+	manual := strings.TrimSpace(git(t, f.dir, "rev-parse", "HEAD"))
 
-	second := trace.NewAttemptID(id)
-	if err := db.Reserve(id, second, ""); err != nil {
+	second := trace.NewAttemptID(f.id)
+	if err := f.db.Reserve(f.id, second, ""); err != nil {
 		t.Fatal(err)
 	}
-	if code := Execute(dataRoot, id, second, io.Discard); code != 1 {
+	if code := Execute(f.dataRoot, f.id, second, io.Discard); code != 1 {
 		t.Fatalf("exit code = %d", code)
 	}
-	if _, err := os.Stat(filepath.Join(stub, "spawned")); err == nil {
+	if _, err := os.Stat(filepath.Join(f.stub, "spawned")); err == nil {
 		t.Fatal("an agent ran against a pull request that had moved on")
 	}
-	row, _ := db.Get(id)
-	its, _ := db.Iterations(id)
+	row, _ := f.db.Get(f.id)
+	its, _ := f.db.Iterations(f.id)
 	if row.Status != trace.StatusFail || !strings.Contains(row.Reason, "changed outside lathe") ||
-		!strings.Contains(row.Reason, "nothing was changed") || row.Commit != sha {
+		!strings.Contains(row.Reason, "nothing was changed") || row.Commit != f.sha {
 		t.Fatalf("run = %s %q @ %s", row.Status, row.Reason, row.Commit)
 	}
 	if its[0].Status != trace.StatusOK || its[1].Status != trace.StatusFail {
 		t.Fatalf("iterations = %+v", its)
 	}
-	if head := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD")); head != manual {
+	if head := strings.TrimSpace(git(t, f.dir, "rev-parse", "HEAD")); head != manual {
 		t.Fatal("the worker touched the person's commit")
 	}
-	if _, err := os.Stat(workspace.WorktreeRoot(dataRoot)); !os.IsNotExist(err) {
+	if _, err := os.Stat(workspace.WorktreeRoot(f.dataRoot)); !os.IsNotExist(err) {
 		t.Fatal("a refused revision created a worktree")
 	}
 }
@@ -126,62 +133,27 @@ echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}'
 // A pull request base that cannot be fetched fails the revision before any
 // agent or worktree: the planner's diff would describe the wrong change.
 func TestRevisionNeedsItsBase(t *testing.T) {
-	stub := t.TempDir()
-	write(t, filepath.Join(stub, "pi"), "#!/bin/sh\ntouch "+filepath.Join(stub, "spawned")+"\n")
-	write(t, filepath.Join(stub, "gh"), `#!/bin/sh
-echo '{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"no-such-base"}'
-`)
-	os.Chmod(filepath.Join(stub, "pi"), 0o755)
-	os.Chmod(filepath.Join(stub, "gh"), 0o755)
-	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	dir, dataRoot, origin := repo(t), t.TempDir(), t.TempDir()
-	git(t, origin, "init", "-q", "--bare")
-	git(t, dir, "checkout", "-qb", "feat/x")
-	git(t, dir, "remote", "add", "origin", origin)
-	git(t, dir, "push", "-q", "origin", "main", "feat/x")
-	sha := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
-
-	roster, err := seeded(t).Capture([]string{"planner"}, config.Overrides{})
-	if err != nil {
+	f := shippedBuild(t, true, "no-such-base")
+	revision, err := (Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: f.ws, Roster: f.roster, Base: f.sha}).Marshal()
+	must(t, err)
+	if _, err := f.db.Revise(f.id, 0, "more", revision); err != nil {
 		t.Fatal(err)
 	}
-	ws, _ := workspace.Local(dir)
-	spec, _ := Spec{Version: SpecVersion, Workflow: "build", Request: "r", Workspace: ws, Roster: roster, Base: sha}.Marshal()
-	db, err := trace.Open(dataRoot)
-	if err != nil {
+	second := trace.NewAttemptID(f.id)
+	if err := f.db.ReserveMode(f.id, second, "", Mode(revision)); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	id, _ := db.Submit(trace.Request{Workflow: "build", Repo: ws.Path, Request: "r", Branch: "feat/x", Spec: spec})
-	attempt := trace.NewAttemptID(id)
-	db.Reserve(id, attempt, "")
-	token := trace.NewClaimToken()
-	db.Claim(attempt, token, "host", 1, Lease)
-	db.SetShipped(id, attempt, "feat/x", sha)
-	db.Complete(id, attempt, token, trace.StatusOK, "")
-	os.MkdirAll(ReportDir(dataRoot, id, 0), 0o700)
-	write(t, filepath.Join(ReportDir(dataRoot, id, 0), "pr.json"), `{"url":"u"}`)
-
-	revision, _ := Spec{Version: SpecVersion, Workflow: "revise", Request: "more", Workspace: ws, Roster: roster, Base: sha}.Marshal()
-	if _, err := db.Revise(id, 0, "more", revision); err != nil {
-		t.Fatal(err)
-	}
-	second := trace.NewAttemptID(id)
-	if err := db.ReserveMode(id, second, "", Mode(revision)); err != nil {
-		t.Fatal(err)
-	}
-	if code := Execute(dataRoot, id, second, io.Discard); code != 1 {
+	if code := Execute(f.dataRoot, f.id, second, io.Discard); code != 1 {
 		t.Fatalf("exit code = %d", code)
 	}
-	row, _ := db.Get(id)
+	row, _ := f.db.Get(f.id)
 	if row.Status != trace.StatusFail || !strings.Contains(row.Reason, "the pull request's base") {
 		t.Fatalf("run = %s %q", row.Status, row.Reason)
 	}
-	if _, err := os.Stat(filepath.Join(stub, "spawned")); err == nil {
+	if _, err := os.Stat(filepath.Join(f.stub, "spawned")); err == nil {
 		t.Fatal("an agent ran without the pull request's base")
 	}
-	if _, err := os.Stat(workspace.WorktreeRoot(dataRoot)); !os.IsNotExist(err) {
+	if _, err := os.Stat(workspace.WorktreeRoot(f.dataRoot)); !os.IsNotExist(err) {
 		t.Fatal("a revision without its base created a worktree")
 	}
 }
