@@ -127,14 +127,15 @@ const maxRepairs = 10
 // written from, and neither is recoverable from the tree. v says whether what
 // they ship was accepted.
 //
-// mode says why the builder is next entered. outstanding is the findings the
-// last adjudication asked to fix and changes its requested changes, carried
-// across a scope send-back.
+// mode says why the builder is next entered. repair is the builder's request
+// when mode is buildRepair. outstanding is the findings the last adjudication
+// asked to fix and changes its requested changes, carried across a scope
+// send-back.
 type code struct {
 	plan        PlanOutput
 	out         ImplementOutput
 	handoff     string
-	feedback    string
+	repair      string
 	v           Validation
 	mode        builderMode
 	outstanding []Finding
@@ -203,7 +204,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		var request string
 		switch c.mode {
 		case buildRepair:
-			request = c.feedback
+			request = c.repair
 		case buildReplanned:
 			c.handoff = implementRequest(r.Request, &c.plan, c.v.Amendments)
 			request = replannedRequest(c)
@@ -344,7 +345,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			return "", writeResult(r.Dir, "validation.json", &c.v)
 		}
 		c.amend(r.Request, &out)
-		c.feedback = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
+		c.repair = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
 		c.mode, c.outstanding, c.changes = buildRepair, fixes, *out.Changes
 		if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
 			return "", err
