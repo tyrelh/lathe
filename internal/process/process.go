@@ -450,17 +450,9 @@ func Helper(args []string) int {
 	}
 	stop := make(chan string, 3)
 	go func() {
-		for {
-			l, err := rd.ReadString('\n')
-			if err != nil {
-				stop <- "EOF"
-				return
-			}
-			if strings.TrimSpace(l) == "STOP" {
-				stop <- "STOP"
-				return
-			}
-		}
+		// The parent writes nothing after GO; EOF means it closed the pipe.
+		io.Copy(io.Discard, rd)
+		stop <- "EOF"
 	}()
 	go serve(ln, token, stop)
 	done := make(chan error, 1)
