@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -514,7 +515,7 @@ func settle(db *trace.DB, dataRoot string, w trace.Worktree, protected []string,
 				return err
 			}
 		}
-	case os.IsNotExist(err):
+	case errors.Is(err, fs.ErrNotExist):
 		// Nothing to export. A worktree still being created held no work; one
 		// that existed and is gone lost whatever it held.
 		outcome := trace.PreservedMissing

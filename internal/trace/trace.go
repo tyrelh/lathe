@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -131,7 +132,7 @@ func Open(dataRoot string) (*DB, error) {
 	}
 	f.Close()
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
 	}
