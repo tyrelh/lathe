@@ -1,16 +1,15 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/run"
-	"github.com/tyrelh/lathe/internal/trace"
 )
 
 // executeRecovery is execute for a recovery iteration whose restored paths
@@ -24,40 +23,7 @@ func executeRecovery(t *testing.T, cfg config.Config, name, repo, request string
 // recoverIn is executeRecovery returning the recovery run's report directory.
 func recoverIn(t *testing.T, cfg config.Config, name, repo, request string, rec *run.Recovery) (int, string) {
 	t.Helper()
-	roster, err := cfg.Capture(Agents[name], config.Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dataRoot := filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe")
-	db, err := trace.Open(dataRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	id, err := db.Submit(trace.Request{Workflow: name, Repo: repo, Request: request, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	attempt, token := trace.NewAttemptID(id), trace.NewClaimToken()
-	if err := db.Reserve(id, attempt, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Claim(attempt, token, "host", os.Getpid(), time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	r, err := run.Open(run.Options{
-		ID: id, Workflow: name, Request: request, Repo: repo,
-		Dir: filepath.Join(dataRoot, "runs", id), Snapshot: roster, DB: db, Attempt: attempt, Recovery: rec,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.Retain(rec.Restored)
-	code := Graphs[name](r)
-	if err := db.Complete(id, attempt, token, r.Status(), r.Reason()); err != nil {
-		t.Fatal(err)
-	}
-	return code, r.Dir
+	return dispatch(t, cfg, name, repo, request, context.Background(), nil, rec)
 }
 
 // publishedStub is codeStub with a gh that reports one pull request from
