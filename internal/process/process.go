@@ -301,17 +301,10 @@ func parseReady(line string) (Registration, error) {
 	return Registration{Endpoint: f[1], PID: pid, PGID: pgid}, nil
 }
 
-// GroupAlive reports whether any process remains in process group pgid.
-func GroupAlive(pgid int) (bool, error) {
-	if pgid <= 1 {
-		return false, fmt.Errorf("unusable process group %d", pgid)
-	}
-	return Alive(-pgid)
-}
-
 // Alive reports whether pid exists, or for a negative pid whether that
 // process group has any member. A process that exists but is not ours
-// counts as alive.
+// counts as alive, and so does a zombie, which kill(pid, 0) finds until it is
+// reaped; GroupLive ignores zombies.
 func Alive(pid int) (bool, error) {
 	switch err := syscall.Kill(pid, 0); err {
 	case nil, syscall.EPERM:
@@ -327,7 +320,10 @@ func Alive(pid int) (bool, error) {
 // zombie. A group of only exited, unreaped processes can write nothing, so it
 // counts as stopped. When membership cannot be read, it answers true.
 func GroupLive(pgid int) (bool, error) {
-	alive, err := GroupAlive(pgid)
+	if pgid <= 1 {
+		return false, fmt.Errorf("unusable process group %d", pgid)
+	}
+	alive, err := Alive(-pgid)
 	if err != nil || !alive {
 		return alive, err
 	}
