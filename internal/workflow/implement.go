@@ -121,6 +121,16 @@ func implementRequest(request string, plan *PlanOutput, amendments []Amendment) 
 // planning loop keeps its own budget.
 const maxRepairs = 10
 
+// builderMode is why the builder is entered: the first implementation, an
+// adjudicator repair, or a plan revised in answer to a scope request.
+type builderMode int
+
+const (
+	buildInitial builderMode = iota
+	buildRepair
+	buildReplanned
+)
+
 // code is what the implement, validate and adjudicate nodes accumulate. Build's
 // git phases read it after those nodes forward: the handoff and the
 // implementation summary are what a commit message and a pull request body are
@@ -152,6 +162,14 @@ func patchNote(r *run.Run) string {
 		return ""
 	}
 	return fmt.Sprintf("; lathe saves them as %s/result.patch, to apply from a checkout at %s", r.Dir, short(r.Base()))
+}
+
+// resumeHint is how an engineer continues a run that stopped here.
+func resumeHint(r *run.Run) string {
+	if r.ID == "" {
+		return ""
+	}
+	return fmt.Sprintf("; continue it with: lathe resume %s \"guidance\"", r.ID)
 }
 
 // addRequestNode opens a writing workflow. The request is a phase so the trace
