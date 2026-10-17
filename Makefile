@@ -1,6 +1,6 @@
 BIN := $(HOME)/.local/bin/lathe
-# Stamped into the binary and shown in the dashboard's top bar. An unstamped
-# build reports `dev`, which is the honest answer for one built from a checkout.
+# `make release` stamps VERSION into the binary. `make build` and `make install`
+# report `dev`, which never refreshes existing seeded files in ~/.lathe.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: build release install test
