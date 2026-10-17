@@ -198,13 +198,18 @@ func (a *AdjudicationOutput) Artifacts() []string {
 
 // fixes is every finding the adjudicator decided must be fixed.
 func (a *AdjudicationOutput) fixes(findings []Finding) []Finding {
-	action := map[string]string{}
+	return a.decided(actionFix, findings)
+}
+
+// decided is every finding whose decision is action.
+func (a *AdjudicationOutput) decided(action string, findings []Finding) []Finding {
+	actions := map[string]string{}
 	for _, d := range *a.Decisions {
-		action[d.Ref] = d.Action
+		actions[d.Ref] = d.Action
 	}
 	var out []Finding
 	for _, f := range findings {
-		if action[f.Ref] == actionFix {
+		if actions[f.Ref] == action {
 			out = append(out, f)
 		}
 	}
@@ -384,21 +389,7 @@ func dismissedFindings(w io.Writer, c *code) {
 	if prev == nil || prev.Adjudication == nil {
 		return
 	}
-	dismissed := map[string]bool{}
-	for _, d := range *prev.Adjudication.Decisions {
-		dismissed[d.Ref] = d.Action == actionDismiss
-	}
-	header := false
-	for _, f := range prev.findings() {
-		if !dismissed[f.Ref] {
-			continue
-		}
-		if !header {
-			fmt.Fprintf(w, "\n### Dismissed findings\n")
-			header = true
-		}
-		writeFinding(w, f)
-	}
+	findingSection(w, "### Dismissed findings", prev.Adjudication.decided(actionDismiss, prev.findings()))
 }
 
 // reviewRequest is one reviewer's brief for one round.
