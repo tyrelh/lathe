@@ -13,7 +13,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -45,6 +47,25 @@ func Local(path string) (Desc, error) {
 		return Desc{}, err
 	}
 	return Desc{Kind: KindLocalPath, Path: abs, Host: host}, nil
+}
+
+// Discover describes the checkout containing dir: lathe's target is discovered
+// from where it was invoked, never configured. A directory outside a git repo
+// is an error rather than a silent fallback to cwd, because the fallback would
+// point an agent at $HOME.
+func Discover(dir string) (Desc, error) {
+	// Not git(): a supervised runner installed process-wide must not run this.
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return Desc{}, fmt.Errorf("%s is not inside a git repository", dir)
+	}
+	root, err := filepath.Abs(strings.TrimSpace(string(out)))
+	if err != nil {
+		return Desc{}, err
+	}
+	return Local(root)
 }
 
 // Check rejects a workspace this host cannot execute.

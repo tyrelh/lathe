@@ -1,7 +1,6 @@
 package config
 
 import (
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -119,32 +118,6 @@ func TestRepoInstructionsDefaultOn(t *testing.T) {
 			t.Errorf("%s: repo instructions = %v; want %v (%v)", name, a.WantsRepoInstructions(), want, err)
 		}
 	}
-}
-
-func TestTargetRoot(t *testing.T) {
-	got, err := TargetRoot(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if eval(t, got) != eval(t, want) {
-		t.Fatalf("target root = %q; want %q", got, want)
-	}
-	if _, err := TargetRoot(t.TempDir()); err == nil {
-		t.Fatal("a directory outside any git repo resolved to a target root")
-	}
-}
-
-func eval(t *testing.T, p string) string {
-	t.Helper()
-	r, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
 }
 
 func TestCaptureCarriesCommandTimeout(t *testing.T) {

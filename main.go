@@ -234,15 +234,11 @@ func submit(name string, args []string) int {
 // resolved from dir and the agent roster frozen into a spec. It writes nothing
 // to the database; the caller submits the request.
 func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.Writer) (submission, error) {
-	root, err := config.TargetRoot(dir)
+	ws, err := workspace.Discover(dir)
 	if err != nil {
 		return submission{}, err
 	}
 	roster, err := capture(name, ov, warn)
-	if err != nil {
-		return submission{}, err
-	}
-	ws, err := workspace.Local(root)
 	if err != nil {
 		return submission{}, err
 	}
