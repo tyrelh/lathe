@@ -1,7 +1,6 @@
 # Pi JSONL event stream
 
-What `pi -p --mode json` actually emits, mapped from a real run rather than from
-the bundled `docs/json.md`. Captured JSON supports the observed shapes below; the provider-error shape is documented from the code and a test fixture, not this capture.
+What `pi -p --mode json` actually emits, mapped from a real run rather than from the bundled `docs/json.md`. Captured JSON supports the observed shapes below; the provider-error shape is documented from the code and a test fixture, not this capture.
 
 Captured with Pi 0.85.1:
 
@@ -58,8 +57,7 @@ turn_end             type,message,toolResults
 turn_start           type
 ```
 
-Note `agent_settled` and `turn_start` carry nothing but `type`, and `agent_start`
-likewise — they are pure markers.
+Note `agent_settled` and `turn_start` carry nothing but `type`, and `agent_start` likewise — they are pure markers.
 
 ## Session header
 
@@ -69,9 +67,7 @@ First line, as the docs claim:
 {"type":"session","version":3,"id":"01a0acb9-720b-71fa-9525-a4c05f4268ab","timestamp":"2026-09-17T00:17:09.644Z","cwd":"/Users/tyrel/Projects/lathe"}
 ```
 
-`timestamp` here is an ISO-8601 string. **Every other timestamp in the stream is
-a Unix milliseconds integer** (`"timestamp":1789604229690` on messages). Two
-different time encodings in one stream; the parser has to know which is which.
+`timestamp` here is an ISO-8601 string. **Every other timestamp in the stream is a Unix milliseconds integer** (`"timestamp":1789604229690` on messages). Two different time encodings in one stream; the parser has to know which is which.
 
 ## Messages
 
@@ -81,8 +77,7 @@ different time encodings in one stream; the parser has to know which is which.
 {"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"List the Go files here and summarise what each does"}],"timestamp":1789604229690}}
 ```
 
-Roles seen: `user`, `assistant`, `toolResult`. Each gets its own
-`message_start`/`message_end` pair, so 8 `message_end` events for a 3-turn run.
+Roles seen: `user`, `assistant`, `toolResult`. Each gets its own `message_start`/`message_end` pair, so 8 `message_end` events for a 3-turn run.
 
 `message_end` for the final assistant message, content stripped:
 
@@ -98,22 +93,19 @@ Content blocks and their keys:
 | `thinking` | `type`, `thinking`, `thinkingSignature` |
 | `toolCall` | `type`, `id`, `name`, `arguments` |
 
-Stop reasons observed: `toolUse` while the agent is working, `stop` on the final
-message, `null` on user and toolResult messages.
+Stop reasons observed: `toolUse` while the agent is working, `stop` on the final message, `null` on user and toolResult messages.
 
 The code and `internal/run/run_test.go` fixture also handle an assistant `message_end` with `stopReason: "error"` and a provider refusal in `errorMessage` (such as an unknown model, missing key or rate limit). Its content is usually empty, and Pi can exit 0; `pi.Scan` reports the message in `Result.Failure`. This shape was not captured in the Pi 0.85.1 run above.
 
 ## Usage is per message, not cumulative
 
-`totalTokens` across the stream's
-`message_update` events, consecutive duplicates collapsed:
+`totalTokens` across the stream's `message_update` events, consecutive duplicates collapsed:
 
 ```
 0 1094 0 1188 0 2925
 ```
 
-It resets to zero at each assistant message and climbs within that message. Per
-`message_end`:
+It resets to zero at each assistant message and climbs within that message. Per `message_end`:
 
 ```
 assistant  1094  $0.00080573
@@ -121,14 +113,9 @@ assistant  1188  $0.00054861
 assistant  2925  $0.00268676
 ```
 
-**Consequence for totals:** `pi.Scan` sums assistant `message_end` usage into `Result.Tokens` and `Result.Cost`, which `internal/trace` stores per phase. A run total is the *sum* over assistant `message_end` events, not the last value seen. Summing `cost.total` is correct
-(each is a real billed call). Summing `input` double-counts resent context —
-that is what was actually billed, so it is right for cost but must not be read
-as "distinct tokens of context".
+**Consequence for totals:** `pi.Scan` sums assistant `message_end` usage into `Result.Tokens` and `Result.Cost`, which `internal/trace` stores per phase. A run total is the *sum* over assistant `message_end` events, not the last value seen. Summing `cost.total` is correct (each is a real billed call). Summing `input` double-counts resent context — that is what was actually billed, so it is right for cost but must not be read as "distinct tokens of context".
 
-Usage also becomes non-zero *before* the message ends — it first appears on a
-`toolcall_delta` — so a mid-message read is a partial, and only the value on
-`message_end` is authoritative.
+Usage also becomes non-zero *before* the message ends — it first appears on a `toolcall_delta` — so a mid-message read is a partial, and only the value on `message_end` is authoritative.
 
 ## Deltas (`message_update`)
 
@@ -148,8 +135,7 @@ Every delta carries `contentIndex`. The shapes differ per type:
 {"type":"toolcall_end","contentIndex":1,"toolCall":{"type":"toolCall","id":"find_0_567d3680","name":"find","arguments":{"pattern":"**/*.go"}}}
 ```
 
-`text_end` carries the whole accumulated `content`, so streaming text does not
-have to be reassembled from deltas by hand.
+`text_end` carries the whole accumulated `content`, so streaming text does not have to be reassembled from deltas by hand.
 
 **For Go:** if deltas are ever consumed, decode `assistantMessageEvent` as `{Type string; ContentIndex int}` plus a `json.RawMessage` for the rest, and only decode further for the delta types being acted on. `pi.Event` leaves this field out today. There is no single struct that fits all nine.
 
@@ -160,11 +146,9 @@ have to be reassembled from deltas by hand.
 {"type":"tool_execution_end","toolCallId":"find_0_567d3680","toolName":"find","result":{"content":[{"type":"text","text":"internal/install/install.go\ninternal/install/install_test.go\nmain.go"}]},"isError":false}
 ```
 
-`toolCallId` is `<tool>_<index>_<hash>` and brackets the pair. `args` is
-tool-specific and arbitrary — keep it `json.RawMessage` and store it as text.
+`toolCallId` is `<tool>_<index>_<hash>` and brackets the pair. `args` is tool-specific and arbitrary — keep it `json.RawMessage` and store it as text.
 
-**Tool calls run in parallel.** The captured order was three `read` starts
-before any of their ends:
+**Tool calls run in parallel.** The captured order was three `read` starts before any of their ends:
 
 ```
 start read_1_7c3584a8
@@ -175,32 +159,25 @@ end   read_2_ab5ecbbd
 end   read_3_90e6668b
 ```
 
-Nothing may assume start/end nest or alternate. Match on `toolCallId`; a map of
-in-flight calls, not a stack.
+Nothing may assume start/end nest or alternate. Match on `toolCallId`; a map of in-flight calls, not a stack.
 
-`isError` is always present as a real boolean (not omitted when false), so a
-plain `bool` is safe here. On an error the result grows an extra `details` key:
+`isError` is always present as a real boolean (not omitted when false), so a plain `bool` is safe here. On an error the result grows an extra `details` key:
 
 ```json
 {"toolName":"read","isError":true,"result":{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/tyrel/Projects/lathe/definitely-missing-file.txt'"}],"details":{}}}
 ```
 
-Note the failure is reported *in-band* — the tool result carries the error text
-back to the model, Pi exits 0, and the agent recovers on its own. An exit code
-of 0 does not mean nothing went wrong.
+Note the failure is reported *in-band* — the tool result carries the error text back to the model, Pi exits 0, and the agent recovers on its own. An exit code of 0 does not mean nothing went wrong.
 
 ## Turns
 
-`turn_end` carries the assistant message that closed the turn plus the results
-that came back:
+`turn_end` carries the assistant message that closed the turn plus the results that came back:
 
 ```json
 {"type":"turn_end","toolResults":[{"role":"toolResult","toolCallId":"...","toolName":"find","content":[...],"isError":false,"timestamp":...}]}
 ```
 
-`toolResults` is `[]` on the final turn. The sequence is
-`agent_start` → (`turn_start` … `turn_end`) × N → `agent_settled` → `agent_end`,
-and `agent_end` carries `willRetry` (`false` here) plus the full message list.
+`toolResults` is `[]` on the final turn. The sequence is `agent_start` → (`turn_start` … `turn_end`) × N → `agent_settled` → `agent_end`, and `agent_end` carries `willRetry` (`false` here) plus the full message list.
 
 ## Go types
 

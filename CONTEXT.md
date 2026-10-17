@@ -1,7 +1,6 @@
 # Lathe
 
-Lathe runs bounded agent workflows against a repository and records their work
-for the engineer to inspect.
+Lathe runs bounded agent workflows against a repository and records their work for the engineer to inspect.
 
 ## Language
 
@@ -30,23 +29,16 @@ The sequence of work needed to investigate, plan, implement or ship a requested 
 A recorded stage of a run with an owner, an outcome and the work performed.
 
 **Node**:
-One phase in a workflow graph, declared in the order the happy path runs. A
-node keeps its own state, its own agent session and its own send-back budget
-across every entry.
+One phase in a workflow graph, declared in the order the happy path runs. A node keeps its own state, its own agent session and its own send-back budget across every entry.
 
 **Target**:
-Where a node says to go next when it finishes. Naming nothing forwards to the
-node declared after it; naming an earlier node, or the node itself, is a
-send-back.
+Where a node says to go next when it finishes. Naming nothing forwards to the node declared after it; naming an earlier node, or the node itself, is a send-back.
 
 **Round**:
 How many times a node has been entered, counting from zero on its first entry.
 
 **Send-back budget**:
-How many send-backs one node may issue over a run. It counts send-backs
-issued, not entries made, so a node re-entered by another node's loop keeps
-its own budget intact. What happens once the budget is spent is the node's own
-decision: plan review forwards its remaining objections as risks, and adjudication hands the implementation off unaccepted with its remaining findings.
+How many send-backs one node may issue over a run. It counts send-backs issued, not entries made, so a node re-entered by another node's loop keeps its own budget intact. What happens once the budget is spent is the node's own decision: plan review forwards its remaining objections as risks, and adjudication hands the implementation off unaccepted with its remaining findings.
 
 **Validation group**:
 The `validate` node: the tester and the code reviewers run at once against the same uncommitted implementation, each as its own traced phase. The tree is frozen while they run, cleanup waits for all of them, and a source file changed meanwhile invalidates the round.
@@ -112,12 +104,10 @@ _Avoid_: model selection
 A file an agent reports having written during its work.
 
 **Plan**:
-The proposed change, its ordered steps, the files it permits the builder to
-write and its known risks.
+The proposed change, its ordered steps, the files it permits the builder to write and its known risks.
 
 **File list / write scope**:
-The exact repository files the plan permits the builder to write. Listing a
-file grants permission; it does not require a change to that file.
+The exact repository files the plan permits the builder to write. Listing a file grants permission; it does not require a change to that file.
 
 **Scope request**:
 A builder's report that the current plan omits files needed to complete the request. It asks the planner to reconsider the plan; the planner may choose another approach instead of granting the requested files. Two are answered per iteration; the third ends it.
@@ -126,43 +116,31 @@ A builder's report that the current plan omits files needed to complete the requ
 What a reviewed plan does with work it finds: uncommitted paths it keeps in its files or abandons as reversals (saved, then reverted), and outstanding findings it dismisses with a reason. It is applied only after review, before the builder runs.
 
 **Branch**:
-The branch a build creates for its change before anything is written, named to
-the repository's own convention. Lathe creates it; the agent only names it.
+The branch a build creates for its change before anything is written, named to the repository's own convention. Lathe creates it; the agent only names it.
 
 **Commit message**:
-The complete message — subject and body — for the single commit a build makes
-for its change, whether validation accepted it or it ships as a draft. Lathe
-stages the accepted scope and makes the commit; the agent only writes the
-message.
+The complete message — subject and body — for the single commit a build makes for its change, whether validation accepted it or it ships as a draft. Lathe stages the accepted scope and makes the commit; the agent only writes the message.
 
 **Pull request**:
-The title and body a build opens its pushed branch with, following the
-repository's template and its recently merged pull requests. Lathe pushes and
-runs `gh pr create`; the agent only writes the text. Its URL is the one result a
-run leaves that the checkout cannot reproduce, so it is saved as `pr.json`.
+The title and body a build opens its pushed branch with, following the repository's template and its recently merged pull requests. Lathe pushes and runs `gh pr create`; the agent only writes the text. Its URL is the one result a run leaves that the checkout cannot reproduce, so it is saved as `pr.json`.
 
 **Review round**:
 One assessment of the current plan against the request and repository.
 
 **Send-back**:
-A node naming an earlier node as its target, returning work to whatever
-produced it: a plan to the planner after review feedback or an unusable
-review, an implementation to the builder after an adjudication asks for changes. It spends one of the sending node's budget, even if nothing changes.
+A node naming an earlier node as its target, returning work to whatever produced it: a plan to the planner after review feedback or an unusable review, an implementation to the builder after an adjudication asks for changes. It spends one of the sending node's budget, even if nothing changes.
 
 **Blocking objection**:
 A review objection that means the plan cannot succeed as written. It is sent back like any other, but one still standing at the review limit fails the run instead of becoming a risk.
 
 **Unresolved feedback**:
-Objections remaining at the review limit, carried forward as plan risks. A
-failed final review is also recorded as a risk because it supplied no usable assessment.
+Objections remaining at the review limit, carried forward as plan risks. A failed final review is also recorded as a risk because it supplied no usable assessment.
 
 **Accepted plan**:
-A plan the reviewer approved by returning no objections. A plan passed on at
-the review limit may still have unresolved feedback and is not reviewer-approved.
+A plan the reviewer approved by returning no objections. A plan passed on at the review limit may still have unresolved feedback and is not reviewer-approved.
 
 **Correction**:
-A request for an agent to repair an invalid report or an unsupported claim
-within its current phase; it is separate from a plan send-back or a builder repair. A group worker's corrections and retries share one allowance.
+A request for an agent to repair an invalid report or an unsupported claim within its current phase; it is separate from a plan send-back or a builder repair. A group worker's corrections and retries share one allowance.
 
 **Scorer**:
 Planned in ADR 0008: an agent that grades a finished build run with a pull request against one rubric, outside the run. Each scorer judges the whole run from its own angle, such as plan quality or review signal, and is started by the engineer.
