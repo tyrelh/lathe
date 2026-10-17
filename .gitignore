@@ -1,7 +1,7 @@
 # Local pipeline harness, not part of the release.
 /test.sh
 
-# Per-machine model overrides; see README "Project config".
+# lathe.toml is no longer read (ADR 0007); ignore stale local copies.
 /lathe.toml
 
 # The bundle's build inputs; defuddle.mjs is what gets committed.
