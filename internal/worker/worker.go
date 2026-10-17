@@ -302,7 +302,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	}
 
 	// Ownership and base in one write, before the worktree exists: a crash
-	// anywhere after this leaves recovery enough to export what is there.
+	// anywhere after this leaves cleanup enough to export what is there.
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeCreating); err != nil {
 		return 0, "", "", err
 	}

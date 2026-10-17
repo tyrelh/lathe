@@ -241,7 +241,7 @@ func TestReconcileUnlaunchedDispatch(t *testing.T) {
 }
 
 // A worker the launcher cannot vouch for holds capacity, and the refusal is
-// the entire recovery procedure: it must name the run, the process, the log
+// the entire manual procedure: it must name the run, the process, the log
 // and the command that stops it.
 func TestUncertainWorkerBlocksAndExplains(t *testing.T) {
 	l := &fake{alive: true}
@@ -480,7 +480,7 @@ func (s *supervisors) Stop(endpoint, token string) error {
 // cancelled without a PID, its registered supervisor is asked to stop and
 // waited for, and only then is its checkout released. A group that will not
 // stop keeps the run's resources and says how to stop it.
-func TestLostRecoveryStopsLaunches(t *testing.T) {
+func TestLostRunStopsLaunches(t *testing.T) {
 	for _, stubborn := range []bool{false, true} {
 		t.Run(strconv.FormatBool(stubborn), func(t *testing.T) {
 			stopWait = 100 * time.Millisecond
