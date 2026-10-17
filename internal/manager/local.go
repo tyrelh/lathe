@@ -45,7 +45,7 @@ func (l Local) Launch(j Job) (string, error) {
 // spawnDetached starts bin with args in its own session, with no stdin and
 // its output appended to logPath, and returns the unreleased process.
 func spawnDetached(logPath, bin string, args ...string) (*os.Process, error) {
-	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
