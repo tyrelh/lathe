@@ -142,8 +142,12 @@ const (
 // asked to fix and changes its requested changes, carried across a scope
 // send-back.
 type code struct {
-	plan        PlanOutput
-	out         ImplementOutput
+	plan PlanOutput
+	out  ImplementOutput
+	// request is the run's resolved request, set when the builder is first
+	// entered. handoff is implementRequest of request, plan and amendments, kept
+	// current by refreshHandoff whenever plan or amendments change.
+	request     string
 	handoff     string
 	repair      string
 	v           Validation
@@ -219,12 +223,15 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 	// here, past branch creation and routing, which are settled for the
 	// iteration. Rounds count completed implementations, not entries.
 	g.Add(run.Node{Name: "implement", Owner: "builder", SendBacks: maxScopeSendBacks}, func(e *run.Entry) (string, error) {
+		c.request = r.Request
+		if c.mode != buildRepair {
+			c.refreshHandoff()
+		}
 		var request string
 		switch c.mode {
 		case buildRepair:
 			request = c.repair
 		case buildReplanned:
-			c.handoff = implementRequest(r.Request, &c.plan, c.v.Amendments)
 			request = replannedRequest(c)
 		case buildInitial:
 			request = initialRequest(c, r)
@@ -329,7 +336,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 
 		findings := cur.findings()
 		var out AdjudicationOutput
-		err := e.Call(&out, adjudicationRequest(c, r.Request, e.SendBacksLeft),
+		err := e.Call(&out, adjudicationRequest(c, e.SendBacksLeft),
 			run.ArtifactsExist, run.FilesNonEmpty, Adjudicated(findings, cur.Tests, r.Protected()))
 		if err != nil {
 			return "", err
@@ -349,8 +356,8 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			}
 			return "", c.settle(r.Dir, outcomeUnresolved, reason)
 		}
-		c.amend(r.Request, &out)
-		c.repair = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
+		c.amend(&out)
+		c.repair = repairRequest(c, &out, fixes, maxRepairs-e.SendBacksLeft+1)
 		c.mode, c.outstanding, c.changes = buildRepair, fixes, *out.Changes
 		if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
 			return "", err
@@ -359,10 +366,14 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 	})
 }
 
-// initialRequest is the builder's first request: the handoff, which it sets,
-// with a recovery's outstanding findings and restored work.
+// refreshHandoff rebuilds c.handoff from c.request, c.plan and the amendments.
+func (c *code) refreshHandoff() {
+	c.handoff = implementRequest(c.request, &c.plan, c.v.Amendments)
+}
+
+// initialRequest is the builder's first request: the handoff with a
+// recovery's outstanding findings and restored work.
 func initialRequest(c *code, r *run.Run) string {
-	c.handoff = implementRequest(r.Request, &c.plan, nil)
 	request := c.handoff
 	// A recovery carries prior findings the plan did not dismiss.
 	var b strings.Builder
