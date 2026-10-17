@@ -28,8 +28,8 @@ func TestPreparePreservesTaskIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	var spec worker.Spec
-	if err := json.Unmarshal(req.Spec, &spec); err != nil || spec.Issue != ref || req.Issue != ref {
-		t.Fatalf("issue = %q / %q, %v", req.Issue, spec.Issue, err)
+	if err := json.Unmarshal(req.Spec, &spec); err != nil || spec.Issue != ref {
+		t.Fatalf("issue = %q, %v", spec.Issue, err)
 	}
 	root, err := trace.DataRoot()
 	if err != nil {

@@ -21,7 +21,7 @@ func TestIssueRequestMixedCaseURL(t *testing.T) {
 	}
 	defer db.Close()
 	const submitted = "https://GitHub.com/OWNER/repo/issues/42"
-	id, err := db.Submit(trace.Request{Workflow: "build", Repo: bin, Issue: submitted})
+	id, err := db.Submit(trace.Request{Workflow: "build", Repo: bin, Spec: []byte(`{"issue":"` + submitted + `"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestIssueRequestMixedCaseURL(t *testing.T) {
 	if err != nil || task.IssueURL == nil || *task.IssueURL != "https://github.com/Owner/Repo/issues/42" || task.IssueBody == nil || *task.IssueBody != "Details" {
 		t.Fatalf("mixed-case snapshot = %+v, %v", task, err)
 	}
-	attached, err := db.Submit(trace.Request{Workflow: "build", Repo: bin, TaskID: task.ID, Issue: "https://github.com/owner/REPO/issues/42"})
+	attached, err := db.Submit(trace.Request{Workflow: "build", Repo: bin, TaskID: task.ID, Spec: []byte(`{"issue":"https://github.com/owner/REPO/issues/42"}`)})
 	if err != nil {
 		t.Fatalf("equivalent issue attachment: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestIssueRequestSnapshotsTask(t *testing.T) {
 	}
 	defer db.Close()
 	for _, workflow := range []string{"build", "plan"} {
-		id, err := db.Submit(trace.Request{Workflow: workflow, Repo: bin, Request: "issue 42", Issue: "42"})
+		id, err := db.Submit(trace.Request{Workflow: workflow, Repo: bin, Request: "issue 42", Spec: []byte(`{"issue":"42"}`)})
 		if err != nil {
 			t.Fatal(err)
 		}

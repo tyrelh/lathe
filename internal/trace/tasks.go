@@ -86,41 +86,39 @@ func insertTask(tx *sql.Tx, repo, text, issue, at string) (string, error) {
 	return id, err
 }
 
-type issueIdentity struct {
-	host, owner, repo, number string
+// specIssue returns the issue ref recorded in a run spec, or "".
+func specIssue(spec []byte) string {
+	var s struct {
+		Issue string `json:"issue"`
+	}
+	json.Unmarshal(spec, &s) // a missing or unreadable spec leaves Issue empty
+	return s.Issue
 }
 
-// parseIssueURL returns a case-normalized GitHub issue identity.
-func parseIssueURL(raw string) (issueIdentity, bool) {
+// issueURLNumber returns the issue number of a GitHub issue URL.
+func issueURLNumber(raw string) (string, bool) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return issueIdentity{}, false
+		return "", false
 	}
 	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/"), "/")
 	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] != "issues" {
-		return issueIdentity{}, false
+		return "", false
 	}
 	n, err := strconv.Atoi(parts[3])
 	if err != nil || n <= 0 || strconv.Itoa(n) != parts[3] {
-		return issueIdentity{}, false
+		return "", false
 	}
-	return issueIdentity{strings.ToLower(u.Host), strings.ToLower(parts[0]), strings.ToLower(parts[1]), parts[3]}, true
+	return parts[3], true
 }
 
-// issueRefsMatch compares numeric refs exactly and URL refs by issue identity.
-func issueRefsMatch(a, b string) bool {
-	if a == b {
-		return true
-	}
-	left, leftOK := parseIssueURL(a)
-	right, rightOK := parseIssueURL(b)
-	return leftOK && rightOK && left == right
-}
+// issueRefsMatch compares canonical issue refs, ignoring case.
+func issueRefsMatch(a, b string) bool { return strings.EqualFold(a, b) }
 
 // issueSnapshotMatches checks a resolved GitHub URL against a numeric or URL ref.
 func issueSnapshotMatches(ref, resolved string) bool {
-	identity, ok := parseIssueURL(resolved)
-	return ok && (ref == identity.number || issueRefsMatch(ref, resolved))
+	number, ok := issueURLNumber(resolved)
+	return ok && (ref == number || issueRefsMatch(ref, resolved))
 }
 
 // FillTaskIssue fills missing snapshot fields only for the task's recorded issue.
@@ -152,11 +150,11 @@ func (d *DB) FillTaskIssue(runID, ref, url, title, body string) error {
 	 issue_title = CASE WHEN COALESCE(issue_title, '') = '' THEN NULLIF(?, '') ELSE issue_title END,
 	 issue_body = CASE WHEN COALESCE(issue_body, '') = '' THEN NULLIF(?, '') ELSE issue_body END,
 	 updated_at = ?
-	 WHERE id = (SELECT task_id FROM runs WHERE run_id = ?)
+	 WHERE id = ?
 	 AND ((COALESCE(issue_url, '') = '' AND ? != '')
 	   OR (COALESCE(issue_title, '') = '' AND ? != '')
 	   OR (COALESCE(issue_body, '') = '' AND ? != ''))`,
-		url, title, body, nowUTC(), runID, url, title, body)
+		url, title, body, nowUTC(), taskID, url, title, body)
 	if err != nil {
 		return err
 	}
@@ -171,22 +169,19 @@ func (d *DB) BackfillTasks() error {
 	}
 	defer tx.Rollback()
 	rows, err := tx.Query(`SELECT run_id, COALESCE(repo, ''), COALESCE(request, ''),
-	 COALESCE(status, ''), COALESCE(pr_state, '')
-	 FROM runs WHERE workflow = 'build' AND task_id IS NULL`)
+	 COALESCE((SELECT spec FROM iterations i WHERE i.run_id = runs.run_id AND i.iteration = 0), '')
+	 FROM runs WHERE workflow = 'build' AND task_id IS NULL
+	 AND (COALESCE(status, '') NOT IN ('` + StatusOK + `', '` + StatusFail + `', '` + StatusCancelled + `', '` + StatusLost + `') OR pr_state = 'open')`)
 	if err != nil {
 		return err
 	}
-	type candidate struct{ id, repo, text string }
+	type candidate struct{ id, repo, text, spec string }
 	var candidates []candidate
 	for rows.Next() {
 		var c candidate
-		var status, pr string
-		if err := rows.Scan(&c.id, &c.repo, &c.text, &status, &pr); err != nil {
+		if err := rows.Scan(&c.id, &c.repo, &c.text, &c.spec); err != nil {
 			rows.Close()
 			return err
-		}
-		if Terminal(status) && pr != "open" {
-			continue
 		}
 		candidates = append(candidates, c)
 	}
@@ -196,19 +191,7 @@ func (d *DB) BackfillTasks() error {
 		return err
 	}
 	for _, c := range candidates {
-		var spec string
-		err := tx.QueryRow(`SELECT COALESCE(spec, '') FROM iterations WHERE run_id = ? AND iteration = 0`, c.id).Scan(&spec)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		var snapshot struct {
-			Issue string `json:"issue"`
-		}
-		var issue string
-		if json.Unmarshal([]byte(spec), &snapshot) == nil {
-			issue = snapshot.Issue
-		}
-		id, err := insertTask(tx, c.repo, c.text, issue, nowUTC())
+		id, err := insertTask(tx, c.repo, c.text, specIssue([]byte(c.spec)), nowUTC())
 		if err != nil {
 			return err
 		}

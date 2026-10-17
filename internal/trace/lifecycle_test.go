@@ -8,7 +8,7 @@ import (
 
 func TestSubmitTasks(t *testing.T) {
 	db := open(t)
-	id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Request: "change", Issue: "42"})
+	id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Request: "change", Spec: issueSpec("42")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestSubmitTasks(t *testing.T) {
 		t.Fatal("accepted archived task")
 	}
 	for _, workflow := range []string{"scout", "plan", "implement"} {
-		id, err := db.Submit(Request{Workflow: workflow, Repo: "/repo", TaskID: "missing", Issue: "42"})
+		id, err := db.Submit(Request{Workflow: workflow, Repo: "/repo", TaskID: "missing", Spec: issueSpec("42")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -61,21 +61,16 @@ func TestSubmitTaskIssueConflict(t *testing.T) {
 	for _, recorded := range []string{"", "42", "https://github.com/o/r/issues/42"} {
 		t.Run(recorded, func(t *testing.T) {
 			db := open(t)
-			id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Issue: recorded})
+			id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Spec: issueSpec(recorded)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			row, _ := db.Get(id)
-			if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID, Issue: "43"}); err == nil {
+			if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID, Spec: issueSpec("43")}); err == nil {
 				t.Fatal("accepted conflicting issue")
 			}
-			for _, table := range []string{"tasks", "runs", "iterations"} {
-				var count int
-				if err := db.sql.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 1 {
-					t.Fatalf("conflict changed %s: count = %d, %v", table, count, err)
-				}
-			}
-			if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID, Issue: recorded}); err != nil {
+			assertCounts(t, db, 1)
+			if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID, Spec: issueSpec(recorded)}); err != nil {
 				t.Fatalf("matching issue refused: %v", err)
 			}
 		})
@@ -90,10 +85,15 @@ func TestSubmitTaskRollback(t *testing.T) {
 	if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo"}); err == nil {
 		t.Fatal("submission succeeded")
 	}
+	assertCounts(t, db, 0)
+}
+
+// assertCounts fails unless tasks, runs and iterations each hold want rows.
+func assertCounts(t *testing.T, db *DB, want int) {
+	t.Helper()
 	for _, table := range []string{"tasks", "runs", "iterations"} {
-		var count int
-		if err := db.sql.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("%s count = %d, %v", table, count, err)
+		if got := one[int](t, db, `SELECT count(*) FROM `+table); got != want {
+			t.Fatalf("%s count = %d, want %d", table, got, want)
 		}
 	}
 }

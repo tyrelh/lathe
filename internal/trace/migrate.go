@@ -118,9 +118,9 @@ ALTER TABLE iterations ADD COLUMN preservation TEXT;
 ALTER TABLE runs ADD COLUMN pr_state TEXT CHECK (pr_state IN ('open', 'merged', 'closed'));
 ALTER TABLE runs ADD COLUMN pr_state_at TEXT;
 `,
-	// 8: tracked tasks and nullable run associations; backfill follows PR polling.
+	// 8: tracked tasks; a NULL runs.task_id means the run has no task.
 	`
-CREATE TABLE tasks (
+CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   repo TEXT NOT NULL,
   text TEXT NOT NULL,
@@ -134,8 +134,8 @@ CREATE TABLE tasks (
   issue_body TEXT
 );
 ALTER TABLE runs ADD COLUMN task_id TEXT REFERENCES tasks(id);
-CREATE INDEX tasks_repo ON tasks (repo, created_at DESC, id DESC);
-CREATE INDEX runs_task ON runs (task_id, submitted_at DESC, run_id DESC);
+CREATE INDEX IF NOT EXISTS tasks_repo ON tasks (repo, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS runs_task ON runs (task_id, submitted_at DESC, run_id DESC);
 `,
 }
 

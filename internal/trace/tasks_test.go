@@ -2,11 +2,18 @@ package trace
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 )
+
+// issueSpec returns a run spec recording issue ref.
+func issueSpec(ref string) []byte {
+	spec, _ := json.Marshal(map[string]string{"issue": ref})
+	return spec
+}
 
 func TestTaskReadsAndBacklog(t *testing.T) {
 	db := open(t)
@@ -76,7 +83,7 @@ func TestTaskRunsOrderBySubmission(t *testing.T) {
 
 func TestFillTaskIssue(t *testing.T) {
 	db := open(t)
-	id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Issue: "42"})
+	id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Spec: issueSpec("42")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +136,7 @@ func TestFillTaskIssueRejectsConflicts(t *testing.T) {
 		for _, partial := range []bool{false, true} {
 			t.Run(tc.name+fmt.Sprint("/partial=", partial), func(t *testing.T) {
 				db := open(t)
-				id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Issue: tc.recorded})
+				id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Spec: issueSpec(tc.recorded)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -162,7 +169,7 @@ func TestFillTaskIssueURLReference(t *testing.T) {
 	for _, recorded := range []string{resolved, "https://GITHUB.example/owner/REPO/issues/42", "42"} {
 		t.Run(recorded, func(t *testing.T) {
 			db := open(t)
-			id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Issue: recorded})
+			id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Spec: issueSpec(recorded)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -256,18 +263,13 @@ func TestBackfillTasks(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"queued", "starting", "running", "open", "failed-open"} {
-		var taskID string
-		if err := db.sql.QueryRow(`SELECT task_id FROM runs WHERE run_id = ?`, id).Scan(&taskID); err != nil {
-			t.Fatal(err)
-		}
-		task, err := db.GetTask(taskID)
+		task, err := db.GetTask(one[string](t, db, `SELECT task_id FROM runs WHERE run_id = ?`, id))
 		if err != nil || task.Repo != "/repo" || task.Text != "original" || task.IssueRef == nil || *task.IssueRef != "42" || *task.Tracker != "github" {
 			t.Fatalf("backfill task = %+v, %v", task, err)
 		}
 	}
-	var skipped int
-	if err := db.sql.QueryRow(`SELECT count(*) FROM runs WHERE task_id IS NULL`).Scan(&skipped); err != nil || skipped != 6 {
-		t.Fatalf("skipped = %d, %v", skipped, err)
+	if skipped := one[int](t, db, `SELECT count(*) FROM runs WHERE task_id IS NULL`); skipped != 6 {
+		t.Fatalf("skipped = %d", skipped)
 	}
 	tasks, _ := db.Tasks("")
 	if len(tasks) != 6 {

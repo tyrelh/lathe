@@ -53,9 +53,10 @@ var (
 // Request is what the submitter records. Spec is the versioned execution
 // specification: everything configuration could otherwise change under a
 // queued run. Repository contents and worker secrets are not in it.
+// TaskID attaches a build to an existing task, and a build without one gets a
+// new task; other workflows ignore it.
 type Request struct {
 	TaskID   string
-	Issue    string
 	Workflow string
 	Repo     string
 	Request  string
@@ -85,12 +86,12 @@ func (d *DB) Submit(r Request) (string, error) {
 			if task.Repo != r.Repo {
 				return "", fmt.Errorf("task %s belongs to a different repository", r.TaskID)
 			}
-			if r.Issue != "" && (task.IssueRef == nil || !issueRefsMatch(*task.IssueRef, r.Issue)) {
+			if issue := specIssue(r.Spec); issue != "" && (task.IssueRef == nil || !issueRefsMatch(*task.IssueRef, issue)) {
 				return "", fmt.Errorf("issue conflicts with task %s", r.TaskID)
 			}
 			taskID = r.TaskID
 		} else {
-			created, err := insertTask(tx, r.Repo, r.Request, r.Issue, at)
+			created, err := insertTask(tx, r.Repo, r.Request, specIssue(r.Spec), at)
 			if err != nil {
 				return "", err
 			}
