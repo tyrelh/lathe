@@ -91,19 +91,8 @@ func (d *DB) Overview() (Overview, error) {
 	if err != nil {
 		return o, err
 	}
-	defer rows.Close()
-	o.TopModels = []ModelSpend{}
-	for rows.Next() {
-		var m ModelSpend
-		if err := rows.Scan(&m.Provider, &m.Model, &m.Tokens, &m.Cost, &m.Phases); err != nil {
-			return o, err
-		}
-		if o.Cost > 0 {
-			m.Share = m.Cost / o.Cost
-		}
-		o.TopModels = append(o.TopModels, m)
-	}
-	if err := rows.Err(); err != nil {
+	o.TopModels, err = scanModels(rows, o.Cost)
+	if err != nil {
 		return o, err
 	}
 
@@ -114,19 +103,8 @@ func (d *DB) Overview() (Overview, error) {
 	if err != nil {
 		return o, err
 	}
-	defer rows.Close()
-	o.TopProviders = []ProviderSpend{}
-	for rows.Next() {
-		var p ProviderSpend
-		if err := rows.Scan(&p.Provider, &p.Tokens, &p.Cost, &p.Phases); err != nil {
-			return o, err
-		}
-		if o.Cost > 0 {
-			p.Share = p.Cost / o.Cost
-		}
-		o.TopProviders = append(o.TopProviders, p)
-	}
-	if err := rows.Err(); err != nil {
+	o.TopProviders, err = scanProviders(rows, o.Cost)
+	if err != nil {
 		return o, err
 	}
 
@@ -142,6 +120,42 @@ func (d *DB) Overview() (Overview, error) {
 
 	o.At = nowUTC()
 	return o, tx.Commit()
+}
+
+func scanModels(rows *sql.Rows, total float64) ([]ModelSpend, error) {
+	defer rows.Close()
+	out := []ModelSpend{}
+	for rows.Next() {
+		var m ModelSpend
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Tokens, &m.Cost, &m.Phases); err != nil {
+			return nil, err
+		}
+		m.Share = share(m.Cost, total)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func scanProviders(rows *sql.Rows, total float64) ([]ProviderSpend, error) {
+	defer rows.Close()
+	out := []ProviderSpend{}
+	for rows.Next() {
+		var p ProviderSpend
+		if err := rows.Scan(&p.Provider, &p.Tokens, &p.Cost, &p.Phases); err != nil {
+			return nil, err
+		}
+		p.Share = share(p.Cost, total)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// share is cost's fraction of total, or 0 when total is not positive.
+func share(cost, total float64) float64 {
+	if total > 0 {
+		return cost / total
+	}
+	return 0
 }
 
 // Total is how many runs the database holds, which is what the Runs page
