@@ -219,14 +219,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		// The configuration each iteration ran with, as the models it gave each
 		// agent: the whole snapshot carries every prompt, which is too much to
 		// resend every poll.
-		type iterationView struct {
-			trace.Iteration
-			Models map[string]string `json:"models"`
-		}
-		views := make([]iterationView, len(iterations))
-		for i, it := range iterations {
-			views[i] = iterationView{it, worker.Models(it.Spec)}
-		}
+		views := worker.IterationViews(iterations)
 		// The cursor bounds one poll; whatever is left arrives on the next one.
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.

@@ -16,10 +16,6 @@ import (
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
-// RecoveryVersion is stamped into a recovery's specification. It is a v4
-// specification plus Recovery, which this lathe requires at that version.
-const RecoveryVersion = 5
-
 // RecoverySpec is what a recovery iteration continues from, fixed at
 // submission.
 type RecoverySpec struct {
