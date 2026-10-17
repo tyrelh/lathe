@@ -1,6 +1,5 @@
-// Package workflow holds the phase graphs. A graph is deliberately thin: all
-// the logic lives in internal/run, and a file here is only the order things
-// happen in and the contract the agent has to satisfy.
+// Package workflow holds the phase graphs, the output envelopes and gates each
+// agent's report must satisfy, and the briefs given to agents.
 package workflow
 
 import (
