@@ -7,15 +7,6 @@ import (
 	"fmt"
 )
 
-// Iteration kinds. Rows written before kind was recorded have NULL kind and
-// are read as a submission at iteration 0 and a revision otherwise.
-const (
-	KindSubmission = "submission"
-	KindRevision   = "revision"
-	KindRecovery   = "recovery"
-	KindRestart    = "restart"
-)
-
 // ErrNotRecoverable is a recovery the run's recorded state refuses. The
 // wrapped message says why.
 var ErrNotRecoverable = errors.New("this run cannot be resumed")
@@ -179,27 +170,6 @@ func (d *DB) SourceStopped(runID string, source int, attemptID, path string) err
 		return fmt.Errorf("iteration %d's writers or cleanup are no longer confirmed settled; nothing was changed", source)
 	}
 	return nil
-}
-
-// How cleanup preserved an iteration's worktree. PreservedPatch saved its
-// work as a patch; PreservedEmpty exported and found nothing; PreservedUnstarted
-// means the worktree was never created, so nothing was written;
-// PreservedSkipped means export was not wanted; PreservedMissing means the
-// worktree was gone before its work could be exported.
-const (
-	PreservedPatch     = "patch"
-	PreservedEmpty     = "empty"
-	PreservedUnstarted = "unstarted"
-	PreservedSkipped   = "skipped"
-	PreservedMissing   = "missing"
-)
-
-// SetPreservation records how iteration's work was preserved. It is not
-// bound to a claim: cleanup may run after the worker is gone.
-func (d *DB) SetPreservation(runID string, iteration int, outcome string) error {
-	_, err := d.sql.Exec(`UPDATE iterations SET preservation = ? WHERE run_id = ? AND iteration = ?`,
-		outcome, runID, iteration)
-	return err
 }
 
 // SetRestored records that the attempt's recovery finished restoring the
