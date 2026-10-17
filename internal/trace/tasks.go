@@ -11,18 +11,15 @@ import (
 )
 
 const (
-	LaneBacklog = "Backlog"
-	LaneInProgress = "In progress"
-	LaneBlocked = "Blocked"
+	LaneBacklog        = "Backlog"
+	LaneInProgress     = "In progress"
+	LaneBlocked        = "Blocked"
 	LaneReadyForReview = "Ready for review"
-	LaneDone = "Done"
+	LaneDone           = "Done"
 )
 
-// TaskLane derives a lane from the current run, or nil status for no run.
-func TaskLane(status, prState *string, hasPR bool) string {
-	if status == nil {
-		return LaneBacklog
-	}
+// TaskLane derives a lane from the current run's status and PR.
+func TaskLane(status string, prState *string, hasPR bool) string {
 	state := ""
 	if prState != nil {
 		state = *prState
@@ -30,14 +27,14 @@ func TaskLane(status, prState *string, hasPR bool) string {
 	if state == "merged" {
 		return LaneDone
 	}
-	switch *status {
+	switch status {
 	case StatusQueued, StatusStarting, StatusRunning:
 		return LaneInProgress
 	}
 	if state == "closed" {
 		return LaneBlocked
 	}
-	if *status == StatusOK && hasPR {
+	if status == StatusOK && hasPR {
 		return LaneReadyForReview
 	}
 	return LaneBlocked
@@ -106,6 +103,20 @@ func (d *DB) TaskRuns(id string) ([]Row, error) {
 		return nil, err
 	}
 	return scanRows(rows)
+}
+
+// TasksRuns returns every task-linked run keyed by task ID, newest submission first.
+func (d *DB) TasksRuns() (map[string][]Row, error) {
+	rows, err := d.sql.Query(runColumns + ` FROM runs WHERE task_id IS NOT NULL ORDER BY submitted_at DESC, run_id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	all, err := scanRows(rows)
+	out := map[string][]Row{}
+	for _, r := range all {
+		out[*r.TaskID] = append(out[*r.TaskID], r)
+	}
+	return out, err
 }
 
 func insertTask(tx *sql.Tx, repo, text, issue, at string) (string, error) {

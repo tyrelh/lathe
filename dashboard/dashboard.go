@@ -113,6 +113,9 @@ func failed(err error) http.Handler {
 
 // handler builds the routes over db; a nil action or source registers no route.
 func handler(db *trace.DB, version string, actions Actions, sources Sources) http.Handler {
+	if sources.PRURL == nil {
+		sources.PRURL = func(trace.Row) string { return "" }
+	}
 	// Read routes answer failures as plain text, write routes as JSON.
 	mux := http.NewServeMux()
 	if sources.Roster != nil {
@@ -211,33 +214,37 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 
 type taskIssueView struct {
 	Tracker *string `json:"tracker"`
-	Ref *string `json:"ref"`
-	URL *string `json:"url"`
-	Title *string `json:"title"`
-	Body *string `json:"body"`
+	Ref     *string `json:"ref"`
+	URL     *string `json:"url"`
+	Title   *string `json:"title"`
+	Body    *string `json:"body"`
 }
 
 type taskRunView struct {
-	ID string `json:"run_id"`
-	Iteration int `json:"iteration"`
-	Status string `json:"status"`
-	PRURL string `json:"pr_url"`
-	PRState *string `json:"pr_state"`
+	ID        string  `json:"run_id"`
+	Iteration int     `json:"iteration"`
+	Status    string  `json:"status"`
+	PRURL     string  `json:"pr_url"`
+	PRState   *string `json:"pr_state"`
 }
 
 type taskView struct {
-	ID string `json:"id"`
-	Repo string `json:"repo"`
-	Text string `json:"text"`
-	Lane string `json:"lane"`
-	Activity string `json:"activity_at"`
-	Issue *taskIssueView `json:"issue"`
-	CurrentRun *taskRunView `json:"current_run"`
-	Runs []string `json:"runs"`
+	ID         string         `json:"id"`
+	Repo       string         `json:"repo"`
+	Text       string         `json:"text"`
+	Lane       string         `json:"lane"`
+	Activity   string         `json:"activity_at"`
+	Issue      *taskIssueView `json:"issue"`
+	CurrentRun *taskRunView   `json:"current_run"`
+	Runs       []string       `json:"runs"`
 }
 
 func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string) ([]taskView, error) {
 	tasks, err := db.Tasks(repo)
+	if err != nil {
+		return nil, err
+	}
+	byTask, err := db.TasksRuns()
 	if err != nil {
 		return nil, err
 	}
@@ -250,19 +257,13 @@ func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string) ([]taskV
 		if t.IssueRef != nil {
 			v.Issue = &taskIssueView{t.Tracker, t.IssueRef, t.IssueURL, t.IssueTitle, t.IssueBody}
 		}
-		runs, err := db.TaskRuns(t.ID)
-		if err != nil {
-			return nil, err
-		}
+		runs := byTask[t.ID]
 		if len(runs) > 0 {
 			r := runs[0]
-			url := ""
-			if prURL != nil {
-				url = prURL(r)
-			}
+			url := prURL(r)
 			v.CurrentRun = &taskRunView{r.ID, r.Iteration, r.Status, url, r.PRState}
 			v.Activity = r.Activity
-			v.Lane = trace.TaskLane(&r.Status, r.PRState, url != "")
+			v.Lane = trace.TaskLane(r.Status, r.PRState, url != "")
 			for _, earlier := range runs[1:] {
 				v.Runs = append(v.Runs, earlier.ID)
 			}
@@ -394,10 +395,7 @@ func runDetail(db *trace.DB, prURL func(trace.Row) string) http.HandlerFunc {
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), eventPage)
-		url := ""
-		if prURL != nil {
-			url = prURL(run)
-		}
+		url := prURL(run)
 		writeJSON(w, map[string]any{
 			"run": run, "phases": phases, "events": events, "iterations": views,
 			"pr_url":      url,

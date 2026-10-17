@@ -366,7 +366,7 @@
     </svg><span class="label">Projects</span>
   </a>
   <a id="nav-tasks" href="#/tasks" title="Tasks">Tasks</a>
-   <a id="nav-agents" href="#/agents" title="Agents">
+  <a id="nav-agents" href="#/agents" title="Agents">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
       <rect x="2.5" y="5" width="11" height="8.5" rx="1.5"/>
       <path d="M8 5V2.5M1 8.5v2.5M15 8.5v2.5M6 11h4"/>
@@ -927,9 +927,11 @@ function stamp() {
   note.className = '';
   note.textContent = !done ? 'updated ' + ago() : view.page === 'run' ? 'run complete' : 'loaded · reload to refresh';
 }
-const ago = () => {
-  const s = Math.max(0, Math.round((Date.now() - fresh) / 1000));
-  return s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago';
+const ago = (from = fresh) => {
+  const s = Math.max(0, Math.floor((Date.now() - from) / 1000));
+  if (!Number.isFinite(s)) return 'unknown activity';
+  return s < 60 ? s + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago'
+    : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
 };
 
 // missing renders a not-found page from HTML: what is missing and where to go.
@@ -1296,23 +1298,17 @@ async function loadAgent(current) {
   done = true;
 }
 
-const tasksHref = repo => '#/tasks' + (repo ? '?repo=' + encodeURIComponent(repo) : '');
+const tasksHref = repo => '#/tasks' + (repo ? '?' + projectQuery(repo) : '');
 const taskLanes = ['Backlog', 'In progress', 'Blocked', 'Ready for review', 'Done'];
 function tasksShell() {
   return `<div class="page"><div class="card page-summary"><h1>Tasks</h1><label for="task-project">Project</label>
     <select id="task-project" onchange="location.hash=tasksHref(this.value)"><option value="">All projects</option></select></div>
     <div id="task-board" class="task-board" tabindex="0" aria-label="Task lanes"></div></div>`;
 }
-function taskAge(at) {
-  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 1000));
-  if (!Number.isFinite(seconds)) return 'unknown activity';
-  return seconds < 60 ? seconds + 's ago' : seconds < 3600 ? Math.floor(seconds / 60) + 'm ago'
-    : seconds < 86400 ? Math.floor(seconds / 3600) + 'h ago' : Math.floor(seconds / 86400) + 'd ago';
-}
 function taskCard(t) {
   const r = t.current_run, issue = t.issue;
   return `<article class="card task-card"><h3>${esc(issue?.title || (t.text || '').split('\n')[0])}</h3>
-    <p>${issue?.url ? `<a href="${esc(issue.url)}">Issue</a> · ` : ''}${/^https?:\/\//i.test(r?.pr_url || '') ? `<a href="${esc(r.pr_url)}">PR</a> · ` : ''}<span class="dim">${esc(taskAge(t.activity_at))}</span></p>
+    <p>${safeHref(issue?.url) ? `<a href="${esc(issue.url)}">Issue</a> · ` : ''}${safeHref(r?.pr_url) ? `<a href="${esc(r.pr_url)}">PR</a> · ` : ''}<span class="dim">${esc(ago(Date.parse(t.activity_at)))}</span></p>
     ${r ? `<p>Current run: ${runLink(r.run_id)}</p>` : ''}
     ${t.runs.length ? `<details><summary>Earlier runs (${t.runs.length})</summary>${t.runs.map(runLink).join('<br>')}</details>` : ''}</article>`;
 }
@@ -1334,6 +1330,7 @@ async function loadTasks(current) {
 }
 
 const projectQuery = repo => 'repo=' + encodeURIComponent(repo);
+const safeHref = u => /^https?:\/\//i.test(u || '') ? u : '';
 const runListRow = r => `<tr class="run" data-row="${esc(r.run_id)}" onclick="location.hash='/runs/${esc(r.run_id)}'">
   <td class="dim timestamp">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
   <td class="${cls(r.status)}">${esc(r.status)}</td>
@@ -1677,7 +1674,7 @@ function renderRunSummary(r) {
   $('summary').innerHTML = [
     stat('workflow', esc(r.workflow)),
     stat('status', esc(r.status), cls(r.status)),
-    ...(/^https?:\/\//i.test(r.pr_url) ? [stat('pull request', `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a> · ${esc(r.pr_state || 'not checked')}`)] : []),
+    ...(safeHref(r.pr_url) ? [stat('pull request', `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a> · ${esc(r.pr_state || 'not checked')}`)] : []),
     stat('tokens', count(r.tokens)),
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),
