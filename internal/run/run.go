@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/jev"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
 	"github.com/tyrelh/lathe/internal/process"
@@ -586,8 +587,8 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 			return err
 		}
 	}
-	if len(r.cfg.Routing) > 0 && os.Getenv("TYPESAFE_API_KEY") == "" {
-		if err := h.Log("routing", "TYPESAFE_API_KEY is not set in the worker environment; routing will use the default tiers"); err != nil {
+	if len(r.cfg.Routing) > 0 && os.Getenv(jev.KeyEnv) == "" {
+		if err := h.Log("routing", jev.KeyEnv+" is not set in the worker environment; routing will use the default tiers"); err != nil {
 			return err
 		}
 	}

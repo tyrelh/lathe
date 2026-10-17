@@ -105,7 +105,7 @@ func (h *Handle) Route(agent string, state any) error {
 		return err
 	}
 	floor := r.cfg.ConfidenceFloor
-	d := Decide(r.ctx, os.Getenv("TYPESAFE_API_KEY"), rt, floor, state)
+	d := Decide(r.ctx, os.Getenv(jev.KeyEnv), rt, floor, state)
 	if err := r.ctx.Err(); err != nil {
 		return err
 	}
