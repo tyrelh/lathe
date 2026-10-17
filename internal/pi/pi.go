@@ -271,7 +271,7 @@ func Run(ctx context.Context, o Options, prompt string, onEvent Handler) (Result
 	res, scanErr := Scan(stdout, o.Raw, onEvent)
 
 	if err := cmd.Wait(); err != nil {
-		return res, fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
+		return res, waitErr(err, &stderr)
 	}
 	return res, scanErr
 }
@@ -299,7 +299,7 @@ func supervised(ctx context.Context, o Options, cmd *exec.Cmd, stderr *bytes.Buf
 	// it, because its own children inherit the pipe and hold it open.
 	r.Close()
 	if err := p.Wait(); err != nil {
-		return res, fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
+		return res, waitErr(err, stderr)
 	}
 	return res, scanErr
 }
@@ -365,6 +365,14 @@ func Scan(r io.Reader, raw io.Writer, onEvent Handler) (Result, error) {
 		}
 	}
 	return res, errors.Join(sc.Err(), rawErr)
+}
+
+// stderrTail is how many trailing stderr bytes a failed Pi's error carries.
+const stderrTail = 500
+
+// waitErr wraps a failed Pi's err with the tail of its stderr.
+func waitErr(err error, stderr *bytes.Buffer) error {
+	return fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), stderrTail))
 }
 
 func tail(s string, n int) string {
