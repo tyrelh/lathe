@@ -13,12 +13,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
-
-	"github.com/tyrelh/lathe/internal/process"
 )
 
 // KindLocalPath is a workspace on a local filesystem path; it is the only kind
@@ -75,13 +71,6 @@ func Branch(repo string) (string, error) {
 		return "", fmt.Errorf("%s has no checked-out branch (detached HEAD?)", repo)
 	}
 	return out, nil
-}
-
-func git(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repo
-	out, err := process.Output(cmd)
-	return strings.TrimSpace(string(out)), err
 }
 
 // Lock is an OS lock on one checkout or managed worktree, held for the length of an execution. It

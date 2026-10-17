@@ -1,10 +1,11 @@
 package workspace
 
 import (
-	"github.com/tyrelh/lathe/internal/gittest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tyrelh/lathe/internal/gittest"
 )
 
 // fakeGH puts a gh on PATH that reports one pull request from the file pr.json

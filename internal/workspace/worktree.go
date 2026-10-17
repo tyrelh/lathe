@@ -6,18 +6,15 @@ package workspace
 // <dataRoot>/worktrees/<run-id>/iteration-<n> are ever created or removed.
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
-	"github.com/tyrelh/lathe/internal/process"
 )
 
 // WorktreeRoot is the directory every managed worktree lives under.
@@ -207,21 +204,6 @@ func PreserveHead(wt, base, ref string) (string, error) {
 		return "", err
 	}
 	return ref, nil
-}
-
-// gitEnv is git in repo with env added, returning stdout; a failure carries
-// stderr.
-func gitEnv(repo string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
-	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), env...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := process.Output(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("git %s in %s: %w: %s", strings.Join(args, " "), repo, err, strings.TrimSpace(stderr.String()))
-	}
-	return out, nil
 }
 
 // PublishedProtected lists the protected paths among the changes base..HEAD
