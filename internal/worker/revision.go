@@ -14,6 +14,12 @@ import (
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
+// RecordedPRURL returns the latest readable PR URL from a run's reports.
+func RecordedPRURL(dataRoot string, row trace.Row) string {
+	url, _, _ := prRecord(dataRoot, row)
+	return url
+}
+
 // Evidence is what a run's records establish about the pull request it
 // opened: its URL from pr.json, and the branch and commit the run row says it
 // shipped. A run from before revisions qualifies when its records have all
@@ -25,7 +31,7 @@ func Evidence(dataRoot string, row trace.Row) (workspace.Evidence, error) {
 	}
 	// The iteration that opened the pull request owns it: the first, or a
 	// recovery of it that published.
-	url, _, _ := prRecord(dataRoot, row)
+	url := RecordedPRURL(dataRoot, row)
 	if url == "" {
 		return workspace.Evidence{}, fmt.Errorf("%s has no recorded pull request (pr.json in %s or an iteration of it): it never opened one, or its record is gone",
 			row.ID, ReportDir(dataRoot, row.ID, 0))

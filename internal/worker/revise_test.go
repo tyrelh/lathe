@@ -15,6 +15,29 @@ import (
 // A run from before revisions can be revised when its records name the pull
 // request, the branch and the commit; missing any of them is explained, and
 // nothing is inferred to fill the gap.
+func TestRecordedPRURL(t *testing.T) {
+	root := t.TempDir()
+	row := trace.Row{ID: "history", Iteration: 3}
+	if got := RecordedPRURL(root, row); got != "" {
+		t.Fatalf("missing record: %q", got)
+	}
+	for _, n := range []int{0, 2, 3} {
+		dir := ReportDir(root, row.ID, n)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(ReportDir(root, row.ID, 0), "pr.json"), `{"url":"root"}`)
+	if got := RecordedPRURL(root, row); got != "root" {
+		t.Fatalf("root fallback: %q", got)
+	}
+	write(t, filepath.Join(ReportDir(root, row.ID, 2), "pr.json"), `{"url":"later"}`)
+	write(t, filepath.Join(ReportDir(root, row.ID, 3), "pr.json"), `{broken`)
+	if got := RecordedPRURL(root, row); got != "later" {
+		t.Fatalf("latest readable: %q", got)
+	}
+}
+
 func TestEvidence(t *testing.T) {
 	dataRoot := t.TempDir()
 	row := trace.Row{ID: "old", Workflow: "build", Branch: "feat/x", Commit: "abc"}

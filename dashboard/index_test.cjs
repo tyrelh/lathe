@@ -836,6 +836,26 @@ let area = 'run page';
   assert(!call('block', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, {status:'success', start:0, end:1}).includes('Context (estimated)'),
     'a non-agent block tooltip agrees with its details');
 
+  // Settled runs keep observing a recorded PR until its state is final.
+  for (const state of [null, 'open', 'merged', 'closed']) {
+    evaluate('done = false');
+    serve([], phases, {...run, pr_state:state}, {pr_url:'https://github.com/o/r/pull/1?x="<&'});
+    await evaluate('tick()');
+    assert.equal(evaluate('done'), state === 'merged' || state === 'closed');
+    const summary = nodes.get('summary').innerHTML;
+    assert(summary.includes(state || 'not checked'));
+    assert(summary.includes('href="https://github.com/o/r/pull/1?x=&quot;&lt;&amp;"'));
+  }
+  evaluate('done = false');
+  serve([], phases, run, {pr_url:'javascript:alert(1)'});
+  await evaluate('tick()');
+  assert(!nodes.get('summary').innerHTML.includes('javascript:'));
+  evaluate('done = false');
+  serve([], phases, run);
+  await evaluate('tick()');
+  assert.equal(evaluate('done'), true);
+  assert(!nodes.get('summary').innerHTML.includes('pull request'));
+
   // Navigation while a request is in flight cannot contaminate the next run.
   evaluate('done = false'); response = null;
   const pending = evaluate('tick()');

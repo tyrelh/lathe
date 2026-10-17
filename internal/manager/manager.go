@@ -78,6 +78,7 @@ var stopWait = 10 * time.Second
 // handed to the dashboard for its forms; nil ones leave it read-only. sources
 // are handed to it for its reads outside the database.
 func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions dashboard.Actions, sources dashboard.Sources) error {
+	out = &lockedWriter{w: out}
 	lock, err := Lock(dataRoot)
 	if err != nil {
 		return fmt.Errorf("a manager is already running for %s", dataRoot)
@@ -98,6 +99,17 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 	if err := m.reconcile(); err != nil {
 		return err
 	}
+
+	pollCtx, cancelPolling := context.WithCancel(ctx)
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		m.pollPRs(pollCtx, prPoll, nil)
+	}()
+	defer func() {
+		cancelPolling()
+		<-pollDone
+	}()
 
 	srv := &http.Server{Addr: dashboard.Addr, Handler: dashboard.Handler(dataRoot, version, actions, sources)}
 	go func() {
@@ -133,6 +145,7 @@ func Lock(dataRoot string) (*workspace.Lock, error) {
 }
 
 type manager struct {
+	viewPR   func(string, string) (workspace.PR, error)
 	db       *trace.DB
 	dataRoot string
 	out      io.Writer

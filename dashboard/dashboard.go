@@ -99,7 +99,7 @@ func Handler(dataRoot, version string, actions Actions, sources Sources) http.Ha
 	if err != nil {
 		return failed(err)
 	}
-	return handler(db, version, actions, sources)
+	return handler(db, version, actions, sources, dataRoot)
 }
 
 func failed(err error) http.Handler {
@@ -109,7 +109,7 @@ func failed(err error) http.Handler {
 }
 
 // handler builds the routes over db; a nil action or source registers no route.
-func handler(db *trace.DB, version string, actions Actions, sources Sources) http.Handler {
+func handler(db *trace.DB, version string, actions Actions, sources Sources, dataRoot string) http.Handler {
 	// Read routes answer failures as plain text, write routes as JSON.
 	mux := http.NewServeMux()
 	if sources.Roster != nil {
@@ -192,7 +192,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		writeJSON(w, rows, err)
 	})
-	mux.HandleFunc("GET /api/runs/{id}", runDetail(db))
+	mux.HandleFunc("GET /api/runs/{id}", runDetail(db, dataRoot))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hosts[r.Host] {
 			http.Error(w, "forbidden host", http.StatusForbidden)
@@ -288,7 +288,7 @@ func projectRuns(db *trace.DB) http.HandlerFunc {
 
 // runDetail answers a run with its phases, iterations, the events after the
 // after cursor, and whether the run page may offer revise and resume.
-func runDetail(db *trace.DB) http.HandlerFunc {
+func runDetail(db *trace.DB, dataRoot string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		run, err := db.Get(id)
@@ -318,8 +318,10 @@ func runDetail(db *trace.DB) http.HandlerFunc {
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), eventPage)
+		prURL := worker.RecordedPRURL(dataRoot, run)
 		writeJSON(w, map[string]any{
 			"run": run, "phases": phases, "events": events, "iterations": views,
+			"pr_url": prURL,
 			"revisable":   run.Workflow == workflow.NameBuild && trace.Revisable(run) == nil,
 			"recoverable": trace.Recoverable(run) == nil,
 		}, err)
