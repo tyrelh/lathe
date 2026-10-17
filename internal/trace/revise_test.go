@@ -86,6 +86,11 @@ func TestReviseExtendsTheRun(t *testing.T) {
 		its[1].Commit != "c1" || its[1].Started == "" || string(its[1].Spec) != `{"workflow":"revise"}` {
 		t.Errorf("iteration 1 = %+v", its[1])
 	}
+	var kinds string
+	if err := db.sql.QueryRow(`SELECT group_concat(kind, ',') FROM (SELECT kind FROM iterations WHERE run_id = ? ORDER BY iteration)`, id).
+		Scan(&kinds); err != nil || kinds != KindSubmission+","+KindRevision {
+		t.Errorf("stored kinds = %q, %v", kinds, err)
+	}
 	if p, err := db.Project("/repo"); err != nil || p.Runs != 1 {
 		t.Fatalf("project counts the revised run %d times: %v", p.Runs, err)
 	}
