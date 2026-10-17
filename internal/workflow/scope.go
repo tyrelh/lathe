@@ -320,15 +320,6 @@ func clonePlan(p *PlanOutput) PlanOutput {
 	return out
 }
 
-// planOf is the PlanOutput inside a plan or revision plan envelope.
-func planOf(e run.Envelope) (*PlanOutput, bool) {
-	if rp, ok := e.(*revisionPlan); ok {
-		return (*PlanOutput)(rp), true
-	}
-	p, ok := e.(*PlanOutput)
-	return p, ok
-}
-
 // Retained holds a plan to the uncommitted work in the tree: every dirty path
 // must stay in files or be abandoned in reversals, and a reversal may name
 // only dirty work.
