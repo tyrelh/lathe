@@ -2,7 +2,6 @@ package worker
 
 import (
 	"cmp"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -272,10 +271,8 @@ func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOpt
 	if o.Base != "" && !o.Restart {
 		return trace.Recovery{}, errors.New("--base applies only to --restart; a recovery restores work at its recorded base")
 	}
-	row, err := db.Get(runID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return trace.Recovery{}, fmt.Errorf("no run %s", runID)
-	} else if err != nil {
+	row, err := runRow(db, runID)
+	if err != nil {
 		return trace.Recovery{}, err
 	}
 	its, err := db.Iterations(runID)

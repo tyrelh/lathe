@@ -1,8 +1,13 @@
 package worker
 
 import (
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/workflow"
@@ -63,4 +68,59 @@ func revisionOf(db *trace.DB, dataRoot string, row trace.Row, repo string) (*run
 		return nil, err
 	}
 	return &run.Revision{PR: ev.PR, Branch: ev.Branch, Base: pr.Base, Head: ev.Commit, Prior: prior}, nil
+}
+
+// Revise validates that runID can take a revision (run state, recorded
+// evidence, checkout, pull request, origin), then appends a revision iteration
+// with the configuration capture resolves now. It returns the new iteration
+// number. A refusal changes nothing, and db.Revise rechecks the run's state in
+// its transaction; see ADR 0005 for the race between the two checks.
+func Revise(db *trace.DB, dataRoot, runID, request string, ov config.Overrides, capture Capture) (int, error) {
+	request = strings.TrimSpace(request)
+	if request == "" {
+		return 0, errors.New("a revision needs the change to make")
+	}
+	row, err := runRow(db, runID)
+	if err != nil {
+		return 0, err
+	}
+	if err := trace.Revisable(row); err != nil {
+		return 0, err
+	}
+	ev, err := Evidence(dataRoot, row)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", trace.ErrNotRevisable, err)
+	}
+	var recorded Spec
+	if err := json.Unmarshal(row.Spec, &recorded); err != nil || recorded.Workspace.Path == "" {
+		return 0, fmt.Errorf("%w: %s records no checkout to revise it in", trace.ErrNotRevisable, runID)
+	}
+	ws := recorded.Workspace
+	if err := ws.Check(); err != nil {
+		return 0, err
+	}
+	if _, err := workspace.CheckRevisable(ws.Path, ev); err != nil {
+		return 0, err
+	}
+	roster, err := capture(workflow.NameRevise, ov)
+	if err != nil {
+		return 0, err
+	}
+	spec, err := Spec{
+		Version: SpecVersion, Workflow: workflow.NameRevise, Request: request,
+		Workspace: ws, Roster: roster, Overrides: ov, Base: ev.Commit,
+	}.Marshal()
+	if err != nil {
+		return 0, err
+	}
+	return db.Revise(runID, row.Iteration, request, spec)
+}
+
+// runRow is runID's run, or a "no run" error when there is none.
+func runRow(db *trace.DB, runID string) (trace.Row, error) {
+	row, err := db.Get(runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return trace.Row{}, fmt.Errorf("no run %s", runID)
+	}
+	return row, err
 }
