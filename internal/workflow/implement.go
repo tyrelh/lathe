@@ -356,7 +356,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 
 // printOutcome tells the engineer how validation ended when it did not accept.
 func printOutcome(w io.Writer, v *Validation) {
-	fmt.Fprintf(w, "\nvalidation %s: %s\n", v.Outcome, v.Reason)
+	fmt.Fprintf(w, "\n%s\n", v.verdict())
 	for _, f := range v.Unresolved {
 		writeFinding(w, f)
 	}
@@ -383,7 +383,7 @@ func Implement(r *run.Run) int {
 	}
 	if !c.v.Accepted() {
 		printOutcome(r.Out, &c.v)
-		return r.Finish(false, fmt.Sprintf("validation %s: %s; the changes are left uncommitted and unaccepted%s", c.v.Outcome, c.v.Reason, patchNote(r)))
+		return r.Finish(false, fmt.Sprintf("%s; the changes are left uncommitted and unaccepted%s", c.v.verdict(), patchNote(r)))
 	}
 	return r.Finish(true, "")
 }

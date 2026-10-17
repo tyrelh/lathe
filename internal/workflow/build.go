@@ -230,8 +230,8 @@ func Build(r *run.Run) int {
 			// An existing pull request takes accepted work only.
 			if pub.PR != "" && !c.v.Accepted() {
 				printOutcome(r.Out, &c.v)
-				return "", fmt.Errorf("validation %s: %s; the changes are left uncommitted (saved as the iteration's result patch) and pull request %s is unchanged",
-					c.v.Outcome, c.v.Reason, pub.PR)
+				return "", fmt.Errorf("%s; the changes are left uncommitted (saved as the iteration's result patch) and pull request %s is unchanged",
+					c.v.verdict(), pub.PR)
 			}
 			// Already-delivered work needs no new commit.
 			if len(paths) == 0 && pub.Head != "" {
@@ -279,8 +279,8 @@ func Build(r *run.Run) int {
 		fmt.Fprintf(r.Out, "\n%s\n\n  %s @ %s\n  %s\n", *c.out.Summary, branch, short(sha), url)
 		if !c.v.Accepted() {
 			printOutcome(r.Out, &c.v)
-			return r.Finish(false, fmt.Sprintf("validation %s: %s; opened draft pull request %s with the unaccepted change",
-				c.v.Outcome, c.v.Reason, url))
+			return r.Finish(false, fmt.Sprintf("%s; opened draft pull request %s with the unaccepted change",
+				c.v.verdict(), url))
 		}
 		return r.Finish(true, "")
 	}

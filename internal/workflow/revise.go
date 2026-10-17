@@ -54,8 +54,8 @@ func Revise(r *run.Run) int {
 	g.Add(run.Node{Name: "commit", Owner: "committer"}, func(e *run.Entry) (string, error) {
 		if !c.v.Accepted() {
 			printOutcome(r.Out, &c.v)
-			return "", fmt.Errorf("validation %s: %s; the changes are left uncommitted (saved as the iteration's result patch) and the pull request is unchanged",
-				c.v.Outcome, c.v.Reason)
+			return "", fmt.Errorf("%s; the changes are left uncommitted (saved as the iteration's result patch) and the pull request is unchanged",
+				c.v.verdict())
 		}
 		paths, err := permit.Changed(r.Repo)
 		if err != nil {
