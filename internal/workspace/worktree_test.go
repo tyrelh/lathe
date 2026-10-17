@@ -1,8 +1,8 @@
 package workspace
 
 import (
+	"github.com/tyrelh/lathe/internal/gittest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,13 +10,7 @@ import (
 
 func out(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v %s", args, err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 // source is a committed checkout with a text file, a script and a file to
@@ -24,14 +18,14 @@ func out(t *testing.T, dir string, args ...string) string {
 func source(t *testing.T) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
-	run(t, repo, "init", "-q", "-b", "main")
-	run(t, repo, "config", "commit.gpgsign", "false")
+	gittest.Init(t, repo)
+	gitTest(t, repo, "config", "commit.gpgsign", "false")
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a\n"), 0o644)
 	os.WriteFile(filepath.Join(repo, "gone.txt"), []byte("gone\n"), 0o644)
 	os.WriteFile(filepath.Join(repo, "run.sh"), []byte("echo\n"), 0o644)
 	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored/\n"), 0o644)
-	run(t, repo, "add", ".")
-	run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+	gitTest(t, repo, "add", ".")
+	gitTest(t, repo, "commit", "-qm", "base")
 	return repo, out(t, repo, "rev-parse", "HEAD")
 }
 
@@ -135,7 +129,7 @@ func TestSavePatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(wt, "a.txt"), []byte("committed\n"), 0o644)
-	run(t, wt, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "work")
+	gitTest(t, wt, "commit", "-qam", "work")
 	os.WriteFile(filepath.Join(wt, "a.txt"), []byte("committed\nand more\n"), 0o644)
 	os.Remove(filepath.Join(wt, "gone.txt"))
 	os.WriteFile(filepath.Join(wt, "new [1].txt"), []byte("new\n"), 0o644)
@@ -171,18 +165,18 @@ func TestSavePatch(t *testing.T) {
 
 	// It applies at base in a fresh clone.
 	clone := t.TempDir()
-	run(t, clone, "clone", "-q", repo, ".")
-	run(t, clone, "checkout", "-q", base)
-	run(t, clone, "apply", "--index", dest)
+	gitTest(t, clone, "clone", "-q", repo, ".")
+	gitTest(t, clone, "checkout", "-q", base)
+	gitTest(t, clone, "apply", "--index", dest)
 	if b, _ := os.ReadFile(filepath.Join(clone, "a.txt")); string(b) != "committed\nand more\n" {
 		t.Fatalf("applied a.txt = %q", b)
 	}
 
 	// A later export that finds nothing supersedes the earlier patch.
 	os.Remove(filepath.Join(wt, ".env"))
-	run(t, wt, "checkout", "-q", "--", ".")
-	run(t, wt, "clean", "-qfd")
-	run(t, wt, "reset", "-q", "--hard", base)
+	gitTest(t, wt, "checkout", "-q", "--", ".")
+	gitTest(t, wt, "clean", "-qfd")
+	gitTest(t, wt, "reset", "-q", "--hard", base)
 	os.WriteFile(dest+".part", []byte("interrupted"), 0o644)
 	wrote, err = SavePatch(wt, base, dest, nil)
 	if err != nil || wrote {
@@ -207,7 +201,7 @@ func TestPreserveHead(t *testing.T) {
 		t.Fatalf("at base: %q %v", got, err)
 	}
 	os.WriteFile(filepath.Join(wt, "a.txt"), []byte("b\n"), 0o644)
-	run(t, wt, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "detached work")
+	gitTest(t, wt, "commit", "-qam", "detached work")
 	head := out(t, wt, "rev-parse", "HEAD")
 	if got, err := PreserveHead(wt, base, ref); got != ref || err != nil {
 		t.Fatalf("detached: %q %v", got, err)
@@ -215,8 +209,8 @@ func TestPreserveHead(t *testing.T) {
 	if got := out(t, repo, "rev-parse", ref); got != head {
 		t.Fatalf("%s = %s; want %s", ref, got, head)
 	}
-	run(t, repo, "update-ref", "-d", ref)
-	run(t, wt, "branch", "kept")
+	gitTest(t, repo, "update-ref", "-d", ref)
+	gitTest(t, wt, "branch", "kept")
 	if got, err := PreserveHead(wt, base, ref); got != "" || err != nil {
 		t.Fatalf("on a branch: %q %v", got, err)
 	}
@@ -227,8 +221,8 @@ func TestPublishedProtected(t *testing.T) {
 	repo, base := source(t)
 	os.WriteFile(filepath.Join(repo, "key.pem"), []byte("k"), 0o644)
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("b\n"), 0o644)
-	run(t, repo, "add", ".")
-	run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "oops")
+	gitTest(t, repo, "add", ".")
+	gitTest(t, repo, "commit", "-qm", "oops")
 	got, err := PublishedProtected(repo, base, []string{"*.pem"})
 	if err != nil || len(got) != 1 || got[0] != "key.pem" {
 		t.Fatalf("PublishedProtected = %v, %v", got, err)

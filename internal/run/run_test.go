@@ -19,6 +19,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/gittest"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
 	"github.com/tyrelh/lathe/internal/pitest"
@@ -901,21 +902,7 @@ fi
 // what the pre-execution half would have blocked.
 func gitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("original\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{
-		{"init", "-q", "-b", "main"},
-		{"-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"},
-		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-	}
+	dir, _ := gittest.Repo(t, map[string]string{"tracked.txt": "original\n"})
 	return dir
 }
 

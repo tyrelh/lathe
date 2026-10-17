@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"github.com/tyrelh/lathe/internal/gittest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,17 +25,17 @@ func fakeGH(t *testing.T) string {
 func shipped(t *testing.T) (repo, origin, sha string) {
 	t.Helper()
 	repo, origin = t.TempDir(), t.TempDir()
-	run(t, origin, "init", "-q", "--bare")
-	run(t, repo, "init", "-q", "-b", "main")
-	run(t, repo, "config", "commit.gpgsign", "false")
+	gitTest(t, origin, "init", "-q", "--bare")
+	gittest.Init(t, repo)
+	gitTest(t, repo, "config", "commit.gpgsign", "false")
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a\n"), 0o644)
-	run(t, repo, "add", ".")
-	run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "base")
-	run(t, repo, "checkout", "-qb", "feat/x")
+	gitTest(t, repo, "add", ".")
+	gitTest(t, repo, "commit", "-qm", "base")
+	gitTest(t, repo, "checkout", "-qb", "feat/x")
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("b\n"), 0o644)
-	run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "change")
-	run(t, repo, "remote", "add", "origin", origin)
-	run(t, repo, "push", "-q", "origin", "main", "feat/x")
+	gitTest(t, repo, "commit", "-qam", "change")
+	gitTest(t, repo, "remote", "add", "origin", origin)
+	gitTest(t, repo, "push", "-q", "origin", "main", "feat/x")
 	head, err := Head(repo)
 	if err != nil {
 		t.Fatal(err)

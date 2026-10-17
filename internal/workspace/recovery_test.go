@@ -100,7 +100,7 @@ func TestResidualRestoresOnlyUnpublishedWork(t *testing.T) {
 	dataRoot := t.TempDir()
 	wt, _ := CreateWorktree(dataRoot, repo, "run1", 0, base)
 	os.WriteFile(filepath.Join(wt, "a.txt"), []byte("published\n"), 0o644)
-	run(t, wt, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "publish")
+	gitTest(t, wt, "commit", "-qam", "publish")
 	commit := out(t, wt, "rev-parse", "HEAD")
 	binary := []byte{0, 9, 255, 'r'}
 	os.WriteFile(filepath.Join(wt, "a.txt"), []byte("published\nand more\n"), 0o644)
@@ -131,7 +131,7 @@ func TestResidualRestoresOnlyUnpublishedWork(t *testing.T) {
 		t.Fatal("binary residual not restored")
 	}
 	// Work wholly published leaves no residual.
-	run(t, wt, "checkout", "-q", "--", ".")
+	gitTest(t, wt, "checkout", "-q", "--", ".")
 	os.Remove(filepath.Join(wt, "new.bin"))
 	SavePatch(wt, base, patch, nil)
 	if ok, err := Residual(repo, base, patch, commit, dest); err != nil || ok {
