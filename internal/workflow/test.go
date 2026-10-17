@@ -60,7 +60,12 @@ func (t *TestOutput) Green() bool {
 	return t != nil && t.ExitCode != nil && *t.ExitCode == 0
 }
 
-// Result is the run's outcome in one line.
+// EnvironmentFailed reports whether the command could not execute: exit 126 or 127.
+func (t *TestOutput) EnvironmentFailed() bool {
+	return t != nil && t.ExitCode != nil && (*t.ExitCode == 126 || *t.ExitCode == 127)
+}
+
+// Result is the test command's outcome in one line; t must be validated.
 func (t *TestOutput) Result() string {
 	if t.Green() {
 		return "passed"

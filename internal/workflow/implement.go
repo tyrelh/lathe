@@ -208,16 +208,8 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		case buildReplanned:
 			c.handoff = implementRequest(r.Request, &c.plan, c.v.Amendments)
 			request = replannedRequest(c)
-		default:
-			c.handoff = implementRequest(r.Request, &c.plan, nil)
-			request = c.handoff
-			// A recovery carries prior findings the plan did not dismiss.
-			var b strings.Builder
-			findingSection(&b, "### Findings from prior validation still to fix", c.outstanding)
-			request += b.String()
-			if r.Recovery != nil && len(r.Recovery.Restored) > 0 {
-				request += "\nThe tree already holds the prior iteration's work on the paths the plan keeps; continue from it.\n"
-			}
+		case buildInitial:
+			request = initialRequest(c, r)
 		}
 		if c.mode != buildRepair && len(*c.plan.Files) == 0 {
 			// Only a revision's plan can permit nothing. A builder that may write
@@ -252,13 +244,13 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			return err
 		}
 		cur.Tests = &out
-		switch code := *out.ExitCode; {
-		case code == 0:
-		case code == 126 || code == 127:
-			return &run.EnvironmentError{ExitCode: code}
+		switch {
+		case out.Green():
+		case out.EnvironmentFailed():
+			return &run.EnvironmentError{ExitCode: *out.ExitCode}
 		default:
 			// A red suite is a result for the adjudicator, not a failed worker.
-			e.Failed(&CommandFailure{ExitCode: code})
+			e.Failed(&CommandFailure{ExitCode: *out.ExitCode})
 		}
 		return nil
 	}}}
@@ -289,8 +281,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		}
 		cur.Mutated = res.Mutated
 		if environmentErr != nil {
-			c.v.settle(outcomeEnvironmentFailed, environmentErr.Error())
-			if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
+			if err := c.settle(r.Dir, outcomeEnvironmentFailed, environmentErr.Error()); err != nil {
 				return "", err
 			}
 			return "", environmentErr
@@ -298,8 +289,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		if len(res.Mutated) > 0 {
 			reason := "source changed while validation ran, so this round cannot approve the implementation: " +
 				strings.Join(res.Mutated, ", ")
-			c.v.settle(outcomeInvalidated, reason)
-			if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
+			if err := c.settle(r.Dir, outcomeInvalidated, reason); err != nil {
 				return "", err
 			}
 			return "", errors.New(reason)
@@ -316,8 +306,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			for _, f := range cur.Failures {
 				names = append(names, f.Worker)
 			}
-			c.v.settle(outcomeIncomplete, "validation incomplete: "+strings.Join(names, ", ")+" failed after retries")
-			return "", writeResult(r.Dir, run.ValidationFile, &c.v)
+			return "", c.settle(r.Dir, outcomeIncomplete, "validation incomplete: "+strings.Join(names, ", ")+" failed after retries")
 		}
 
 		findings := cur.findings()
@@ -331,8 +320,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 
 		if *out.Verdict == verdictAccept {
 			c.outstanding, c.changes = nil, ""
-			c.v.settle(outcomeAccepted, "")
-			return "", writeResult(r.Dir, run.ValidationFile, &c.v)
+			return "", c.settle(r.Dir, outcomeAccepted, "")
 		}
 		fixes := out.fixes(findings)
 		if e.SendBacksLeft == 0 {
@@ -341,8 +329,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			if !cur.Tests.Green() {
 				reason += "; " + cur.Tests.Result()
 			}
-			c.v.settle(outcomeUnresolved, reason)
-			return "", writeResult(r.Dir, run.ValidationFile, &c.v)
+			return "", c.settle(r.Dir, outcomeUnresolved, reason)
 		}
 		c.amend(r.Request, &out)
 		c.repair = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
@@ -352,6 +339,28 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		}
 		return "implement", nil
 	})
+}
+
+// initialRequest is the builder's first request: the handoff, which it sets,
+// with a recovery's outstanding findings and restored work.
+func initialRequest(c *code, r *run.Run) string {
+	c.handoff = implementRequest(r.Request, &c.plan, nil)
+	request := c.handoff
+	// A recovery carries prior findings the plan did not dismiss.
+	var b strings.Builder
+	findingSection(&b, "### Findings from prior validation still to fix", c.outstanding)
+	request += b.String()
+	if r.Recovery != nil && len(r.Recovery.Restored) > 0 {
+		request += "\nThe tree already holds the prior iteration's work on the paths the plan keeps; continue from it.\n"
+	}
+	return request
+}
+
+// settle settles validation with outcome and reason and writes validation.json
+// to dir.
+func (c *code) settle(dir, outcome, reason string) error {
+	c.v.settle(outcome, reason)
+	return writeResult(dir, run.ValidationFile, &c.v)
 }
 
 // printOutcome tells the engineer how validation ended when it did not accept.
