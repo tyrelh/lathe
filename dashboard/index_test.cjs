@@ -580,8 +580,8 @@ let id = 0;
 const event = (type, payload, phase_id='p1', name='fix') => ({event_id:++id,type,payload,phase_id,name});
 // serve answers the request waiting for a run's next page, or else the next
 // one made.
-function serve(events, ps = phases, r = run) {
-  const body = json({run:r,phases:ps,events,iterations});
+function serve(events, ps = phases, r = run, eligible = {}) {
+  const body = json({run:r,phases:ps,events,iterations,...eligible});
   if (resolveFetch) resolveFetch(body); else response = body;
 }
 // drained waits for a served page that a full page already requested.
@@ -599,6 +599,7 @@ const costs = () => nodes.get('costs').innerHTML;
   serve(events, phases, {...run, repo:'/repo/MiXeD <&"\'>', request:'fix <prompt>&'});
   await evaluate('tick()');
   assert.equal(scaffoldCount, 1, 'the first poll creates the whole run scaffold');
+  assert(nodes.get('revise').hidden && nodes.get('resume').hidden, 'revise and resume wait for the server to offer them');
   const scaffold = pageHTML();
   for (const id of ['phases-panel', 'events-panel', 'events-body', 'run-side'])
     assert(scaffold.includes(`id="${id}"`), `bounded run region: ${id}`);
@@ -665,8 +666,9 @@ const costs = () => nodes.get('costs').innerHTML;
          event('context',{attempt:1,tokens:null,contextWindow:8000,percent:null}),
          event('log','test command','p2','command'),event('log','  <b>spaced</b>\n  out','p2','output'),
          event('log','','p2','output')];
-  serve(nextEvents);
+  serve(nextEvents, phases, run, {revisable:true, recoverable:false});
   await drained();
+  assert(!nodes.get('revise').hidden && nodes.get('resume').hidden, 'a revisable run offers revise only');
   assert.equal(evaluate('done'), true);
   assert(!resolveFetch, 'a short page waits for the timer');
   assert(tip.textContent.includes('Context (estimated): unknown tokens / 8,000 window · unknown full'),
@@ -752,8 +754,9 @@ const costs = () => nodes.get('costs').innerHTML;
   evaluate("done = false; activeTab = 'events'");
   nodes.get('follow-box').checked = true;
   nodes.get('events-body').scrollTop = nodes.get('events-body').scrollHeight - nodes.get('events-body').clientHeight;
-  serve([event('log','tail event')]);
+  serve([event('log','tail event')], phases, run, {revisable:false, recoverable:true});
   await evaluate('tick()');
+  assert(nodes.get('revise').hidden && !nodes.get('resume').hidden, 'a recoverable run offers resume only');
   assert.equal(nodes.get('events-body').scrollTop, nodes.get('events-body').scrollHeight, 'follow on scrolls to the tail');
   assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow remains available in event controls after completion');
 
