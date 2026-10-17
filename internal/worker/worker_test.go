@@ -492,8 +492,9 @@ func TestUnknownSpecVersionFails(t *testing.T) {
 // stops execution, well inside the lease it was granted, so partial work is
 // kept rather than killed by a lease expiring under it.
 func TestDatabaseOutageStopsExecution(t *testing.T) {
+	oldBeat, oldGrace := Heartbeat, dbGrace
+	t.Cleanup(func() { Heartbeat, dbGrace = oldBeat, oldGrace })
 	Heartbeat, dbGrace = 5*time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { Heartbeat, dbGrace = 5*time.Second, 15*time.Second })
 
 	dir, dataRoot := repo(t), t.TempDir()
 	db, _, attemptID := queue(t, dataRoot, dir, "scout")

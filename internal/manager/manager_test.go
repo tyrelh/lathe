@@ -483,8 +483,9 @@ func (s *supervisors) Stop(endpoint, token string) error {
 func TestLostRunStopsLaunches(t *testing.T) {
 	for _, stubborn := range []bool{false, true} {
 		t.Run(strconv.FormatBool(stubborn), func(t *testing.T) {
+			old := stopWait
+			t.Cleanup(func() { stopWait = old })
 			stopWait = 100 * time.Millisecond
-			t.Cleanup(func() { stopWait = 10 * time.Second })
 			l := &fake{alive: true}
 			m, db, out := newManager(t, 1, l)
 			sup := &supervisors{live: map[int]bool{777: true}, stubborn: stubborn}
