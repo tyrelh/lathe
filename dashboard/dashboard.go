@@ -162,25 +162,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		writeJSON(w, project, err)
 	})
-	mux.HandleFunc("GET /api/projects/runs", func(w http.ResponseWriter, r *http.Request) {
-		repo, ok := projectParam(w, r)
-		if !ok {
-			return
-		}
-		beforeAt, beforeID := r.URL.Query().Get("before_at"), r.URL.Query().Get("before_id")
-		_, hasAt := r.URL.Query()["before_at"]
-		_, hasID := r.URL.Query()["before_id"]
-		if hasAt != hasID || (hasID && beforeID == "") {
-			http.Error(w, "incomplete run cursor", http.StatusBadRequest)
-			return
-		}
-		limit := intParam(r, "n", 50)
-		if limit < 1 || limit > 100 {
-			limit = 50
-		}
-		runs, more, err := db.ProjectRuns(repo, beforeAt, beforeID, limit)
-		writeJSON(w, map[string]any{"runs": runs, "more": more}, err)
-	})
+	mux.HandleFunc("GET /api/projects/runs", projectRuns(db))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
@@ -198,37 +180,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		writeJSON(w, rows, err)
 	})
-	mux.HandleFunc("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		run, err := db.Get(id)
-		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "no such run", http.StatusNotFound)
-			return
-		}
-		if err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		phases, err := db.Phases(id)
-		if err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		iterations, err := db.Iterations(id)
-		if err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		// The configuration each iteration ran with, as the models it gave each
-		// agent: the whole snapshot carries every prompt, which is too much to
-		// resend every poll.
-		views := worker.IterationViews(iterations)
-		// The cursor bounds one poll; whatever is left arrives on the next one.
-		// index.html knows this number: a full page is how it tells that a
-		// settled run still has events to fetch before it stops polling.
-		events, err := db.Events(id, int64(intParam(r, "after", 0)), 500)
-		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events, "iterations": views}, err)
-	})
+	mux.HandleFunc("GET /api/runs/{id}", runDetail(db))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hosts[r.Host] {
 			http.Error(w, "forbidden host", http.StatusForbidden)
@@ -296,6 +248,66 @@ func findAgent(roster func() (config.Config, error), name string, bodies bool) (
 		return agentView{}, errNoAgent
 	}
 	return agents[i], nil
+}
+
+// projectRuns answers one page of a project's runs and whether more follow.
+// The cursor is before_at and before_id together or neither.
+func projectRuns(db *trace.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := projectParam(w, r)
+		if !ok {
+			return
+		}
+		beforeAt, beforeID := r.URL.Query().Get("before_at"), r.URL.Query().Get("before_id")
+		_, hasAt := r.URL.Query()["before_at"]
+		_, hasID := r.URL.Query()["before_id"]
+		if hasAt != hasID || (hasID && beforeID == "") {
+			http.Error(w, "incomplete run cursor", http.StatusBadRequest)
+			return
+		}
+		limit := intParam(r, "n", 50)
+		if limit < 1 || limit > 100 {
+			limit = 50
+		}
+		runs, more, err := db.ProjectRuns(repo, beforeAt, beforeID, limit)
+		writeJSON(w, map[string]any{"runs": runs, "more": more}, err)
+	}
+}
+
+// runDetail answers a run with its phases, iterations and the events after
+// the after cursor.
+func runDetail(db *trace.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		run, err := db.Get(id)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "no such run", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		phases, err := db.Phases(id)
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		iterations, err := db.Iterations(id)
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		// The configuration each iteration ran with, as the models it gave each
+		// agent: the whole snapshot carries every prompt, which is too much to
+		// resend every poll.
+		views := worker.IterationViews(iterations)
+		// The cursor bounds one poll; whatever is left arrives on the next one.
+		// index.html knows this number: a full page is how it tells that a
+		// settled run still has events to fetch before it stops polling.
+		events, err := db.Events(id, int64(intParam(r, "after", 0)), 500)
+		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events, "iterations": views}, err)
+	}
 }
 
 // submitRun queues a run against a recorded project. It is browser-only, as
