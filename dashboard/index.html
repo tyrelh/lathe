@@ -4,8 +4,9 @@
 <title>lathe</title>
 <link rel="icon" href="/favicon.ico?v=1" type="image/vnd.microsoft.icon" sizes="16x16 32x32 48x48">
 <style>
-  /* Catppuccin Macchiato (dark) and Latte (light). */
+  /* Tokyo Night (dark) and Tokyo Night Day (light). */
   :root {
+    --gap: 10px; --inset: 10px;
     color-scheme: dark;
     --bg: #1a1b26; --track: color-mix(in srgb, var(--panel) 50%, var(--card)); --panel: #292e42; --line: #3b4261; --card: #16161e;
     --fg: #c0caf5; --dim: #565f89;
@@ -13,6 +14,8 @@
     --blue: #7aa2f7; --cyan: #7dcfff; --sky: #2ac3de; --teal: #73daca;
     --orange: #ff9e64; --purple: #9d7cd8; --green: #9ece6a; --magenta: #bb9af7;
   }
+  /* The prefers-color-scheme light block and the [data-theme="light"] block
+     must stay identical. */
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       color-scheme: light;
@@ -95,11 +98,11 @@
   table { width: 100%; border-collapse: collapse; }
   .card table tr:last-child td { border-bottom: none; }
   td, th { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line);
-           vertical-align: top; white-space: nowrap; text-align: left;
+           vertical-align: top; white-space: normal; overflow-wrap: anywhere; text-align: left;
            font-weight: normal; }
   th { color: var(--dim); }
   td.wrap { white-space: normal; color: var(--dim); width: 100%; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   tr.run, tr.project, tr.agent { cursor: pointer; }
   tr.run:hover td, tr.project:hover td, tr.agent:hover td { background: var(--panel); }
   .dim { color: var(--dim); }
@@ -110,12 +113,12 @@
           border-radius: 4px; background: var(--panel); color: var(--fg);
           font: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--cost); outline-offset: 1px; }
-  #new-run label { display: block; color: var(--dim); margin: 8px 0 4px; }
+  #new-run label { display: block; color: var(--dim); margin: 6px 0 3px; }
   #new-run textarea, #new-run input, #new-run select {
     width: 100%; font: inherit; color: var(--fg); background: var(--panel);
     border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
   #new-run textarea { resize: none; }
-  #revise label { display: block; color: var(--dim); margin: 12px 0 4px; }
+  #revise label { display: block; color: var(--dim); margin: 6px 0 3px; }
   #revise textarea { width: 100%; font: inherit; color: var(--fg); background: var(--panel);
     border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; resize: none; }
   [hidden] { display: none !important; }
@@ -205,7 +208,6 @@
   .stats dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 
   /* The viewport owns the frame; only named content bodies may scroll. */
-  :root { --gap: 10px; --inset: 10px; }
   .page, .workspace, .panel, .sidebar, .tabbed, .phase-workspace, .ranking-grid, .ranking-column,
   .cost-lists, .cost-list, .paged, .paged-body { min-width: 0; min-height: 0; }
   .page { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--gap); overflow: hidden; }
@@ -240,8 +242,6 @@
   #rank-runs td:nth-child(5) { width: 12ch; }
   #rank-runs td.wrap { width: auto; }
   #rank-runs td span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  td, th { white-space: normal; overflow-wrap: anywhere; }
-  td.num, th.num { white-space: nowrap; }
   thead th { position: sticky; top: 0; background: var(--card); z-index: 2; }
   .run-group + .run-group { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
   .run-group h2 { margin: 0 0 6px; overflow-wrap: anywhere; }
@@ -291,7 +291,6 @@
   .history-row button { border: 0; background: none; padding: 0; text-decoration: underline; }
   .history-row .row-heading { display: flex; gap: 8px; align-items: baseline; }
   #revise { flex: none; }
-  #revise label, #new-run label { margin: 6px 0 3px; }
   #revise p, #new-run p { margin: 5px 0; }
   #revise textarea { height: 64px; max-height: 12vh; }
   #new-run textarea { height: 130px; max-height: 22vh; }
