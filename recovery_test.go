@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -629,11 +630,18 @@ func buildLathe(t *testing.T) string {
 // output and exit code.
 func lathe(t *testing.T, bin string, args ...string) (string, int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	return latheIn(t, bin, "", nil, 2*time.Minute, args...)
+}
+
+func latheIn(t *testing.T, bin, dir string, env []string, timeout time.Duration, args ...string) (string, int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir, cmd.Env = dir, env
+	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
-	if err != nil && !asExit(err, &exit) {
+	if err != nil && !errors.As(err, &exit) {
 		t.Fatalf("lathe %v: %v\n%s", args, err, out)
 	}
 	if exit != nil {
