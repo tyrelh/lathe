@@ -324,6 +324,17 @@ func (p *Phase) Finish(status, errMsg string) {
 	p.Status, p.Error, p.End = status, errMsg, nowUTC()
 }
 
+// Phase states. Phases say success where runs say ok, on purpose: stored
+// rows and the dashboard read both vocabularies.
+const (
+	PhaseSuccess = "success"
+	PhaseFail    = "fail"
+)
+
+// ExitCancelled is the exit code for a cancelled run: the conventional
+// "stopped by a signal".
+const ExitCancelled = 130
+
 // PhaseUpsert writes the whole phase row, creating or replacing it. Leaving
 // p.Start empty stamps it now (and sticks, so the second write keeps it);
 // p.End stays empty until Finish sets it. With p.Attempt set, the write lands
@@ -333,7 +344,7 @@ func (d *DB) PhaseUpsert(p *Phase) error {
 		p.Start = nowUTC()
 	}
 	if p.Status == "" {
-		p.Status = "fail"
+		p.Status = PhaseFail
 	}
 	res, err := d.sql.Exec(
 		`INSERT INTO phases (phase_id, run_id, seq, name, owner, status, error, started_at, ended_at, iteration)
@@ -354,7 +365,7 @@ func (d *DB) PhaseUpsert(p *Phase) error {
 // owned is the ownership condition a worker's write carries: its attempt is
 // the run's current one and the run is still executing. It takes the run ID
 // and the attempt ID, in that order.
-const owned = `EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND attempt_id = ? AND status IN ('starting', 'running'))`
+const owned = `EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND attempt_id = ? AND ` + executing + `)`
 
 // claimed turns a guarded write that changed nothing into ErrClaimLost.
 func claimed(res sql.Result) error {

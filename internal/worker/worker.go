@@ -387,7 +387,7 @@ func open(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, att
 func outcome(db *trace.DB, runID string, r *run.Run, code int) (int, string, string) {
 	status, reason := r.Status(), r.Reason()
 	if cancelled, err := db.Cancelled(runID); err == nil && cancelled {
-		status, code = trace.StatusCancelled, 130
+		status, code = trace.StatusCancelled, trace.ExitCancelled
 		if reason == "" {
 			reason = "cancelled"
 		}

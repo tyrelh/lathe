@@ -27,6 +27,9 @@ const (
 	StatusLost      = "lost"
 )
 
+// executing matches a run that is dispatched but not settled.
+const executing = "status IN ('" + StatusStarting + "', '" + StatusRunning + "')"
+
 // Terminal reports whether a state can still change. Terminal states are
 // immutable: a late worker write against one is dropped, not applied.
 func Terminal(status string) bool {
@@ -121,7 +124,7 @@ func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int,
 	res, err := tx.Exec(
 		`UPDATE runs SET status = 'queued', iteration = ?, spec = ?, activity_at = ?,
 		   reason = NULL, ended_at = NULL, cancel_at = NULL
-		 WHERE run_id = ? AND iteration = ? AND status = 'ok'`, next, string(spec), at, runID, n)
+		 WHERE run_id = ? AND iteration = ? AND status = '`+StatusOK+`'`, next, string(spec), at, runID, n)
 	if err != nil {
 		return 0, err
 	}
@@ -167,7 +170,7 @@ func (d *DB) Queued() ([]Row, error) {
 
 // Active returns the runs that hold capacity: dispatched but not settled.
 func (d *DB) Active() ([]Row, error) {
-	rows, err := d.sql.Query(runColumns + ` FROM runs WHERE status IN ('starting', 'running') ORDER BY submitted_at`)
+	rows, err := d.sql.Query(runColumns + ` FROM runs WHERE ` + executing + ` ORDER BY submitted_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +395,7 @@ func (d *DB) Complete(runID, attemptID, token, status, reason string) error {
 
 	res, err := tx.Exec(
 		`UPDATE runs SET status = ?, reason = ?, ended_at = ?
-		 WHERE run_id = ? AND attempt_id = ? AND status IN ('starting', 'running')
+		 WHERE run_id = ? AND attempt_id = ? AND `+executing+`
 		   AND EXISTS (SELECT 1 FROM attempts WHERE attempt_id = ? AND claim_token = ?)`,
 		status, reason, nowUTC(), runID, attemptID, attemptID, token)
 	if err != nil {
@@ -420,7 +423,7 @@ func (d *DB) MarkLost(runID, reason string) error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(
 		`UPDATE runs SET status = 'lost', reason = ?, ended_at = ?
-		 WHERE run_id = ? AND status IN ('starting', 'running')`, reason, nowUTC(), runID); err != nil {
+		 WHERE run_id = ? AND `+executing, reason, nowUTC(), runID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
@@ -720,6 +723,9 @@ const (
 	LaunchCancelled  = "cancelled"
 )
 
+// openLaunch matches a launch not yet drained or cancelled.
+const openLaunch = "state IN ('" + LaunchIntent + "', '" + LaunchRegistered + "')"
+
 // ErrLaunchRevoked is a registration the run no longer admits.
 var ErrLaunchRevoked = errors.New("the launch is no longer admitted")
 
@@ -758,7 +764,7 @@ func (d *DB) LaunchRegistered(launchID, host string, pid, pgid int, endpoint, to
 		`UPDATE launches SET state = 'registered', host = ?, pid = ?, pgid = ?, endpoint = ?, token = ?, registered_at = ?
 		 WHERE launch_id = ? AND state = 'intent'
 		   AND EXISTS (SELECT 1 FROM runs r WHERE r.run_id = launches.run_id
-		     AND r.attempt_id = launches.attempt_id AND r.status IN ('starting', 'running'))`,
+		     AND r.attempt_id = launches.attempt_id AND r.`+executing+`)`,
 		host, pid, pgid, endpoint, token, nowUTC(), launchID)
 	if err != nil {
 		return err
@@ -774,7 +780,7 @@ func (d *DB) LaunchRegistered(launchID, host string, pid, pgid int, endpoint, to
 // LaunchDrainedAt records that a launch's process group has stopped.
 func (d *DB) LaunchDrainedAt(launchID string) error {
 	_, err := d.sql.Exec(
-		`UPDATE launches SET state = 'drained', drained_at = ? WHERE launch_id = ? AND state IN ('intent', 'registered')`,
+		`UPDATE launches SET state = 'drained', drained_at = ? WHERE launch_id = ? AND `+openLaunch,
 		nowUTC(), launchID)
 	return err
 }
@@ -797,7 +803,7 @@ func (d *DB) OpenLaunches(runID string) ([]Launch, error) {
 	rows, err := d.sql.Query(
 		`SELECT launch_id, run_id, attempt_id, state, COALESCE(host, ''), pid, pgid,
 		        COALESCE(endpoint, ''), COALESCE(token, '')
-		 FROM launches WHERE run_id = ? AND state IN ('intent', 'registered') ORDER BY intent_at`, runID)
+		 FROM launches WHERE run_id = ? AND `+openLaunch+` ORDER BY intent_at`, runID)
 	if err != nil {
 		return nil, err
 	}
