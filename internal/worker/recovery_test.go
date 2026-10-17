@@ -138,8 +138,8 @@ func (b *committedBuild) recoverAndFail(t *testing.T, o ResumeOptions) int {
 // failedImplement is an implement run, claimed with its worktree recorded at
 // base and active, ready for a test to end it.
 type failedImplement struct {
-	db                    *trace.DB
-	dataRoot, repo, id    string
+	db                   *trace.DB
+	dataRoot, repo, id   string
 	attempt, token, base string
 }
 
@@ -347,16 +347,7 @@ func TestRepeatedRecoveryKeepsPublication(t *testing.T) {
 	dir := ReportDir(b.dataRoot, b.id, 0)
 	os.MkdirAll(dir, 0o700)
 	os.WriteFile(filepath.Join(dir, "pr.json"), []byte(`{"url":"https://x/pull/1","draft":true,"validation":"unresolved"}`), 0o644)
-	rec, err := PrepareRecovery(b.db, b.dataRoot, b.id, "first", ResumeOptions{}, noCapture)
-	must(t, err)
-	n, err := b.db.Recover(b.id, rec)
-	must(t, err)
-	attempt, token := trace.NewAttemptID(b.id), trace.NewClaimToken()
-	must(t, b.db.Reserve(b.id, attempt, ""))
-	if _, err := b.db.Claim(attempt, token, "host", os.Getpid(), time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	must(t, b.db.Complete(b.id, attempt, token, trace.StatusFail, "planning failed"))
+	n := b.recoverAndFail(t, ResumeOptions{})
 
 	s, err := b.prepare(t, ResumeOptions{})
 	if err != nil {

@@ -37,15 +37,21 @@ const scoutReply = `{"type":"message_end","message":{"role":"assistant","stopRea
 
 // fakePi puts a stub agent on PATH. Production resolves pi the same way, so
 // this is the only seam a worker test needs.
+func stubBin(t *testing.T, dir, name, script string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func fakePi(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\ncat " + filepath.Join(dir, "reply.jsonl") + "\n"
 	write(t, filepath.Join(dir, "reply.jsonl"), scoutReply+"\n")
-	write(t, filepath.Join(dir, "pi"), script)
-	if err := os.Chmod(filepath.Join(dir, "pi"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	stubBin(t, dir, "pi", script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -334,11 +340,8 @@ func TestWritingRunSupervisesEveryLaunch(t *testing.T) {
 	fakePi(t)
 	stub := t.TempDir()
 	parents := filepath.Join(stub, "parents")
-	write(t, filepath.Join(stub, "pi"), "#!/bin/sh\nps -o command= -p $PPID >> "+parents+"\nexec "+
+	stubBin(t, stub, "pi", "#!/bin/sh\nps -o command= -p $PPID >> "+parents+"\nexec "+
 		filepath.Join(strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0], "pi")+" \"$@\"\n")
-	if err := os.Chmod(filepath.Join(stub, "pi"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
 	dir, dataRoot := repo(t), t.TempDir()
 	db, runID, attemptID := queue(t, dataRoot, dir, "build")

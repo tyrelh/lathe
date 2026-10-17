@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
@@ -32,16 +31,7 @@ func TestSubmitRecoveryRefusals(t *testing.T) {
 	}
 	active := submit()
 	ok := submit()
-	attempt, token := trace.NewAttemptID(ok), trace.NewClaimToken()
-	if err := db.Reserve(ok, attempt, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Claim(attempt, token, "host", os.Getpid(), time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Complete(ok, attempt, token, trace.StatusOK, ""); err != nil {
-		t.Fatal(err)
-	}
+	finish(t, db, ok, trace.StatusOK)
 	for name, tc := range map[string]struct {
 		id, guidance   string
 		o              worker.ResumeOptions
