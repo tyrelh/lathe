@@ -205,7 +205,7 @@ func revisionBrief(request string, rev *run.Revision, repo string) string {
 	b.WriteString(request)
 
 	var plan PlanOutput
-	if dir := latest(rev.Prior, "plan.json", &plan); dir != "" && plan.Summary != nil && plan.Steps != nil && plan.Files != nil && plan.Risks != nil {
+	if dir := latest(rev.Prior, "plan.json", &plan); dir != "" && plan.Printable() {
 		b.WriteString("\n### Previous plan\n")
 		printPlan(&b, &plan)
 	}

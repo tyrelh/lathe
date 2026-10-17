@@ -99,7 +99,7 @@ func recoveryContext(r *run.Run, c *code) string {
 	fmt.Fprintf(&b, "\n### Engineer guidance\n\n%s\n", rec.Guidance)
 
 	var plan PlanOutput
-	if latest(rec.Prior, "plan.json", &plan) != "" && plan.Summary != nil && plan.Steps != nil && plan.Files != nil && plan.Risks != nil {
+	if latest(rec.Prior, "plan.json", &plan) != "" && plan.Printable() {
 		b.WriteString("\n### Prior plan\n")
 		printPlan(&b, &plan)
 	}

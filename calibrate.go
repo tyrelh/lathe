@@ -167,8 +167,7 @@ func sample(db *trace.DB, dataRoot string, row trace.Row, agent string) (calibra
 	} else {
 		var plan workflow.PlanOutput
 		b, err := os.ReadFile(filepath.Join(dir, "plan.json"))
-		if err != nil || json.Unmarshal(b, &plan) != nil ||
-			plan.Summary == nil || plan.Steps == nil || plan.Files == nil || plan.Risks == nil {
+		if err != nil || json.Unmarshal(b, &plan) != nil || !plan.Printable() {
 			return c, false, nil
 		}
 		c.state = workflow.BuildRouteState(c.request, &plan)
