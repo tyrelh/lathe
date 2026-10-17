@@ -469,10 +469,6 @@ func TestSubmitRun(t *testing.T) {
 	}
 }
 
-// The run page's two writes: revise and cancel. They carry New run's
-// protections, go through the actions handed in, and map refusals to
-// statuses the page can explain. The run payload carries the iterations and
-// the models each ran with.
 // The recovery route keeps the browser protections, requires guidance,
 // passes it to the shared submission and maps refusals to a conflict.
 func TestResumeRoute(t *testing.T) {
@@ -532,6 +528,10 @@ func TestResumeRoute(t *testing.T) {
 	}
 }
 
+// The run page's two writes: revise and cancel. They carry New run's
+// protections, go through the actions handed in, and map refusals to
+// statuses the page can explain. The run payload carries the iterations and
+// the models each ran with.
 func TestReviseAndCancelRoutes(t *testing.T) {
 	root := t.TempDir()
 	db, err := trace.Open(root)
