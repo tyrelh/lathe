@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 )
 
@@ -137,10 +137,7 @@ func Residual(repo, base, patch, commit, dest string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return false, err
-	}
-	return true, os.WriteFile(dest, diff, 0o600)
+	return true, config.WriteFileAtomic(dest, diff)
 }
 
 // treeOf is commit's tree.
