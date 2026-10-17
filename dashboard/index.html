@@ -532,7 +532,8 @@ let view = route(), viewHash = '', viewAt = 0;
 
 const esc = s => String(s ?? '').replace(/[<&"']/g, c => ({'<':'&lt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
 // queued and starting are live states, not failures: a run that has not
-// executed yet must not read as one that went wrong.
+// executed yet must not read as one that went wrong. Mirrors
+// trace.StatusQueued, StatusStarting and StatusRunning.
 const live = s => s === 'running' || s === 'queued' || s === 'starting';
 const cls = s => s === 'ok' || s === 'success' ? 'ok' : live(s) ? 'running' : 'fail';
 const time = s => (s || '').slice(11, 19);
@@ -1534,12 +1535,10 @@ async function detail(current) {
   $('head').innerHTML = esc(r.request);
   $('run-total').textContent = money(r.cost);
   // The form lives in the scaffold, so a draft survives every poll; only
-  // whether it is offered changes. A build whose latest iteration succeeded is
-  // the only run that may qualify, and the server checks the rest.
-  $('revise').hidden = !(r.workflow === 'build' && r.status === 'ok');
-  // A failed, cancelled or lost latest iteration may be resumed; the server
-  // enforces the rest.
-  $('resume').hidden = !['fail', 'cancelled', 'lost'].includes(r.status);
+  // whether it is offered changes. The server says which runs may qualify,
+  // and checks the rest on submission.
+  $('revise').hidden = !d.revisable;
+  $('resume').hidden = !d.recoverable;
   $('run-cancel').hidden = !live(r.status);
   const eventBody = $('events-body');
   const visibleEvents = activeTab === 'events' && eventBody.clientHeight > 0;

@@ -617,6 +617,46 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 	}
 }
 
+// The run payload says whether the run page may offer revise and resume, by
+// workflow and latest status.
+func TestRunEligibility(t *testing.T) {
+	cases := []struct {
+		workflow, status       string
+		revisable, recoverable bool
+	}{
+		{"build", trace.StatusOK, true, false},
+		{"scout", trace.StatusOK, false, false},
+		{"build", trace.StatusRunning, false, false},
+		{"build", trace.StatusFail, false, true},
+		{"build", trace.StatusCancelled, false, true},
+		{"plan", trace.StatusLost, false, true},
+	}
+	ids := make([]string, len(cases))
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		for i, c := range cases {
+			id, attempt, token := claimed(t, db, c.workflow, fmt.Sprintf("/repos/%d", i), "greet")
+			if c.status != trace.StatusRunning {
+				if err := db.Complete(id, attempt, token, c.status, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ids[i] = id
+		}
+	})
+	h := handler(ro, "dev", Actions{}, Sources{})
+	for i, c := range cases {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local("GET", "/api/runs/"+ids[i], nil))
+		var d struct{ Revisable, Recoverable bool }
+		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.Revisable != c.revisable || d.Recoverable != c.recoverable {
+			t.Errorf("%s %s: revisable %v, recoverable %v", c.workflow, c.status, d.Revisable, d.Recoverable)
+		}
+	}
+}
+
 // The run payload says where a writing iteration ran and where its result is
 // kept, and the run still counts toward its original repository rather than
 // the worktree it ran in.

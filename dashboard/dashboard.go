@@ -286,8 +286,8 @@ func projectRuns(db *trace.DB) http.HandlerFunc {
 	}
 }
 
-// runDetail answers a run with its phases, iterations and the events after
-// the after cursor.
+// runDetail answers a run with its phases, iterations, the events after the
+// after cursor, and whether the run page may offer revise and resume.
 func runDetail(db *trace.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -318,7 +318,11 @@ func runDetail(db *trace.DB) http.HandlerFunc {
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), eventPage)
-		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events, "iterations": views}, err)
+		writeJSON(w, map[string]any{
+			"run": run, "phases": phases, "events": events, "iterations": views,
+			"revisable":   run.Workflow == workflow.NameBuild && trace.Revisable(run) == nil,
+			"recoverable": trace.Recoverable(run) == nil,
+		}, err)
 	}
 }
 
