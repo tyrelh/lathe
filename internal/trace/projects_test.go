@@ -8,11 +8,7 @@ import (
 )
 
 func TestProjectsAndRunPages(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := open(t)
 	for i := 0; i < 12; i++ {
 		repo := fmt.Sprintf("/one/p%02d", i)
 		if i == 1 {

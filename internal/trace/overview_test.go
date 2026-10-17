@@ -8,11 +8,7 @@ import (
 
 // An empty database is a page, not an error: zero totals and empty rankings.
 func TestOverviewEmpty(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := open(t)
 
 	o, err := db.Overview()
 	if err != nil {
@@ -30,11 +26,7 @@ func TestOverviewEmpty(t *testing.T) {
 // are global and deterministic, and a run that used several models is counted
 // once in the run total and once under each model it used.
 func TestOverviewCoversEveryRun(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := open(t)
 
 	// More than the 50 /api/runs would return, so a total taken from that list
 	// would come out wrong. Each run has three phases on one model and every

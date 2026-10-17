@@ -109,7 +109,6 @@ func TestWriteFakeRun(t *testing.T) {
 	}
 }
 
-// A phase belonging to no run is a bug in the caller, and the schema says so.
 // Many connections and processes opening a fresh database at once all
 // initialize it: switching to WAL and migrating wait out each other's locks
 // instead of failing with "database is locked".
@@ -224,12 +223,9 @@ func TestContendedIsOnlyLockContention(t *testing.T) {
 	}
 }
 
+// A phase belonging to no run is a bug in the caller, and the schema says so.
 func TestPhaseRequiresItsRun(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := open(t)
 	if err := db.PhaseUpsert(&Phase{ID: "p1", RunID: "nope", Name: "scout"}); err == nil {
 		t.Fatal("accepted a phase with no run")
 	}

@@ -67,11 +67,7 @@ func one[T any](t *testing.T, db *DB, query string, args ...any) T {
 // retry of a response already committed charges nothing further — including
 // leaving no second usage event behind for the detail view to double count.
 func TestRecordUsageIsPerResponseAndIdempotent(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := open(t)
 	phase := seed(t, db, "r1")
 
 	u := Usage{RunID: "r1", PhaseID: phase, Agent: "builder", Attempt: 0, Seq: 1,
@@ -111,17 +107,13 @@ func TestRecordUsageIsPerResponseAndIdempotent(t *testing.T) {
 // record, no run total. The failure is injected by taking the usage table out
 // from under the transaction after its event insert has already succeeded.
 func TestRecordUsageIsAllOrNothing(t *testing.T) {
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := open(t)
 	phase := seed(t, db, "r1")
 
 	if _, err := db.sql.Exec(`ALTER TABLE usage RENAME TO usage_hidden`); err != nil {
 		t.Fatal(err)
 	}
-	err = db.RecordUsage(Usage{RunID: "r1", PhaseID: phase, Seq: 1, Tokens: 100, Cost: 0.01})
+	err := db.RecordUsage(Usage{RunID: "r1", PhaseID: phase, Seq: 1, Tokens: 100, Cost: 0.01})
 	if err == nil {
 		t.Fatal("a failed usage write reported success")
 	}
