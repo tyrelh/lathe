@@ -54,6 +54,14 @@ The `validate` node: the tester and the code reviewers run at once against the s
 **Worker**:
 One member of a validation group. A worker that fails to produce a usable result is retried up to twice against the same code; a report with findings, or a red suite, is a result and is not retried.
 
+**Builder**:
+The agent that writes the files named by the plan and carries out changes requested by the adjudicator.
+_Avoid_: implementer
+
+**Plan-reviewer**:
+The agent that checks a plan against the repository before the builder receives its write scope.
+_Avoid_: reviewer
+
 **Code reviewer**:
 A read-only worker that reports findings on an implementation from its own angle: correctness, security, unnecessary complexity, or an adversarial attempt to break the change. Angles overlap on purpose; the adjudicator weighs them.
 _Avoid_: reviewer (ambiguous with the plan-reviewer)
