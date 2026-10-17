@@ -315,8 +315,8 @@ func tiers(fc fileConfig) []config.TierConfig {
 	return out
 }
 
-// readText reads a prompt file under home and refuses a missing or blank one.
-func readText(home, rel string) (config.File, error) {
+// readFile reads rel under home and refuses a missing one.
+func readFile(home, rel string) (config.File, error) {
 	path := filepath.Join(home, filepath.FromSlash(rel))
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -325,10 +325,19 @@ func readText(home, rel string) (config.File, error) {
 	if err != nil {
 		return config.File{}, fmt.Errorf("%s: %w", path, err)
 	}
-	if strings.TrimSpace(string(b)) == "" {
-		return config.File{}, invalidf(path, "empty")
-	}
 	return config.File{Path: path, Body: string(b)}, nil
+}
+
+// readText reads a prompt file under home and refuses a missing or blank one.
+func readText(home, rel string) (config.File, error) {
+	f, err := readFile(home, rel)
+	if err != nil {
+		return f, err
+	}
+	if strings.TrimSpace(f.Body) == "" {
+		return config.File{}, invalidf(f.Path, "empty")
+	}
+	return f, nil
 }
 
 // Load reads every known agent's files and the routing instructions from home
@@ -341,19 +350,15 @@ func Load(home string) (config.Config, error) {
 	allTiers := map[string][]config.TierConfig{}
 	for _, p := range config.Permissions {
 		key := config.AgentFile(p.Name, "config.yaml")
-		path := filepath.Join(home, filepath.FromSlash(key))
-		b, err := os.ReadFile(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			return config.Config{}, invalidf(path, "missing")
-		}
-		if err != nil {
-			return config.Config{}, fmt.Errorf("%s: %w", path, err)
-		}
-		fc, err := parseConfig(p.Name, path, b)
+		f, err := readFile(home, key)
 		if err != nil {
 			return config.Config{}, err
 		}
-		files[key] = config.File{Path: path, Body: string(b)}
+		fc, err := parseConfig(p.Name, f.Path, []byte(f.Body))
+		if err != nil {
+			return config.Config{}, err
+		}
+		files[key] = f
 		for _, role := range []string{"system.md", "user.md"} {
 			k := config.AgentFile(p.Name, role)
 			f, err := readText(home, k)
