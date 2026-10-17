@@ -646,6 +646,21 @@ func ReportDir(dataRoot, runID string, iteration int) string {
 	return dir
 }
 
+// priors returns the run's iterations before row.Iteration as run.Prior.
+func priors(db *trace.DB, dataRoot string, row trace.Row) ([]run.Prior, error) {
+	its, err := db.Iterations(row.ID)
+	if err != nil {
+		return nil, err
+	}
+	var out []run.Prior
+	for _, it := range its {
+		if it.N < row.Iteration {
+			out = append(out, run.Prior{Iteration: it.N, Request: it.Request, Dir: ReportDir(dataRoot, row.ID, it.N)})
+		}
+	}
+	return out, nil
+}
+
 // Evidence is what a run's records establish about the pull request it
 // opened: its URL from pr.json, and the branch and commit the run row says it
 // shipped. A run from before revisions qualifies when its records have all
@@ -695,17 +710,11 @@ func revisionOf(db *trace.DB, dataRoot string, row trace.Row, repo string, out i
 	if _, err := workspace.FetchBranch(repo, pr.Base); err != nil {
 		return nil, fmt.Errorf("fetching %s, the pull request's base: %w; nothing was changed", pr.Base, err)
 	}
-	iterations, err := db.Iterations(row.ID)
+	prior, err := priors(db, dataRoot, row)
 	if err != nil {
 		return nil, err
 	}
-	rev := &run.Revision{PR: ev.PR, Branch: ev.Branch, Base: pr.Base, Head: ev.Commit}
-	for _, it := range iterations {
-		if it.N < row.Iteration {
-			rev.Prior = append(rev.Prior, run.Prior{Iteration: it.N, Request: it.Request, Dir: ReportDir(dataRoot, row.ID, it.N)})
-		}
-	}
-	return rev, nil
+	return &run.Revision{PR: ev.PR, Branch: ev.Branch, Base: pr.Base, Head: ev.Commit, Prior: prior}, nil
 }
 
 // AttemptDir is where one attempt's raw stream, guard, scope and Pi session
