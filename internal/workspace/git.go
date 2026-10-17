@@ -54,10 +54,15 @@ func WorkingDiff(repo string, limit int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(patch) > limit {
-		patch = patch[:limit] + fmt.Sprintf("\n… cut at %d bytes; read the files for the rest\n", limit)
+	return cutPatch(patch, limit), nil
+}
+
+// cutPatch is patch cut to limit bytes, with a marker saying where it was cut.
+func cutPatch(patch string, limit int) string {
+	if len(patch) <= limit {
+		return patch
 	}
-	return patch, nil
+	return patch[:limit] + fmt.Sprintf("\n… cut at %d bytes; read the files for the rest\n", limit)
 }
 
 // Checkout creates branch at HEAD and switches to it; it fails when the name is
@@ -154,8 +159,5 @@ func BranchDiff(repo, base string, limit int) (stat, patch string, err error) {
 	if patch, err = git(repo, "diff", rng); err != nil {
 		return "", "", fmt.Errorf("git diff %s: %w", rng, err)
 	}
-	if len(patch) > limit {
-		patch = patch[:limit] + fmt.Sprintf("\n… cut at %d bytes; read the files for the rest\n", limit)
-	}
-	return stat, patch, nil
+	return stat, cutPatch(patch, limit), nil
 }
