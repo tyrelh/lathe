@@ -11,12 +11,11 @@ import (
 )
 
 // CreatePR opens a pull request from branch, already pushed, and returns its
-// URL. The body goes through a temporary file rather than an argument: it is
-// long, it has newlines, and it is text an agent wrote.
-//
-// The temporary file lives outside the repository, like everything else lathe
-// writes about a repository. A draft is for work lathe could not accept.
+// URL. A draft is for work lathe could not accept.
 func CreatePR(repo, branch, title, body string, draft bool) (string, error) {
+	// The body goes through a file rather than an argument: it is long, it has
+	// newlines, and it is text an agent wrote. The file lives outside the
+	// repository, like everything else lathe writes about a repository.
 	f, err := os.CreateTemp("", "lathe-pr-*.md")
 	if err != nil {
 		return "", err
