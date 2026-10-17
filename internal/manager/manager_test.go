@@ -498,13 +498,13 @@ func TestLostRunStopsLaunches(t *testing.T) {
 			if _, err := db.Claim(row.AttemptID, trace.NewClaimToken(), host, 424242, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.LaunchIntent(id, row.AttemptID, "never", []string{"git"}); err != nil {
+			if err := db.RecordLaunchIntent(id, row.AttemptID, "never", []string{"git"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.LaunchIntent(id, row.AttemptID, "admitted", []string{"pi"}); err != nil {
+			if err := db.RecordLaunchIntent(id, row.AttemptID, "admitted", []string{"pi"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.LaunchRegistered("admitted", host, 777, 777, "127.0.0.1:1", "tok"); err != nil {
+			if err := db.RegisterLaunch("admitted", host, 777, 777, "127.0.0.1:1", "tok"); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.ReserveCheckout("/wt", host, id); err != nil {
@@ -534,7 +534,7 @@ func TestLostRunStopsLaunches(t *testing.T) {
 				t.Fatalf("open %+v held %v", open, held)
 			}
 			// A late registration of the cancelled intent is refused.
-			if err := db.LaunchRegistered("never", host, 1, 1, "x", "y"); err == nil {
+			if err := db.RegisterLaunch("never", host, 1, 1, "x", "y"); err == nil {
 				t.Fatal("a revoked intent registered")
 			}
 		})
@@ -556,10 +556,10 @@ func TestStopLaunchesKeepsTheLiveAttempt(t *testing.T) {
 	if _, err := db.Claim(row.AttemptID, trace.NewClaimToken(), host, 424242, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.LaunchIntent(id, row.AttemptID, "live", []string{"pi"}); err != nil {
+	if err := db.RecordLaunchIntent(id, row.AttemptID, "live", []string{"pi"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.LaunchRegistered("live", host, 777, 777, "127.0.0.1:1", "tok"); err != nil {
+	if err := db.RegisterLaunch("live", host, 777, 777, "127.0.0.1:1", "tok"); err != nil {
 		t.Fatal(err)
 	}
 

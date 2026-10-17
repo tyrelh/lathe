@@ -744,9 +744,9 @@ type Launch struct {
 	Token     string
 }
 
-// LaunchIntent records that attemptID is about to start a supervised
+// RecordLaunchIntent records that attemptID is about to start a supervised
 // subprocess. It lands only while the attempt owns the run.
-func (d *DB) LaunchIntent(runID, attemptID, launchID string, argv []string) error {
+func (d *DB) RecordLaunchIntent(runID, attemptID, launchID string, argv []string) error {
 	b, _ := json.Marshal(argv)
 	res, err := d.sql.Exec(
 		`INSERT INTO launches (launch_id, run_id, attempt_id, state, argv, intent_at)
@@ -758,10 +758,10 @@ func (d *DB) LaunchIntent(runID, attemptID, launchID string, argv []string) erro
 	return claimed(res)
 }
 
-// LaunchRegistered records a started, not yet admitted, supervisor. It lands
+// RegisterLaunch records a started, not yet admitted, supervisor. It lands
 // only for an intent whose attempt still owns its run, so a run settled or
 // an intent cancelled meanwhile is never admitted: that is ErrLaunchRevoked.
-func (d *DB) LaunchRegistered(launchID, host string, pid, pgid int, endpoint, token string) error {
+func (d *DB) RegisterLaunch(launchID, host string, pid, pgid int, endpoint, token string) error {
 	res, err := d.sql.Exec(
 		`UPDATE launches SET state = 'registered', host = ?, pid = ?, pgid = ?, endpoint = ?, token = ?, registered_at = ?
 		 WHERE launch_id = ? AND state = 'intent'
@@ -779,8 +779,8 @@ func (d *DB) LaunchRegistered(launchID, host string, pid, pgid int, endpoint, to
 	return nil
 }
 
-// LaunchDrainedAt records that a launch's process group has stopped.
-func (d *DB) LaunchDrainedAt(launchID string) error {
+// DrainLaunch records that a launch's process group has stopped.
+func (d *DB) DrainLaunch(launchID string) error {
 	_, err := d.sql.Exec(
 		`UPDATE launches SET state = 'drained', drained_at = ? WHERE launch_id = ? AND `+openLaunch,
 		nowUTC(), launchID)

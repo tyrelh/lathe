@@ -443,14 +443,14 @@ type launches struct {
 }
 
 func (l launches) Intent(id string, argv []string) error {
-	return l.db.LaunchIntent(l.runID, l.attemptID, id, argv)
+	return l.db.RecordLaunchIntent(l.runID, l.attemptID, id, argv)
 }
 
 func (l launches) Register(id string, reg process.Registration) error {
-	return l.db.LaunchRegistered(id, reg.Host, reg.PID, reg.PGID, reg.Endpoint, reg.Token)
+	return l.db.RegisterLaunch(id, reg.Host, reg.PID, reg.PGID, reg.Endpoint, reg.Token)
 }
 
-func (l launches) Drained(id string) error { return l.db.LaunchDrainedAt(id) }
+func (l launches) Drained(id string) error { return l.db.DrainLaunch(id) }
 
 // Settle preserves what an iteration's worktree holds and removes it. With
 // keepPatch, everything beyond the base is saved as result.patch in the
