@@ -185,9 +185,7 @@ func (g *Graph) parallel(e *Entry, workers []Worker, states []*node) (GroupResul
 		}
 	}
 
-	r.mu.Lock()
-	r.frozen = true
-	r.mu.Unlock()
+	thaw := r.freeze()
 	errs := make([]error, len(workers))
 	var wg sync.WaitGroup
 	for i := range workers {
@@ -198,9 +196,7 @@ func (g *Graph) parallel(e *Entry, workers []Worker, states []*node) (GroupResul
 		}()
 	}
 	wg.Wait()
-	r.mu.Lock()
-	r.frozen = false
-	r.mu.Unlock()
+	thaw()
 
 	// A cancelled run has nothing worth judging, and the phases that saw it
 	// have already failed the run.
@@ -215,19 +211,8 @@ func (g *Graph) parallel(e *Entry, workers []Worker, states []*node) (GroupResul
 	if !r.clean {
 		return res, nil
 	}
-	// Evidence first, cleanup second: the sweep reverts a changed file that
-	// nobody accepted, and after it the change would be gone.
-	mutated, err := permit.Mutations(r.Repo, before)
-	if err != nil {
-		return res, err
-	}
-	res.Mutated = mutated
-	if len(mutated) > 0 {
-		e.Log("mutated", strings.Join(mutated, "\n"))
-	}
-	r.mu.Lock()
-	_, err = r.sweep(e.Handle)
-	r.mu.Unlock()
+	var err error
+	res.Mutated, err = r.settle(e.Handle, before)
 	return res, err
 }
 
