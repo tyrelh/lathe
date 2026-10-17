@@ -20,6 +20,7 @@ import (
 	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
+	"github.com/tyrelh/lathe/internal/workflow"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
@@ -386,21 +387,14 @@ func recoveryStub(t *testing.T) string {
 	os.WriteFile(filepath.Join(d, "tester-env"), []byte(agentReply(t, map[string]any{"summary": "discovered",
 		"command": "missing-tool", "exit_code": 127, "output": "not found", "failures": []string{}, "coverage": "none",
 		"artifacts": []string{}})), 0o644)
-	pi := fmt.Sprintf(`#!/bin/sh
-d=%q
-if [ "$1 $2" = "auth check" ]; then printf '{"provider":"%%s","status":"ready","authType":"api_key"}\n' "$4"; exit 0; fi
-a=unknown
-for name in planner plan-reviewer brancher builder tester code-review-general code-review-security code-review-slop code-review-adversarial adjudicator committer pr-author; do
-  case "$*" in *"You are the $name "*) a=$name; break ;; esac
-done
-if [ "$a" = builder ]; then
+	pi := piRouter(d, `if [ "$a" = builder ]; then
   n=0; [ ! -f "$d/builds" ] || n=$(cat "$d/builds"); echo $((n+1)) > "$d/builds"
-  printf 'hello world %%s\n' "$n" > hello.txt
+  printf 'hello world %s\n' "$n" > hello.txt
   cat "$d/builder"; exit 0
 fi
 if [ "$a" = tester ] && [ -f "$d/tester-fails" ] && [ ! -f "$d/tested" ]; then touch "$d/tested"; cat "$d/tester-env"; exit 0; fi
 cat "$d/$a"
-`, d)
+`)
 	gh := fmt.Sprintf(`#!/bin/sh
 d=%q
 head=""; prev=""
@@ -529,6 +523,17 @@ func TestRecoverPublishRevise(t *testing.T) {
 // buildStub is a directory holding a pi that answers every build agent and
 // holds each builder until two are building, and a gh that records the
 // branch each pull request is opened from.
+func piRouter(dir, body string) string {
+	return fmt.Sprintf(`#!/bin/sh
+d=%q
+if [ "$1 $2" = "auth check" ]; then printf '{"provider":"%%s","status":"ready","authType":"api_key"}\n' "$4"; exit 0; fi
+a=unknown
+for name in %s; do
+  case "$*" in *"You are the $name "*) a=$name; break ;; esac
+done
+`, dir, strings.Join(workflow.Agents["build"], " ")) + body
+}
+
 func buildStub(t *testing.T) string {
 	t.Helper()
 	d := t.TempDir()
@@ -545,20 +550,15 @@ func buildStub(t *testing.T) string {
 		"committer": {"summary": "conventional", "message": "feat: greet the world", "artifacts": []string{}},
 		"pr-author": {"summary": "filled in", "title": "feat: greet the world", "body": "Greets the world.\n", "artifacts": []string{}},
 	}
-	for _, name := range []string{"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial"} {
-		replies[name] = map[string]any{"summary": "reviewed", "findings": []string{}, "artifacts": []string{}}
+	for _, name := range workflow.Agents["build"] {
+		if strings.HasPrefix(name, "code-review-") {
+			replies[name] = map[string]any{"summary": "reviewed", "findings": []string{}, "artifacts": []string{}}
+		}
 	}
 	for name, report := range replies {
 		os.WriteFile(filepath.Join(d, name), []byte(agentReply(t, report)), 0o644)
 	}
-	pi := fmt.Sprintf(`#!/bin/sh
-d=%q
-if [ "$1 $2" = "auth check" ]; then printf '{"provider":"%%s","status":"ready","authType":"api_key"}\n' "$4"; exit 0; fi
-a=unknown
-for name in planner plan-reviewer brancher builder tester code-review-general code-review-security code-review-slop code-review-adversarial adjudicator committer pr-author; do
-  case "$*" in *"You are the $name "*) a=$name; break ;; esac
-done
-if [ "$a" = builder ]; then
+	pi := piRouter(d, `if [ "$a" = builder ]; then
   pwd -P >> "$d/builder-dirs"
   printf 'hello world\n' > hello.txt
   touch "$d/in.$$"; i=0
@@ -566,7 +566,7 @@ if [ "$a" = builder ]; then
   [ $i -lt 600 ] || touch "$d/serial"
 fi
 cat "$d/$a"
-`, d)
+`)
 	gh := fmt.Sprintf(`#!/bin/sh
 d=%q
 if [ "$1 $2" = "pr view" ]; then

@@ -80,8 +80,8 @@ echo %[2]q
 
 	onPath(t, dir, fmt.Sprintf(`#!/bin/sh
 d=%[1]q
-a=pr-author
-for name in planner plan-reviewer brancher builder tester code-review-general code-review-security code-review-slop code-review-adversarial adjudicator committer; do
+a=unknown
+for name in %[3]s; do
   case "$*" in *"You are the $name "*|*"You are the $name."*|*"You are the $name,"*) a=$name; break ;; esac
 done
 n=0
@@ -100,7 +100,7 @@ if [ "$a" = adjudicator ] && [ "$(ls "$d" | grep -c '^done\.')" -lt %[2]d ]; the
 [ ! -f "$d/$a.sh" ] || . "$d/$a.sh"
 if [ -f "$d/$a.$n" ]; then cat "$d/$a.$n"; else cat "$d/$a"; fi
 case $a in tester|code-review-*) touch "$d/done.$a" ;; esac
-`, dir, len(validators)))
+`, dir, len(validators), strings.Join(Agents["build"], " ")))
 	return dir
 }
 
