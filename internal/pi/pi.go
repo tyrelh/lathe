@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/tyrelh/lathe/internal/process"
 )
@@ -204,21 +203,11 @@ func CheckAuth(ctx context.Context, o Options) error {
 // command returns a Pi invocation in o.Dir with o.Env whose cancellation kills
 // its whole process group.
 func command(ctx context.Context, o Options, bin string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := process.GroupCommand(ctx, bin, args...)
 	cmd.Dir = o.Dir
 	if len(o.Env) > 0 {
 		cmd.Env = append(os.Environ(), o.Env...)
 	}
-	// Pi's own tool calls are children of Pi, so cancellation has to reach a
-	// process group: killing Pi alone leaves them running, holding the pipe
-	// and the repository open after the run has stopped.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	// A buffered stdout or stderr is copied through a pipe that Pi's own tool
-	// children inherit. Without a delay, Wait blocks on that copy until the
-	// last grandchild exits — which is exactly the case a cancellation is
-	// trying to escape.
-	cmd.WaitDelay = time.Second
 	return cmd
 }
 

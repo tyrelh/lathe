@@ -5,11 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
-	"syscall"
-	"time"
+
+	"github.com/tyrelh/lathe/internal/process"
 )
 
 var (
@@ -53,11 +52,8 @@ func FetchIssue(ctx context.Context, repo, ref string) (Issue, error) {
 	if err != nil {
 		return issue, err
 	}
-	cmd := exec.CommandContext(ctx, "gh", "issue", "view", ref, "--json", "number,title,body,url")
+	cmd := process.GroupCommand(ctx, "gh", "issue", "view", ref, "--json", "number,title,body,url")
 	cmd.Dir = repo
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
