@@ -442,6 +442,53 @@ type Row struct {
 	Spec []byte `json:"-"`
 }
 
+// runColumns is the one column list every run query selects, so Row and the
+// scanner cannot drift apart across every place runs are read.
+const runColumns = `SELECT run_id, workflow, repo, request, status,
+	COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(attempt_id, ''),
+	COALESCE(reason, ''), COALESCE(submitted_at, ''), COALESCE(started_at, ''),
+	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, ''),
+	iteration, COALESCE(activity_at, '')`
+
+// queryer is a *sql.DB or *sql.Tx.
+type queryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// getRow reads one run through q. A missing run is sql.ErrNoRows.
+func getRow(q queryer, runID string) (Row, error) {
+	rows, err := q.Query(runColumns+` FROM runs WHERE run_id = ?`, runID)
+	if err != nil {
+		return Row{}, err
+	}
+	out, err := scanRows(rows)
+	if err != nil {
+		return Row{}, err
+	}
+	if len(out) == 0 {
+		return Row{}, sql.ErrNoRows
+	}
+	return out[0], nil
+}
+
+func scanRows(rows *sql.Rows) ([]Row, error) {
+	defer rows.Close()
+	out := []Row{}
+	for rows.Next() {
+		var r Row
+		var spec string
+		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status,
+			&r.Branch, &r.Commit, &r.AttemptID, &r.Reason, &r.Submitted, &r.Started,
+			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity); err != nil {
+			return nil, err
+		}
+		r.Spec = []byte(spec)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // Recent returns the n most recently active runs across every repo — the
 // whole point of one global database. A revised run moves to the top.
 func (d *DB) Recent(n int) ([]Row, error) {
@@ -454,6 +501,8 @@ func (d *DB) Recent(n int) ([]Row, error) {
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
+
+func until(d time.Duration) string { return time.Now().UTC().Add(d).Format(time.RFC3339) }
 
 func nullIfEmpty(s string) any {
 	if s == "" {
