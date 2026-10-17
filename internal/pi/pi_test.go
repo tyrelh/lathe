@@ -66,7 +66,7 @@ func supervisor(l *launches) *process.Runner {
 	return &process.Runner{Bin: os.Args[0], Registrar: l}
 }
 
-func authStub(t *testing.T, body string) string {
+func stubPi(t *testing.T, body string) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "pi")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
@@ -95,7 +95,7 @@ func TestCheckAuth(t *testing.T) {
 		{"extra secret", `{"provider":"test","status":"ready","credentials":"SECRET"}`, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin := authStub(t, fmt.Sprintf("echo 'SECRET' >&2\ncat <<'JSON'\n%s\nJSON\nexit %d\n", tc.output, tc.exit))
+			bin := stubPi(t, fmt.Sprintf("echo 'SECRET' >&2\ncat <<'JSON'\n%s\nJSON\nexit %d\n", tc.output, tc.exit))
 			err := CheckAuth(context.Background(), Options{Bin: bin, Provider: "test"})
 			if (err == nil) != tc.ok {
 				t.Fatalf("error = %v; success = %v", err, tc.ok)
@@ -110,7 +110,7 @@ func TestCheckAuth(t *testing.T) {
 func TestCheckAuthInvocation(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LATHE_AUTH_TEST", "inherited")
-	bin := authStub(t, `printf '%s\n' "$@" > args
+	bin := stubPi(t, `printf '%s\n' "$@" > args
 pwd > cwd
 printf '%s' "$LATHE_AUTH_TEST" > env
 printf '{"provider":"test","status":"ready","authType":"oauth"}\n'
@@ -142,7 +142,7 @@ printf '{"provider":"test","status":"ready","authType":"oauth"}\n'
 
 func TestCheckAuthCancellationKillsDescendants(t *testing.T) {
 	dir := t.TempDir()
-	bin := authStub(t, "(sleep 0.4; echo late > late) &\nwait\n")
+	bin := stubPi(t, "(sleep 0.4; echo late > late) &\nwait\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -161,9 +161,20 @@ func TestCheckAuthCancellationKillsDescendants(t *testing.T) {
 	}
 }
 
+func samplePath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join("..", "..", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const sampleEvents = 356
+
 func openSample(t *testing.T, name string) *os.File {
 	t.Helper()
-	f, err := os.Open(filepath.Join("..", "..", "testdata", name))
+	f, err := os.Open(samplePath(t, name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,8 +196,8 @@ func TestScanSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Events != 356 || res.Malformed != 0 {
-		t.Fatalf("events = %d, malformed = %d; want 356, 0", res.Events, res.Malformed)
+	if res.Events != sampleEvents || res.Malformed != 0 {
+		t.Fatalf("events = %d, malformed = %d; want %d, 0", res.Events, res.Malformed, sampleEvents)
 	}
 	if res.Tokens != 1094+1188+2925 {
 		t.Fatalf("tokens = %d; want %d (the sum, not the last value)", res.Tokens, 1094+1188+2925)
@@ -214,7 +225,7 @@ func TestScanSample(t *testing.T) {
 		}
 	}
 	// The raw record is the whole stream, byte for byte.
-	want, err := os.ReadFile(filepath.Join("..", "..", "testdata", "pi-sample.jsonl"))
+	want, err := os.ReadFile(samplePath(t, "pi-sample.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,10 +265,7 @@ func TestRunHugeToolResult(t *testing.T) {
 	if err := os.WriteFile(line, append(big, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stub := filepath.Join(dir, "fake-pi")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat "+line+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	stub := stubPi(t, "cat "+line+"\n")
 
 	var got int
 	res, err := Run(context.Background(), Options{Bin: stub, Dir: dir}, "read it",
@@ -274,16 +282,9 @@ func TestRunHugeToolResult(t *testing.T) {
 // that be checked without a provider, a key, or the network.
 func TestRunBuildsCommandAndStreams(t *testing.T) {
 	dir := t.TempDir()
-	sample, err := filepath.Abs(filepath.Join("..", "..", "testdata", "pi-sample.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stub := filepath.Join(dir, "fake-pi")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\npwd >> %q\ncat %q\n",
-		filepath.Join(dir, "args"), filepath.Join(dir, "args"), sample)
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	sample := samplePath(t, "pi-sample.jsonl")
+	stub := stubPi(t, fmt.Sprintf("printf '%%s\\n' \"$@\" > %q\npwd >> %q\ncat %q\n",
+		filepath.Join(dir, "args"), filepath.Join(dir, "args"), sample))
 
 	var pid int
 	res, err := Run(context.Background(), Options{
@@ -297,8 +298,8 @@ func TestRunBuildsCommandAndStreams(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("OnStart never saw a pid")
 	}
-	if res.Events != 356 {
-		t.Fatalf("events = %d; want 356", res.Events)
+	if res.Events != sampleEvents {
+		t.Fatalf("events = %d; want %d", res.Events, sampleEvents)
 	}
 
 	got, err := os.ReadFile(filepath.Join(dir, "args"))
@@ -365,7 +366,7 @@ func TestCheckAuthSupervised(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := &launches{}
-			bin := authStub(t, fmt.Sprintf("cat <<'JSON'\n%s\nJSON\nexit %d\n", tc.output, tc.exit))
+			bin := stubPi(t, fmt.Sprintf("cat <<'JSON'\n%s\nJSON\nexit %d\n", tc.output, tc.exit))
 			err := CheckAuth(context.Background(), Options{Bin: bin, Provider: "test", Runner: supervisor(l)})
 			if (err == nil) != tc.ok {
 				t.Fatalf("error = %v; success = %v", err, tc.ok)
@@ -381,7 +382,7 @@ func TestCheckAuthSupervised(t *testing.T) {
 func TestCheckAuthRefusedRegistrationRunsNothing(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "ran")
-	bin := authStub(t, "touch "+marker+"\nprintf '{\"provider\":\"test\",\"status\":\"ready\"}\\n'\n")
+	bin := stubPi(t, "touch "+marker+"\nprintf '{\"provider\":\"test\",\"status\":\"ready\"}\\n'\n")
 	l := &launches{refuse: true}
 	if err := CheckAuth(context.Background(), Options{Bin: bin, Provider: "test", Runner: supervisor(l)}); err == nil {
 		t.Fatal("a refused launch reported readiness")
@@ -396,15 +397,9 @@ func TestCheckAuthRefusedRegistrationRunsNothing(t *testing.T) {
 // not start Pi until its registration is stored.
 func TestRunSupervisedStreams(t *testing.T) {
 	dir := t.TempDir()
-	sample, err := filepath.Abs(filepath.Join("..", "..", "testdata", "pi-sample.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	sample := samplePath(t, "pi-sample.jsonl")
 	marker := filepath.Join(dir, "ran")
-	stub := filepath.Join(dir, "fake-pi")
-	if err := os.WriteFile(stub, []byte(fmt.Sprintf("#!/bin/sh\ntouch %q\ncat %q\n", marker, sample)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	stub := stubPi(t, fmt.Sprintf("touch %q\ncat %q\n", marker, sample))
 	l := &launches{}
 	l.onReg = func() {
 		time.Sleep(100 * time.Millisecond)
@@ -419,8 +414,8 @@ func TestRunSupervisedStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Events != 356 {
-		t.Fatalf("events = %d; want 356", res.Events)
+	if res.Events != sampleEvents {
+		t.Fatalf("events = %d; want %d", res.Events, sampleEvents)
 	}
 	want, err := os.ReadFile(sample)
 	if err != nil {
@@ -442,7 +437,7 @@ func TestRunSupervisedStreams(t *testing.T) {
 func TestRunSupervisedExitStatus(t *testing.T) {
 	for _, code := range []int{1, 3, 126, 127} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
-			stub := authStub(t, fmt.Sprintf("echo 'pi broke %d' >&2\nexit %d\n", code, code))
+			stub := stubPi(t, fmt.Sprintf("echo 'pi broke %d' >&2\nexit %d\n", code, code))
 			l := &launches{}
 			_, err := Run(context.Background(), Options{Bin: stub, Dir: t.TempDir(), Runner: supervisor(l)}, "go", nil)
 			var exit *process.ExitError
@@ -459,7 +454,7 @@ func TestRunSupervisedExitStatus(t *testing.T) {
 // A refused registration fails Run before Pi starts.
 func TestRunSupervisedRefusedRegistration(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
-	stub := authStub(t, "touch "+marker+"\n")
+	stub := stubPi(t, "touch "+marker+"\n")
 	l := &launches{refuse: true}
 	if _, err := Run(context.Background(), Options{Bin: stub, Dir: t.TempDir(), Runner: supervisor(l)}, "go", nil); err == nil {
 		t.Fatal("a refused launch ran")
@@ -473,7 +468,7 @@ func TestRunSupervisedRefusedRegistration(t *testing.T) {
 // Cancelling a supervised Run stops Pi's descendants too.
 func TestRunSupervisedCancellationKillsDescendants(t *testing.T) {
 	dir := t.TempDir()
-	stub := authStub(t, "(sleep 0.4; echo late > "+filepath.Join(dir, "late")+") &\nwait\n")
+	stub := stubPi(t, "(sleep 0.4; echo late > "+filepath.Join(dir, "late")+") &\nwait\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	start := time.Now()
