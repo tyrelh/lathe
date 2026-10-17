@@ -4,44 +4,6 @@ package workflow
 
 import "github.com/tyrelh/lathe/internal/run"
 
-// Graphs is every workflow by name: what the worker executes, and the list a
-// submission validates a command against.
-var Graphs = map[string]func(*run.Run) int{
-	"scout":     Scout,
-	"plan":      Plan,
-	"implement": Implement,
-	"build":     Build,
-	"revise":    Revise,
-}
-
-// Names is every workflow in Graphs, in the order they are listed.
-var Names = []string{"scout", "plan", "implement", "build", "revise"}
-
-// Writes is every workflow that changes the checkout it runs in. It is what
-// decides which runs need a clean tree, which own the checkout while they run,
-// and which exclude each other — so those three questions are asked of the
-// workflow list rather than of a literal workflow name in three packages.
-var Writes = map[string]bool{"implement": true, "build": true, "revise": true}
-
-// Agents is every agent each graph will spawn. Submission resolves all of
-// them before recording a run, so an unknown agent or a bad prompt fails in
-// under a second rather than after an agent turn — and the resolved roster is
-// what the run executes from.
-var Agents = map[string][]string{
-	"scout": {"scout"},
-	"plan":  {"planner", "plan-reviewer"},
-	"implement": {"planner", "plan-reviewer", "builder", "tester",
-		"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial", "adjudicator"},
-	"build": {"planner", "plan-reviewer", "brancher", "builder", "tester",
-		"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial", "adjudicator",
-		"committer", "pr-author"},
-	// A revision extends a build's branch and pull request, so it names and
-	// opens neither.
-	"revise": {"planner", "plan-reviewer", "builder", "tester",
-		"code-review-general", "code-review-security", "code-review-slop", "code-review-adversarial", "adjudicator",
-		"committer"},
-}
-
 // ScoutOutput is what the scout must return. Required fields are pointers
 // because encoding/json zero-fills anything absent — a plain string cannot
 // tell "the agent said nothing" from "the agent said empty".

@@ -63,7 +63,7 @@ func calibrate(ctx context.Context, w io.Writer, db *trace.DB, dataRoot, dir, ag
 	if err != nil {
 		return err
 	}
-	snap, err := capture("build", config.Overrides{}, io.Discard)
+	snap, err := capture(workflow.NameBuild, config.Overrides{}, io.Discard)
 	if err != nil {
 		return err
 	}
@@ -140,9 +140,9 @@ type calibration struct {
 func sample(db *trace.DB, dataRoot string, row trace.Row, agent string) (calibration, bool, error) {
 	var c calibration
 	switch {
-	case row.Workflow == "scout":
+	case row.Workflow == workflow.NameScout:
 		return c, false, nil
-	case agent == "builder" && row.Workflow == "plan":
+	case agent == "builder" && row.Workflow == workflow.NamePlan:
 		return c, false, nil
 	}
 	its, err := db.Iterations(row.ID)

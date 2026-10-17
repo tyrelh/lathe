@@ -113,10 +113,12 @@ func dispatch(args []string) int {
 		fmt.Print(usage)
 		return 2
 	}
-	switch cmd := args[0]; cmd {
-	case "scout", "plan", "implement", "build":
+	cmd := args[0]
+	if workflow.Submittable(cmd) {
 		return submit(cmd, args[1:])
-	case "revise":
+	}
+	switch cmd {
+	case workflow.NameRevise:
 		return reviseCmd(args[1:])
 	case "resume":
 		return resumeCmd(args[1:])
@@ -172,7 +174,7 @@ func submit(name string, args []string) int {
 		}
 	})
 	if issueSet {
-		if name == "scout" || request != "" {
+		if name == workflow.NameScout || request != "" {
 			fmt.Fprintln(os.Stderr, "lathe: --issue requires plan, implement, or build and cannot be combined with a request")
 			return 2
 		}
@@ -217,7 +219,7 @@ func submit(name string, args []string) int {
 	if workflow.Writes[name] {
 		fmt.Printf("lathe %s %s: runs in its own worktree from %s; %s is left as it is.\n",
 			name, id, workspace.Short(req.Base), req.Repo)
-		if name == "implement" {
+		if name == workflow.NameImplement {
 			fmt.Printf("  Its result is saved as result.patch in %s.\n", worker.ReportDir(dataRoot, id, 0))
 		}
 	}
@@ -341,12 +343,12 @@ func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Ove
 	if _, err := workspace.CheckRevisable(ws.Path, ev); err != nil {
 		return 0, err
 	}
-	roster, err := capture("revise", ov, warn)
+	roster, err := capture(workflow.NameRevise, ov, warn)
 	if err != nil {
 		return 0, err
 	}
 	spec, err := worker.Spec{
-		Version: worker.SpecVersion, Workflow: "revise", Request: request,
+		Version: worker.SpecVersion, Workflow: workflow.NameRevise, Request: request,
 		Workspace: ws, Roster: roster, Overrides: ov, Base: ev.Commit,
 	}.Marshal()
 	if err != nil {
