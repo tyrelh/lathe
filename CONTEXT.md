@@ -7,6 +7,18 @@ Lathe runs bounded agent workflows against a repository and records their work f
 **Run**:
 One execution of a workflow for an engineer's request against a repository.
 
+**Task**:
+An engineer's tracked unit of work toward one change in one repository, shown on the Tasks board. It has at most one current build run, which may be replaced by a fresh one while earlier runs stay as its history, and at most one linked issue. Every build run belongs to a task. Its pull request is always the one its current run owns.
+_Avoid_: ticket, card, work item
+
+**Lane**:
+Where a task stands: Backlog, In progress, Ready for review, Blocked or Done. A lane is derived from the task's current run and its pull request; the only lane an engineer chooses is In progress, by starting or re-entering the run.
+_Avoid_: status, column
+
+**Issue**:
+An item in an external tracker that a task is created from, GitHub today. The task keeps its tracker, reference and the title and body seen at creation; lathe never writes back to it.
+_Avoid_: ticket, task (for the tracker's item)
+
 **Iteration**:
 One submitted request against a run and what became of it: its request, the configuration it ran with, its lifecycle and outcome, its reports, and the commits that explain where its work is. A run starts with iteration 0; each revision or recovery adds one. The run's displayed state follows its latest iteration; earlier ones stay inspectable. An iteration is not a worker attempt: the attempt is one execution of it.
 
@@ -14,7 +26,7 @@ One submitted request against a run and what became of it: its request, the conf
 A further change requested against a build whose latest iteration succeeded and whose pull request is still open. It is the next iteration of the same run, not a new run: planned, validated and published to the same pull request, and published only if accepted.
 
 **Recovery**:
-An engineer-requested continuation of a failed, cancelled, or lost run as a new iteration of the same run. The unsuccessful iteration remains inspectable; the recovery has its own request, captured agent configuration, and bounded allowances. It continues the run's original resolved task with the engineer's guidance, restores saved work that was never published, and keeps the branch and pull request the run already owns. An iteration records its kind (submission, revision, recovery or restart), so a nonzero iteration is not necessarily a revision.
+An engineer-requested continuation of a failed, cancelled, or lost run as a new iteration of the same run. The unsuccessful iteration remains inspectable; the recovery has its own request, captured agent configuration, and bounded allowances. It continues the run's original resolved request with the engineer's guidance, restores saved work that was never published, and keeps the branch and pull request the run already owns. An iteration records its kind (submission, revision, recovery or restart), so a nonzero iteration is not necessarily a revision.
 
 **Publication ownership**:
 The branch, and pull request, a recovered build verifiably owns: recorded by lathe or uniquely matched on origin's repository and branch at the expected head. A recovery delivers only to what it owns, rechecks it immediately before every delivery, and carries it into later recoveries.
