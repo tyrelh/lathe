@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -189,5 +190,52 @@ func TestStorageIsPrivate(t *testing.T) {
 	os.Symlink(root, link)
 	if err := Private(link); err == nil {
 		t.Fatal("a symlinked data directory was accepted")
+	}
+}
+
+// A database from before iterations gets each run as its own iteration 0,
+// from exactly what the row recorded: no base or commit is filled in.
+func TestMigrationRecordsExistingRunsAsTheirFirstIteration(t *testing.T) {
+	root := t.TempDir()
+	raw, err := sql.Open("sqlite", filepath.Join(root, dbFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range append([]string{schema}, migrations[:3]...) {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO runs (run_id, workflow, repo, request, status, reason, branch, commit_sha, spec,
+		submitted_at, started_at, ended_at, tokens, cost)
+		VALUES ('old', 'build', '/repo', 'add retry', 'ok', '', 'feat/retry', 'abc123', '{}',
+		'2026-09-01T10:00:00Z', '2026-09-01T10:00:05Z', '2026-09-01T10:09:00Z', 900, 1.5)`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+
+	db, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	row, _ := db.Get("old")
+	if row.Iteration != 0 || row.Activity != "2026-09-01T10:00:00Z" || row.Commit != "abc123" {
+		t.Fatalf("migrated run = %+v", row)
+	}
+	its, err := db.Iterations("old")
+	if err != nil || len(its) != 1 {
+		t.Fatalf("iterations = %+v, %v", its, err)
+	}
+	it := its[0]
+	if it.Request != "add retry" || it.Status != StatusOK || it.Submitted != row.Submitted ||
+		it.Started != row.Started || it.Ended != row.Ended || it.Base != "" || it.Commit != "" {
+		t.Fatalf("iteration 0 = %+v", it)
+	}
+	if _, err := db.Revise("old", 0, "and log it", nil); err != nil {
+		t.Fatalf("a migrated run cannot be revised: %v", err)
 	}
 }
