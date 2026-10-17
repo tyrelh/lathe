@@ -7,6 +7,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/run"
+	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
@@ -357,7 +358,7 @@ func RunBranch(r *run.Run, proposal string) string {
 	if r.ID == "" {
 		return proposal
 	}
-	return proposal + "-" + r.ID[strings.LastIndex(r.ID, "_")+1:]
+	return proposal + "-" + trace.RunIDSuffix(r.ID)
 }
 
 // publishable refuses a push whose commits carry a protected path, checked

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -300,6 +301,9 @@ func NewRunID(workflow string) string {
 	// identifies nothing.
 	return fmt.Sprintf("%s_%s_%s", time.Now().UTC().Format("20060102T150405Z"), workflow, randomHex(4))
 }
+
+// RunIDSuffix returns the random part of an ID built by NewRunID.
+func RunIDSuffix(id string) string { return id[strings.LastIndex(id, "_")+1:] }
 
 // randomHex is the suffix source for run IDs, attempt IDs and claim tokens.
 func randomHex(n int) string {
