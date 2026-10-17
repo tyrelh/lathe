@@ -78,10 +78,10 @@ type Block struct {
 	Text string `json:"text"`
 }
 
-// Text joins every text block, which is where the assistant's reply lives.
-// Both captured runs carry one block per message, but returning only the first
-// would drop an envelope silently if that ever stopped being true.
+// Text joins every text block's text with newlines.
 func (m Message) Text() string {
+	// Messages carry one text block today, but returning only the first would
+	// drop an envelope silently if that ever stopped being true.
 	var parts []string
 	for _, b := range m.Content {
 		if b.Type == "text" {
@@ -101,8 +101,7 @@ func (e Event) DecodeMessage() (Message, error) {
 // Handler sees every parsed event as it arrives and returns whether to keep
 // reading. It must not block for long: the agent's stdout is not being read
 // while it runs. Returning false stops the stream where it stands, which is
-// how a caller ends a turn early — killing the child alone does not, because
-// its own children inherit the pipe and hold it open.
+// how a caller ends a turn early.
 type Handler func(Event) bool
 
 // Result is what a whole stream added up to.
@@ -307,7 +306,8 @@ func supervised(ctx context.Context, o Options, cmd *exec.Cmd, stderr *bytes.Buf
 	}
 	res, scanErr := Scan(r, o.Raw, onEvent)
 	// A handler that stopped reading ends the turn: without a reader, the
-	// payload would block on a full pipe.
+	// payload would block on a full pipe. Killing the child alone does not end
+	// it, because its own children inherit the pipe and hold it open.
 	r.Close()
 	if err := p.Wait(); err != nil {
 		return res, fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
@@ -315,9 +315,9 @@ func supervised(ctx context.Context, o Options, cmd *exec.Cmd, stderr *bytes.Buf
 	return res, scanErr
 }
 
-// Scan reads a Pi JSONL stream. Every line is written to raw verbatim before
-// it is parsed: the JSONL file is the authoritative record and SQLite is a
-// derived mirror, so a parser bug must not cost the evidence.
+// Scan reads a Pi JSONL stream, writing each line verbatim to raw (when
+// non-nil) before parsing it, and calls onEvent for each parsed event until it
+// returns false. It returns the totals and any scan or raw-write error.
 func Scan(r io.Reader, raw io.Writer, onEvent Handler) (Result, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), maxLine)
@@ -330,6 +330,7 @@ func Scan(r io.Reader, raw io.Writer, onEvent Handler) (Result, error) {
 
 	for sc.Scan() {
 		line := sc.Bytes()
+		// Write before parsing so a parser bug never loses the raw record.
 		if raw != nil {
 			if _, err := raw.Write(append(line, '\n')); err != nil && rawErr == nil {
 				rawErr = err
