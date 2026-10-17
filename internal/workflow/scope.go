@@ -429,12 +429,7 @@ func scopeEvidence(w io.Writer, req *ScopeRequest, dirty []string) {
 	if strings.TrimSpace(req.Diff) != "" {
 		fmt.Fprintf(w, "\n### Diff against HEAD (untracked files are listed above, not shown)\n\n```diff\n%s\n```\n", req.Diff)
 	}
-	if len(req.Outstanding) > 0 {
-		fmt.Fprintf(w, "\n### Outstanding adjudicator findings\n")
-		for _, f := range req.Outstanding {
-			writeFinding(w, f)
-		}
-	}
+	findingSection(w, "### Outstanding adjudicator findings", req.Outstanding)
 }
 
 // scopeReview tells the reviewer what the plan under review must answer.
@@ -450,12 +445,7 @@ func scopeReview(w io.Writer, c *code) {
 	section(w, "Files the builder says it needs", req.Needed)
 	section(w, "Of those, protected (never grantable)", req.Protected)
 	section(w, "Uncommitted work in the tree", req.Dirty)
-	if len(req.Outstanding) > 0 {
-		fmt.Fprintf(w, "\nOutstanding adjudicator findings\n")
-		for _, f := range req.Outstanding {
-			writeFinding(w, f)
-		}
-	}
+	findingSection(w, "Outstanding adjudicator findings", req.Outstanding)
 	w.Write([]byte("\nBlock this plan if it neither grants what the builder needs nor gives a workable approach without it. " +
 		"An unchanged file list can resolve the request through a different approach. Check that every dismissal is justified by the changed approach.\n"))
 }
@@ -478,10 +468,7 @@ func replannedRequest(c *code) string {
 	}
 	section(&b, "### Findings the revised plan dismissed", dismissed)
 	if len(c.outstanding) > 0 {
-		b.WriteString("\n### Findings still to fix\n")
-		for _, f := range c.outstanding {
-			writeFinding(&b, f)
-		}
+		findingSection(&b, "### Findings still to fix", c.outstanding)
 		if c.changes != "" {
 			fmt.Fprintf(&b, "\n### The adjudicator's earlier requested changes\n\nThe revised plan takes precedence where they conflict.\n\n%s\n", c.changes)
 		}
