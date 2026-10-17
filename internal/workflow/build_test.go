@@ -53,11 +53,7 @@ func shipStub(t *testing.T, branch string) string {
 // latestRun is the one run this test recorded, for its status and reason.
 func latestRun(t *testing.T) trace.Row {
 	t.Helper()
-	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := openTrace(t)
 	rows, err := db.Recent(1)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("runs: %v %v", rows, err)

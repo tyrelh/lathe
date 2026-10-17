@@ -11,7 +11,6 @@ import (
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/run"
-	"github.com/tyrelh/lathe/internal/trace"
 )
 
 func gitBuild(t *testing.T, repo string, args ...string) string {
@@ -228,11 +227,7 @@ func TestImplementBlockedWriteTrace(t *testing.T) {
 	if code := execute(t, cfg, "implement", repo, "boundary fixture"); code != 1 {
 		t.Fatalf("code = %d", code)
 	}
-	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := openTrace(t)
 	rows, err := db.Recent(1)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("runs: %v %v", rows, err)

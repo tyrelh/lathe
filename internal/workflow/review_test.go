@@ -19,21 +19,13 @@ func reviewReply(t *testing.T, feedback ...string) string {
 	if feedback == nil {
 		feedback = []string{}
 	}
-	b, err := json.Marshal(map[string]any{"summary": "reviewed", "feedback": feedback, "blocking": []string{}, "artifacts": []string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return piReply(t, "```json\n"+string(b)+"\n```")
+	return jsonReply(t, map[string]any{"summary": "reviewed", "feedback": feedback, "blocking": []string{}, "artifacts": []string{}})
 }
 
 // blockedReply is a review that says the plan cannot succeed as written.
 func blockedReply(t *testing.T, blocking ...string) string {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{"summary": "blocked", "feedback": []string{}, "blocking": blocking, "artifacts": []string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return piReply(t, "```json\n"+string(b)+"\n```")
+	return jsonReply(t, map[string]any{"summary": "blocked", "feedback": []string{}, "blocking": blocking, "artifacts": []string{}})
 }
 
 func reviewOK(t *testing.T) string {
@@ -126,16 +118,9 @@ func TestPlanReviewLoop(t *testing.T) {
 				}
 			}
 
-			db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			id := filepath.Base(latestRunDir(t))
-			phases, err := db.Phases(id)
-			if err != nil {
-				t.Fatal(err)
-			}
+			db := openTrace(t)
+			id := latestRun(t).ID
+			phases := runPhases(t)
 			first := slices.IndexFunc(phases, func(p trace.PhaseRow) bool { return p.Name == "review" })
 			if first < 1 || phases[first-1].Name != "plan" || len(phases) != first+2*tc.reviews-1 {
 				t.Fatalf("unexpected phases: %v", phases)
@@ -248,14 +233,9 @@ fi
 	if _, err := os.Stat(filepath.Join(latestRunDir(t), "plan.json")); !os.IsNotExist(err) {
 		t.Fatalf("saved plan after cancellation: %v", err)
 	}
-	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	phases, err := db.Phases(filepath.Base(latestRunDir(t)))
-	if err != nil || len(phases) != 4 || phases[3].Name != "review" || phases[3].Status != "fail" {
-		t.Fatalf("continued after cancellation: %v, %v", phases, err)
+	phases := runPhases(t)
+	if len(phases) != 4 || phases[3].Name != "review" || phases[3].Status != "fail" {
+		t.Fatalf("continued after cancellation: %v", phases)
 	}
 }
 
