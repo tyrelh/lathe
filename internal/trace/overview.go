@@ -174,6 +174,27 @@ const runColumns = `SELECT run_id, workflow, repo, request, status,
 	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, ''),
 	iteration, COALESCE(activity_at, '')`
 
+// queryer is a *sql.DB or *sql.Tx.
+type queryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// getRow reads one run through q. A missing run is sql.ErrNoRows.
+func getRow(q queryer, runID string) (Row, error) {
+	rows, err := q.Query(runColumns+` FROM runs WHERE run_id = ?`, runID)
+	if err != nil {
+		return Row{}, err
+	}
+	out, err := scanRows(rows)
+	if err != nil {
+		return Row{}, err
+	}
+	if len(out) == 0 {
+		return Row{}, sql.ErrNoRows
+	}
+	return out[0], nil
+}
+
 func scanRows(rows *sql.Rows) ([]Row, error) {
 	defer rows.Close()
 	out := []Row{}

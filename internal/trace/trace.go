@@ -503,18 +503,7 @@ type EventRow struct {
 
 // Get returns one run. A missing run is sql.ErrNoRows.
 func (d *DB) Get(runID string) (Row, error) {
-	rows, err := d.sql.Query(runColumns+` FROM runs WHERE run_id = ?`, runID)
-	if err != nil {
-		return Row{}, err
-	}
-	out, err := scanRows(rows)
-	if err != nil {
-		return Row{}, err
-	}
-	if len(out) == 0 {
-		return Row{}, sql.ErrNoRows
-	}
-	return out[0], nil
+	return getRow(d.sql, runID)
 }
 
 // Phases returns a run's phases in the order they ran.

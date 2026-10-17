@@ -306,18 +306,11 @@ func (d *DB) Claim(attemptID, token, host string, pid int, lease time.Duration) 
 		return Row{}, err
 	}
 
-	rows, err := tx.Query(runColumns+` FROM runs WHERE run_id = ?`, runID)
+	row, err := getRow(tx, runID)
 	if err != nil {
 		return Row{}, err
 	}
-	out, err := scanRows(rows)
-	if err != nil {
-		return Row{}, err
-	}
-	if len(out) == 0 {
-		return Row{}, sql.ErrNoRows
-	}
-	return out[0], tx.Commit()
+	return row, tx.Commit()
 }
 
 // Beat extends the lease and reports whether a cancellation is waiting. It
