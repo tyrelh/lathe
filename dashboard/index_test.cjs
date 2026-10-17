@@ -24,7 +24,7 @@ for (const id of ['app', 'status', 'note', 'version',
                   'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'nav-agents', 'follow-box', 'follow-label',
                   'project-head', 'project-runs', 'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
 // Parse only the scaffold IDs when app is replaced. In particular, do not
-// precreate #log: that would skip the first-render branch in detail().
+// precreate #log: that would skip the first-render branch in loadRun().
 const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
   'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status',
   'resume', 'resume-guidance', 'resume-submit', 'resume-status', 'log', 'run-total',
@@ -491,7 +491,7 @@ for (const status of ['success', 'ok']) {
   assert(g.includes('t · ' + status + '"'), status + ' keeps its accessible status');
   assert(g.includes('Status: ' + status), status + ' keeps its tooltip status');
 }
-const card = call('details', open, cut, ms(900));
+const card = call('phaseCard', open, cut, ms(900));
 assert(card.includes('interrupted') && card.includes('40s · bounded by the run’s end') && card.includes('Not recorded'), card);
 assert(call('gantt', settled, [ph(1,'test',T(0),T(9),{status:'fail'})], 0).includes('test · fail'), 'finished failures keep their status');
 
@@ -521,10 +521,10 @@ const reopened = {status:'running', started_at:T(0), ended_at:'', iteration:1, i
   {iteration:1, request:'louder', status:'running', started_at:T(H), ended_at:''}]};
 const stale = ph(1,'implement',T(5),'',{status:'fail', iteration:0});
 assert(call('gantt', reopened, [stale], ms(H+50)).includes('class="block interrupted"'), 'an old phase is interrupted, not running');
-const staleCard = call('details', stale, reopened, ms(H+50));
+const staleCard = call('phaseCard', stale, reopened, ms(H+50));
 assert(staleCard.includes('35s · bounded by its iteration’s end') && staleCard.includes('iteration ended ' + T(40)), staleCard);
 assert(staleCard.includes('From iteration 0, a previous request: greet') && staleCard.includes('which is running'), staleCard);
-assert(!call('details', ph(2,'plan',T(H+1),T(H+9),{iteration:1}), reopened, ms(H+50)).includes('From iteration'),
+assert(!call('phaseCard', ph(2,'plan',T(H+1),T(H+9),{iteration:1}), reopened, ms(H+50)).includes('From iteration'),
   'the latest iteration is not labelled as previous');
 
 // The history: each request, how it ended, where its commit is and the models.
@@ -823,7 +823,7 @@ const costs = () => nodes.get('costs').innerHTML;
     && out.includes('8,000 window · 0.0% full'), out);
   assert(chart().includes('Context (estimated): 0 tokens / 8,000 window · 0.0% full'),
     'a block shows a zero snapshot even without billed usage');
-  assert(!call('details', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, run, ms(200)).includes('Context (estimated)'),
+  assert(!call('phaseCard', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, run, ms(200)).includes('Context (estimated)'),
     'a non-agent phase does not show context');
   assert(!call('block', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, {status:'success', start:0, end:1}).includes('Context (estimated)'),
     'a non-agent block tooltip agrees with its details');
