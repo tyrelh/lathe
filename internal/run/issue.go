@@ -37,5 +37,8 @@ func (h *Handle) IssueRequest() (string, error) {
 	if err := h.Log("request", request); err != nil {
 		return "", err
 	}
+	if err := r.db.FillTaskIssue(r.ID, r.Issue, issue.URL, issue.Title, issue.Body); err != nil {
+		return "", err
+	}
 	return request, nil
 }

@@ -53,7 +53,10 @@ var (
 // Request is what the submitter records. Spec is the versioned execution
 // specification: everything configuration could otherwise change under a
 // queued run. Repository contents and worker secrets are not in it.
+// TaskID attaches a build to an existing task, and a build without one gets a
+// new task; other workflows ignore it.
 type Request struct {
+	TaskID   string
 	Workflow string
 	Repo     string
 	Request  string
@@ -70,10 +73,35 @@ func (d *DB) Submit(r Request) (string, error) {
 	defer tx.Rollback()
 
 	id, at := NewRunID(r.Workflow), nowUTC()
+	var taskID any
+	if r.Workflow == "build" {
+		if r.TaskID != "" {
+			task, err := getTask(tx, r.TaskID)
+			if err != nil {
+				return "", fmt.Errorf("attach task: %w", err)
+			}
+			if task.ArchivedAt != nil {
+				return "", fmt.Errorf("task %s is archived", r.TaskID)
+			}
+			if task.Repo != r.Repo {
+				return "", fmt.Errorf("task %s belongs to a different repository", r.TaskID)
+			}
+			if issue := specIssue(r.Spec); issue != "" && (task.IssueRef == nil || !issueRefsMatch(*task.IssueRef, issue)) {
+				return "", fmt.Errorf("issue conflicts with task %s", r.TaskID)
+			}
+			taskID = r.TaskID
+		} else {
+			created, err := insertTask(tx, r.Repo, r.Request, specIssue(r.Spec), at)
+			if err != nil {
+				return "", err
+			}
+			taskID = created
+		}
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, submitted_at, activity_at)
-		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
-		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, at, at); err != nil {
+		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, submitted_at, activity_at, task_id)
+		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, at, at, taskID); err != nil {
 		return "", err
 	}
 	if _, err := tx.Exec(

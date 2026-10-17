@@ -105,7 +105,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 	pollDone := make(chan struct{})
 	go func() {
 		defer close(pollDone)
-		m.pollPRs(pollCtx, prPoll, nil)
+		m.pollPRs(pollCtx, prPoll, m.backfillTasks)
 	}()
 	defer func() {
 		cancelPolling()
@@ -161,6 +161,12 @@ type manager struct {
 	// their queued runs are not dispatched.
 	blocked map[string]error
 	warned  bool
+}
+
+func (m *manager) backfillTasks() {
+	if err := m.db.BackfillTasks(); err != nil {
+		fmt.Fprintln(m.out, "lathe manager: task backfill:", err)
+	}
 }
 
 // dispatch launches queued runs, oldest first, while capacity allows. A run
