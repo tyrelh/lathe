@@ -153,7 +153,7 @@ func load(t *testing.T) (config.Config, string) {
 	return cfg, t.TempDir()
 }
 
-// Phase 5's done-when: a good run exits 0 and leaves both files behind.
+// A good scout run exits 0 and leaves raw.jsonl and result.json behind.
 func TestScoutWritesResult(t *testing.T) {
 	stubPi(t, reply(t, ""))
 	cfg, repo := load(t)

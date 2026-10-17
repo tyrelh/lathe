@@ -94,8 +94,7 @@ func TestPlanAuthPreflight(t *testing.T) {
 	}
 }
 
-// Phase 1's done-when: plan.json lands in the run directory with the file list
-// intact.
+// plan.json lands in the run directory with the file list intact.
 func TestPlanWritesPlanJSON(t *testing.T) {
 	stubPi(t, planReply(t, `"fetch.go", "fetch_test.go"`), reviewOK(t))
 	cfg, repo := load(t)
