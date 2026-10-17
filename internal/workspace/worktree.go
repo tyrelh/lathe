@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/process"
 )
@@ -180,29 +181,7 @@ func SavePatch(wt, base, dest string, protected []string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return false, err
-	}
-	// A fresh owner-only file renamed over dest: neither a leftover part nor
-	// an earlier, more permissive patch lends the new one its mode.
-	part := dest + ".part"
-	if err := os.Remove(part); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return false, err
-	}
-	if _, err := f.Write(patch); err != nil {
-		f.Close()
-		os.Remove(part)
-		return false, err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(part)
-		return false, err
-	}
-	return true, os.Rename(part, dest)
+	return true, config.WriteFileAtomic(dest, patch)
 }
 
 // PreserveHead points ref at the worktree's HEAD when HEAD has moved past
