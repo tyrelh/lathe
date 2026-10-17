@@ -166,7 +166,12 @@ func stubFile(t *testing.T, dir, name string) string {
 
 func readValidation(t *testing.T) Validation {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(latestRunDir(t), "validation.json"))
+	return readValidationIn(t, latestRunDir(t))
+}
+
+func readValidationIn(t *testing.T, dir string) Validation {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "validation.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,14 +182,19 @@ func readValidation(t *testing.T) Validation {
 	return v
 }
 
-func runPhases(t *testing.T) []trace.PhaseRow {
+func openTrace(t *testing.T) *trace.DB {
 	t.Helper()
 	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	phases, err := db.Phases(latestRun(t).ID)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func runPhases(t *testing.T) []trace.PhaseRow {
+	t.Helper()
+	phases, err := openTrace(t).Phases(latestRun(t).ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,14 +203,7 @@ func runPhases(t *testing.T) []trace.PhaseRow {
 
 func assertEnvironmentFailure(t *testing.T, stub, dir, command string, exit, iteration int) Validation {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, "validation.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v Validation
-	if err := json.Unmarshal(b, &v); err != nil {
-		t.Fatal(err)
-	}
+	v := readValidationIn(t, dir)
 	if v.Outcome != outcomeEnvironmentFailed || v.Accepted() || len(v.Rounds) != 1 || !strings.Contains(v.Reason, fmt.Sprintf("exited %d", exit)) {
 		t.Fatalf("validation = %+v", v)
 	}

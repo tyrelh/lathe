@@ -19,7 +19,7 @@ import (
 )
 
 // stubPi puts a fake `pi` on PATH that serves replies[n] on its nth
-// invocation. Scout resolves the binary the way production does, so this is
+// invocation. Every workflow resolves the binary from PATH, so this is
 // the only seam a workflow test needs — no provider, no key, no network.
 func stubPi(t *testing.T, replies ...string) {
 	t.Helper()

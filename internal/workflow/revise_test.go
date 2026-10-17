@@ -159,11 +159,7 @@ func revise(t *testing.T, cfg config.Config, repo, request string) int {
 
 func iterations(t *testing.T) []trace.Iteration {
 	t.Helper()
-	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := openTrace(t)
 	its, err := db.Iterations(latestRun(t).ID)
 	if err != nil {
 		t.Fatal(err)
@@ -239,11 +235,7 @@ func TestRevisionsExtendTheRun(t *testing.T) {
 	}
 	head := rev(t, repo, "HEAD")
 
-	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := openTrace(t)
 	if n, _ := db.Total(); n != 1 {
 		t.Fatalf("%d runs; a revision extends the one it revises", n)
 	}
