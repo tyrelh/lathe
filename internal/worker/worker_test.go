@@ -193,6 +193,7 @@ func TestExecutionTimeCheckoutChecks(t *testing.T) {
 	for _, tc := range []struct {
 		name, workflow, want string
 		change               func(t *testing.T, dir string)
+		keepsCheckout        bool
 		code                 int
 	}{
 		{
@@ -203,7 +204,7 @@ func TestExecutionTimeCheckoutChecks(t *testing.T) {
 			// The build runs in its own worktree, so the person's change is
 			// neither refused nor touched. The stub agent cannot plan, so the
 			// run itself fails.
-			name: "build went dirty", workflow: "build", want: "", code: 1,
+			name: "build went dirty", workflow: "build", want: "", code: 1, keepsCheckout: true,
 			change: func(t *testing.T, dir string) { write(t, filepath.Join(dir, "hello.txt"), "mine\n") },
 		},
 		{
@@ -240,7 +241,7 @@ func TestExecutionTimeCheckoutChecks(t *testing.T) {
 			}
 			// Whatever the person had in the checkout is still there.
 			if b, err := os.ReadFile(filepath.Join(dir, "hello.txt")); err != nil ||
-				(tc.name == "build went dirty" && string(b) != "mine\n") {
+				(tc.keepsCheckout && string(b) != "mine\n") {
 				t.Fatalf("the worker touched the checkout: %q %v", b, err)
 			}
 		})
