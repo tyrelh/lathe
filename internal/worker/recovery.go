@@ -199,7 +199,7 @@ func prRecord(dataRoot string, row trace.Row) (url string, draft, lathe bool) {
 	return "", false, false
 }
 
-// Recheck repeats, under the worker's claim, the publication checks the
+// recheck repeats, under the worker's claim, the publication checks the
 // submission made: origin's branch is still at the head it found and the
 // pull request is still open.
 func recheck(repo string, pub *run.Publication) error {
