@@ -32,6 +32,13 @@ type PlanOutput struct {
 	Tickets    *[]Ticket    `json:"future_tickets,omitempty"`
 }
 
+// Ticket is adjacent work a planner proposes for a separate run. It grants
+// no scope and creates nothing.
+type Ticket struct {
+	Title  string `json:"title"`
+	Reason string `json:"reason"`
+}
+
 // Validate returns what is missing, phrased as the agent will read it. An empty
 // files list is a violation rather than an empty scope: a plan that permits no
 // writes is a plan nothing can be built from.
