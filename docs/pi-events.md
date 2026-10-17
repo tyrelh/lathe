@@ -1,8 +1,7 @@
 # Pi JSONL event stream
 
 What `pi -p --mode json` actually emits, mapped from a real run rather than from
-the bundled `docs/json.md`. Every claim below has a line of captured JSON under
-it as evidence.
+the bundled `docs/json.md`. Captured JSON supports the observed shapes below; the provider-error shape is documented from the code and a test fixture, not this capture.
 
 Captured with Pi 0.85.1:
 
@@ -19,6 +18,7 @@ pi -p --mode json --provider moonshotai --model kimi-k2.7-code \
 | Question | Answer |
 |---|---|
 | Final assistant text lives at | `message_end` where `.message.role == "assistant"` and `.message.stopReason == "stop"`, in the content block with `.type == "text"` → `.text`. Also available streaming as the `text_end` delta's `.content`. |
+| Provider failure lives at | An assistant `message_end` with `.message.stopReason == "error"` and `.message.errorMessage`; see the code-derived note below. |
 | Token counts live at | `.message.usage` on `message_end`, and `.usage` (top level) on `message_update`. Keys: `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning`, `totalTokens`. **Per message, not per run** — see below. |
 | Cost lives at | `.usage.cost` — an object, not a scalar: `{input, output, cacheRead, cacheWrite, total}`, in dollars. Pi computes it from its built-in model catalog, so no per-model bookkeeping is needed downstream. |
 | A tool call starts / ends with | `tool_execution_start` (carries `toolCallId`, `toolName`, `args`) and `tool_execution_end` (carries `toolCallId`, `toolName`, `result`, `isError`). Only the end carries the result. |
@@ -101,9 +101,11 @@ Content blocks and their keys:
 Stop reasons observed: `toolUse` while the agent is working, `stop` on the final
 message, `null` on user and toolResult messages.
 
+The code and `internal/run/run_test.go` fixture also handle an assistant `message_end` with `stopReason: "error"` and a provider refusal in `errorMessage` (such as an unknown model, missing key or rate limit). Its content is usually empty, and Pi can exit 0; `pi.Scan` reports the message in `Result.Failure`. This shape was not captured in the Pi 0.85.1 run above.
+
 ## Usage is per message, not cumulative
 
-This contradicts the hypothesis in the plan. `totalTokens` across the stream's
+`totalTokens` across the stream's
 `message_update` events, consecutive duplicates collapsed:
 
 ```
@@ -119,8 +121,7 @@ assistant  1188  $0.00054861
 assistant  2925  $0.00268676
 ```
 
-**Consequence for `internal/trace`:** a run total is the *sum* over assistant
-`message_end` events, not the last value seen. Summing `cost.total` is correct
+**Consequence for totals:** `pi.Scan` sums assistant `message_end` usage into `Result.Tokens` and `Result.Cost`, which `internal/trace` stores per phase. A run total is the *sum* over assistant `message_end` events, not the last value seen. Summing `cost.total` is correct
 (each is a real billed call). Summing `input` double-counts resent context —
 that is what was actually billed, so it is right for cost but must not be read
 as "distinct tokens of context".
@@ -150,9 +151,7 @@ Every delta carries `contentIndex`. The shapes differ per type:
 `text_end` carries the whole accumulated `content`, so streaming text does not
 have to be reassembled from deltas by hand.
 
-**For Go:** decode `assistantMessageEvent` as `{Type string; ContentIndex int}`
-plus a `json.RawMessage` for the rest, and only decode further for the delta
-types being acted on. There is no single struct that fits all nine.
+**For Go:** if deltas are ever consumed, decode `assistantMessageEvent` as `{Type string; ContentIndex int}` plus a `json.RawMessage` for the rest, and only decode further for the delta types being acted on. `pi.Event` leaves this field out today. There is no single struct that fits all nine.
 
 ## Tool calls
 
@@ -203,14 +202,14 @@ that came back:
 `agent_start` → (`turn_start` … `turn_end`) × N → `agent_settled` → `agent_end`,
 and `agent_end` carries `willRetry` (`false` here) plus the full message list.
 
-## Pointers vs values
+## Go types
 
 | Field | Go type |
 |---|---|
 | `message.stopReason` | `*string` — `null` on non-assistant messages |
 | `usage.reasoning` | `*int` — absent on the zero-usage first update |
 | `usage.cost` | struct, never a scalar |
-| `assistantMessageEvent` | `json.RawMessage` past `type`/`contentIndex` |
+| `assistantMessageEvent` | If deltas are consumed later, `json.RawMessage` past `type`/`contentIndex`; `pi.Event` omits it today. |
 | `tool_execution_start.args` | `json.RawMessage` |
 | `tool_execution_end.result` | `json.RawMessage`; `details` appears only on errors |
 | `isError` | plain `bool`, always present |
