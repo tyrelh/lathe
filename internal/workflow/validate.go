@@ -43,7 +43,7 @@ type CodeReviewOutput struct {
 
 func (c *CodeReviewOutput) Validate() []string {
 	var v []string
-	if c.Summary == nil || strings.TrimSpace(*c.Summary) == "" {
+	if blank(c.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
 	if c.Findings == nil {
@@ -123,7 +123,7 @@ type AdjudicationOutput struct {
 
 func (a *AdjudicationOutput) Validate() []string {
 	var v []string
-	if a.Summary == nil || strings.TrimSpace(*a.Summary) == "" {
+	if blank(a.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
 	if a.Verdict == nil || (*a.Verdict != verdictAccept && *a.Verdict != verdictRevise) {

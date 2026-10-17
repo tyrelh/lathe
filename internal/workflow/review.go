@@ -17,7 +17,7 @@ type ReviewOutput struct {
 
 func (r *ReviewOutput) Validate() []string {
 	var v []string
-	if r.Summary == nil || strings.TrimSpace(*r.Summary) == "" {
+	if blank(r.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
 	if r.Feedback == nil {
@@ -38,3 +38,6 @@ func (r *ReviewOutput) Artifacts() []string {
 	}
 	return *r.Wrote
 }
+
+// blank reports whether s is nil or only whitespace.
+func blank(s *string) bool { return s == nil || strings.TrimSpace(*s) == "" }

@@ -1,9 +1,6 @@
 package workflow
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // CommandFailure is a red suite the tester reported. It is recorded on the test
 // phase and judged by the adjudicator.
@@ -27,10 +24,10 @@ type TestOutput struct {
 
 func (t *TestOutput) Validate() []string {
 	var v []string
-	if t.Summary == nil || strings.TrimSpace(*t.Summary) == "" {
+	if blank(t.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
-	if t.Command == nil || strings.TrimSpace(*t.Command) == "" {
+	if blank(t.Command) {
 		v = append(v, `"command" is missing or empty`)
 	}
 	if t.ExitCode == nil {
@@ -42,7 +39,7 @@ func (t *TestOutput) Validate() []string {
 	if t.Failures == nil {
 		v = append(v, `"failures" is missing; use [] if none`)
 	}
-	if t.Coverage == nil || strings.TrimSpace(*t.Coverage) == "" {
+	if blank(t.Coverage) {
 		v = append(v, `"coverage" is missing or empty; say "unchanged" if no test was removed, skipped or narrowed`)
 	}
 	if t.Wrote == nil {
