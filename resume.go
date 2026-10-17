@@ -53,9 +53,9 @@ func resumeCmd(args []string) int {
 	if err := manager.Start(dataRoot); err != nil {
 		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
 	}
-	kind := "recovery"
+	kind := trace.KindRecovery
 	if *restart {
-		kind = "restart"
+		kind = trace.KindRestart
 	}
 	fmt.Printf("resume %s iteration %d queued (%s); writing runs plan again from the earlier work and your guidance\n", id, n, kind)
 	if *detach {
