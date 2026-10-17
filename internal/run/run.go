@@ -882,6 +882,22 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.R
 		}
 		return true
 	})
+	recordContextSnapshot(h, a.Name, contextFile, turn)
+
+	// The stream's own totals stay the CLI's accounting and a consistency check
+	// against what was persisted; the database was charged response by response
+	// as the stream ran, so nothing is written here.
+	r.mu.Lock()
+	r.tokens += res.Tokens
+	r.cost += res.Cost
+	r.mu.Unlock()
+
+	return res, r.turnOutcome(ctx, h, a, turn, res, err, calls, usageErr)
+}
+
+// recordContextSnapshot records the context snapshot Pi wrote to contextFile
+// for this turn, or logs why it could not be read.
+func recordContextSnapshot(h *Handle, agent, contextFile string, turn int) {
 	// Context fullness is a session estimate, not the sum of billed responses.
 	// Record it even if the invocation's reply fails validation; a missing
 	// snapshot (notably on cancellation) says nothing about context fullness.
@@ -898,20 +914,17 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.R
 	switch {
 	case snapErr == nil:
 		snapshot["attempt"] = turn
-		_ = h.event("context", a.Name, snapshot)
+		_ = h.event("context", agent, snapshot)
 	case !errors.Is(snapErr, fs.ErrNotExist):
 		_ = h.event("log", "context_snapshot",
 			map[string]any{"attempt": turn, "error": snapErr.Error()})
 	}
+}
 
-	// The stream's own totals stay the CLI's accounting and a consistency check
-	// against what was persisted; the database was charged response by response
-	// as the stream ran, so nothing is written here.
-	r.mu.Lock()
-	r.tokens += res.Tokens
-	r.cost += res.Cost
-	r.mu.Unlock()
-
+// turnOutcome is the error spawn returns for a finished turn: enforcement first,
+// then lost spend, the tool budget, the deadline and a provider failure, in
+// that order. ctx is the turn's own context.
+func (r *Run) turnOutcome(ctx context.Context, h *Handle, a config.Resolved, turn int, res pi.Result, err error, calls int, usageErr error) error {
 	// Enforced before the envelope is read, and after a failed turn too: the
 	// turn that ended badly is the one most likely to have left something
 	// behind, and a correction round must not build on it. A revert outranks
@@ -920,33 +933,33 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.R
 	reverted, enforceErr := r.enforce(h)
 	switch {
 	case len(reverted) > 0:
-		return res, fmt.Errorf("%s wrote outside its scope; reverted %s",
+		return fmt.Errorf("%s wrote outside its scope; reverted %s",
 			a.Name, strings.Join(reverted, ", "))
 	case enforceErr != nil:
-		return res, enforceErr
+		return enforceErr
 	// Losing a write is losing money from the record, so it fails the phase
 	// rather than leaving the dashboard quietly short.
 	case usageErr != nil:
-		return res, fmt.Errorf("recording %s spend: %w", a.Name, usageErr)
+		return fmt.Errorf("recording %s spend: %w", a.Name, usageErr)
 	}
 
 	// A killed Pi reports as a failed command, so the budget has to claim its
 	// own cancellation before the error is read as one.
 	if err != nil && calls >= toolBudget {
-		return res, errBudget
+		return errBudget
 	}
 	// Checked on this turn's own context: a cancelled run is not a spent budget.
 	if err != nil && r.ctx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		_ = h.event("log", "deadline_spent",
 			map[string]int{"attempt": turn, "calls": calls})
-		return res, errBudget
+		return errBudget
 	}
 	// Returned as an error rather than an empty reply, so Call stops here
 	// instead of spending its corrections asking a missing model again.
 	if err == nil && res.Failure != "" {
-		return res, fmt.Errorf("%s (%s/%s): provider error: %s", a.Name, a.Provider, a.Model, res.Failure)
+		return fmt.Errorf("%s (%s/%s): provider error: %s", a.Name, a.Provider, a.Model, res.Failure)
 	}
-	return res, err
+	return err
 }
 
 // jsonFence matches a fenced json block. The agent is asked to end its reply
