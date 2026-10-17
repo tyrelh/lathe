@@ -6,8 +6,10 @@ package workspace
 // performs both itself. An agent judges the text; lathe performs the git.
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -87,27 +89,53 @@ func Commit(repo, message string, paths []string) error {
 // configuration is not written.
 func Push(repo, branch string) error { return gitRun(repo, nil, "push", "origin", branch) }
 
+// gitCmd is git in repo with literal pathspecs, env added to the process
+// environment when non-nil, and stdin.
+func gitCmd(repo string, env []string, stdin io.Reader, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
+	cmd.Dir = repo
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	cmd.Stdin = stdin
+	return cmd
+}
+
+// git is git's trimmed stdout; a failure is the bare exit error.
+func git(repo string, args ...string) (string, error) {
+	out, err := process.Output(gitCmd(repo, nil, nil, args...))
+	return strings.TrimSpace(string(out)), err
+}
+
 // gitRun is git for its exit code, with the output folded into the error.
 // These are the calls whose failure a run reports rather than parses. Paths are
 // literal, as in permit: a route like pages/blog/[slug].tsx is one file, not a glob.
 func gitRun(repo string, stdin io.Reader, args ...string) error {
-	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
-	cmd.Dir = repo
-	cmd.Stdin = stdin
-	if out, err := process.CombinedOutput(cmd); err != nil {
+	if out, err := process.CombinedOutput(gitCmd(repo, nil, stdin, args...)); err != nil {
 		return fmt.Errorf("git %s in %s: %w: %s",
 			strings.Join(args, " "), repo, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
+// gitEnv is git in repo with env added, returning stdout; a failure carries
+// stderr.
+func gitEnv(repo string, env []string, args ...string) ([]byte, error) {
+	cmd := gitCmd(repo, env, nil, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := process.Output(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("git %s in %s: %w: %s", strings.Join(args, " "), repo, err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
 // RemoteHead is the commit origin's branch points at now, asked of origin
 // itself rather than read from a remote-tracking ref that may be stale. A
 // branch origin does not have is "", which is not an error.
 func RemoteHead(repo, branch string) (string, error) {
-	cmd := exec.Command("git", "ls-remote", "origin", "refs/heads/"+branch)
-	cmd.Dir = repo
-	out, err := process.CombinedOutput(cmd)
+	out, err := process.CombinedOutput(gitCmd(repo, nil, nil, "ls-remote", "origin", "refs/heads/"+branch))
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote origin %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}

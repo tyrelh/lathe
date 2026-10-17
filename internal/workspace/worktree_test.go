@@ -1,11 +1,12 @@
 package workspace
 
 import (
-	"github.com/tyrelh/lathe/internal/gittest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tyrelh/lathe/internal/gittest"
 )
 
 func out(t *testing.T, dir string, args ...string) string {
