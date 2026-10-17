@@ -197,7 +197,7 @@ func prRecord(dataRoot string, row trace.Row) (url string, draft, lathe bool) {
 			Draft      bool   `json:"draft"`
 			Validation string `json:"validation"`
 		}
-		b, err := os.ReadFile(filepath.Join(ReportDir(dataRoot, row.ID, i), "pr.json"))
+		b, err := os.ReadFile(filepath.Join(ReportDir(dataRoot, row.ID, i), run.PRFile))
 		if err != nil || json.Unmarshal(b, &pr) != nil || pr.URL == "" {
 			continue
 		}

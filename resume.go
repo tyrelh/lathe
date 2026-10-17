@@ -11,6 +11,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/manager"
+	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 )
@@ -85,7 +86,7 @@ func recoveryLines(db *trace.DB, row trace.Row, its []trace.Iteration, dataRoot 
 		}
 	}
 	dir := worker.ReportDir(dataRoot, row.ID, n)
-	scopes, _ := filepath.Glob(filepath.Join(dir, "scope-*.json"))
+	scopes, _ := filepath.Glob(filepath.Join(dir, run.ScopeGlob))
 	spent := 0
 	for _, path := range scopes {
 		var req struct {
