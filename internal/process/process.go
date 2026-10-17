@@ -135,32 +135,8 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 		return nil, fmt.Errorf("recording the launch intent: %w", err)
 	}
 
-	ctlR, ctlW, err := os.Pipe()
+	h, ctlW, stR, err := r.spawnHelper(cmd)
 	if err != nil {
-		r.Registrar.Drained(id)
-		return nil, err
-	}
-	stR, stW, err := os.Pipe()
-	if err != nil {
-		ctlR.Close()
-		ctlW.Close()
-		r.Registrar.Drained(id)
-		return nil, err
-	}
-	args := append([]string{HelperArg, "--dir", cmd.Dir, "--", cmd.Path}, cmd.Args[1:]...)
-	h := exec.Command(r.Bin, args...)
-	h.Env = cmd.Env
-	h.Stdin, h.Stdout, h.Stderr = cmd.Stdin, cmd.Stdout, cmd.Stderr
-	h.ExtraFiles = []*os.File{ctlR, stW}
-	h.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	h.WaitDelay = 2 * time.Second
-	err = h.Start()
-	// The parent keeps only its own ends; the helper's copies are its own.
-	ctlR.Close()
-	stW.Close()
-	if err != nil {
-		ctlW.Close()
-		stR.Close()
 		r.Registrar.Drained(id)
 		return nil, err
 	}
@@ -170,19 +146,13 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 
 	token := rand.Text()
 	st := bufio.NewReader(stR)
-	ready, rerr := func() (string, error) {
-		if _, err := fmt.Fprintf(ctlW, msgToken+" %s\n", token); err != nil {
-			return "", err
-		}
-		return st.ReadString('\n')
-	}()
-	reg, perr := parseReady(ready)
-	if rerr != nil || perr != nil {
+	reg, err := handshake(ctlW, st, token)
+	if err != nil {
 		p.abort(stR)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("the supervisor did not become ready: %v", errors.Join(rerr, perr))
+		return nil, fmt.Errorf("the supervisor did not become ready: %v", err)
 	}
 	reg.Host, _ = os.Hostname()
 	reg.Token = token
@@ -200,6 +170,55 @@ func (r *Runner) Start(ctx context.Context, cmd *exec.Cmd) (*Process, error) {
 		return nil, fmt.Errorf("admitting the launch: %w", err)
 	}
 	return p, nil
+}
+
+// spawnHelper starts the supervisor helper for cmd with its control and
+// status pipes, and returns it with the parent's ends of those pipes. On
+// failure it closes every pipe end it opened.
+func (r *Runner) spawnHelper(cmd *exec.Cmd) (h *exec.Cmd, ctlW, stR *os.File, err error) {
+	ctlR, ctlW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	stR, stW, err := os.Pipe()
+	if err != nil {
+		ctlR.Close()
+		ctlW.Close()
+		return nil, nil, nil, err
+	}
+	args := append([]string{HelperArg, "--dir", cmd.Dir, "--", cmd.Path}, cmd.Args[1:]...)
+	h = exec.Command(r.Bin, args...)
+	h.Env = cmd.Env
+	h.Stdin, h.Stdout, h.Stderr = cmd.Stdin, cmd.Stdout, cmd.Stderr
+	h.ExtraFiles = []*os.File{ctlR, stW}
+	h.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	h.WaitDelay = 2 * time.Second
+	err = h.Start()
+	// The parent keeps only its own ends; the helper's copies are its own.
+	ctlR.Close()
+	stW.Close()
+	if err != nil {
+		ctlW.Close()
+		stR.Close()
+		return nil, nil, nil, err
+	}
+	return h, ctlW, stR, nil
+}
+
+// handshake sends token on ctl and reads the supervisor's ready line from st.
+// A failed read is still parsed, and both errors are joined.
+func handshake(ctl io.Writer, st *bufio.Reader, token string) (Registration, error) {
+	ready, rerr := func() (string, error) {
+		if _, err := fmt.Fprintf(ctl, msgToken+" %s\n", token); err != nil {
+			return "", err
+		}
+		return st.ReadString('\n')
+	}()
+	reg, perr := parseReady(ready)
+	if rerr != nil || perr != nil {
+		return reg, errors.Join(rerr, perr)
+	}
+	return reg, nil
 }
 
 // abort ends a launch that was never admitted: closing the control pipe makes
