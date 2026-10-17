@@ -98,7 +98,7 @@ repo_instructions: false    # don't send AGENTS.md / CLAUDE.md to this agent
 ```
 
 - These files are the only source. There is no defaults layer: every `config.yaml` names provider, model, thinking and timeout, so what you read is what the agent runs with. Changing a provider everywhere means editing every agent.
-- lathe writes them from the copy in the binary when a file is missing. After an upgrade to a newer release it replaces files you never edited; files you edited stay as they are, and if their seed has changed since, the dashboard flags them as drift and shows the diff. Development builds (`dev`) never replace anything.
+- lathe writes them from the copy in the binary when a file is missing. After an upgrade to a newer release it replaces files you never edited; files you edited stay as they are, and if their seed has changed since, the dashboard flags them as drift and shows the diff. Development builds (`dev`) never replace anything. `make build` and `make install` produce dev builds; `make release` stamps a version.
 - A missing or invalid file refuses the submission with an error naming the file. lathe never falls back to its own copy.
 - Configuration is captured when work is submitted, so an edit only applies to runs and revisions submitted after it.
 - `--provider`, `--model` and `--thinking` override every agent for one run. A repository's own `lathe.toml` is no longer read, and there is no per-repository configuration.
