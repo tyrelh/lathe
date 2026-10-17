@@ -242,6 +242,15 @@ type agentView struct {
 	Workflows []string `json:"workflows"`
 }
 
+// prompt returns the agent's prompt for role, and false when it has none.
+func (a agentView) prompt(role string) (config.Prompt, bool) {
+	i := slices.IndexFunc(a.Prompts, func(p config.Prompt) bool { return p.Role == role })
+	if i < 0 {
+		return config.Prompt{}, false
+	}
+	return a.Prompts[i], true
+}
+
 // agentViews loads the roster and returns its agents and routing phases in
 // Prompts order, with bodies when bodies is set.
 func agentViews(roster func() (config.Config, error), bodies bool) ([]agentView, error) {

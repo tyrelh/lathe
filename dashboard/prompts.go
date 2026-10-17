@@ -3,7 +3,6 @@ package dashboard
 import (
 	"errors"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 
@@ -22,12 +21,12 @@ func findPrompt(w http.ResponseWriter, roster func() (config.Config, error), nam
 		submitError(w, http.StatusInternalServerError, err.Error())
 		return config.Prompt{}, false
 	}
-	j := slices.IndexFunc(a.Prompts, func(p config.Prompt) bool { return p.Role == role })
-	if j < 0 {
+	p, ok := a.prompt(role)
+	if !ok {
 		submitError(w, http.StatusNotFound, name+" has no "+role+" prompt")
 		return config.Prompt{}, false
 	}
-	return a.Prompts[j], true
+	return p, true
 }
 
 // writtenAgent answers a write with the agent as GET /api/agents/{name}
@@ -127,7 +126,11 @@ func promptConflict(w http.ResponseWriter, roster func() (config.Config, error),
 		submitError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	current := a.Prompts[slices.IndexFunc(a.Prompts, func(c config.Prompt) bool { return c.Role == role })]
+	current, ok := a.prompt(role)
+	if !ok {
+		submitError(w, http.StatusInternalServerError, name+" has no "+role+" prompt")
+		return
+	}
 	writeStatus(w, http.StatusConflict, map[string]any{
 		"error": "this prompt changed since you loaded it", "body": current.Body, "hash": current.Hash,
 		"edited": current.Edited,
