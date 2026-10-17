@@ -3,7 +3,6 @@ package pi
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/internal/process"
-	"github.com/tyrelh/lathe/internal/trace"
 )
 
 // The test binary doubles as the supervisor helper, the way lathe does.
@@ -202,6 +200,13 @@ func TestScanSample(t *testing.T) {
 	if len(tools) != 4 {
 		t.Fatalf("tool ends = %d; want 4", len(tools))
 	}
+	var names []string
+	for _, ev := range tools {
+		names = append(names, ev.ToolName)
+	}
+	if got := strings.Join(names, ","); got != "find,read,read,read" {
+		t.Fatalf("tool names = %q", got)
+	}
 	// Args live on the start event; pairing on toolCallId is what puts them here.
 	for _, ev := range tools {
 		if len(ev.Args) == 0 {
@@ -265,60 +270,6 @@ func TestRunHugeToolResult(t *testing.T) {
 	}
 }
 
-// The sample's tool calls arrive in the global DB as tool_call rows while the
-// stream is being read.
-func TestScanStreamsToolCallsToDB(t *testing.T) {
-	dataRoot := filepath.Join(t.TempDir(), "data")
-	db, err := trace.Open(dataRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	runID, err := db.Submit(trace.Request{
-		Workflow: "scout", Repo: "/Users/tyrel/Projects/lathe", Request: "what is here"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ph := trace.NewPhase(runID, 1, "scout", "scout")
-	if err := db.PhaseUpsert(ph); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = Scan(openSample(t, "pi-sample.jsonl"), nil, func(ev Event) bool {
-		if ev.Type != "tool_execution_end" {
-			return true
-		}
-		if err := db.Event(runID, ph.ID, "tool_call", ev.ToolName,
-			map[string]any{"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError}); err != nil {
-			t.Error(err)
-		}
-		return true
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ph.Finish("success", "")
-	if err := db.PhaseUpsert(ph); err != nil {
-		t.Fatal(err)
-	}
-
-	ro, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, "lathe.db")+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
-	var names string
-	if err := ro.QueryRow(
-		`SELECT group_concat(name) FROM (SELECT name FROM events WHERE type='tool_call' ORDER BY event_id)`,
-	).Scan(&names); err != nil {
-		t.Fatal(err)
-	}
-	if names != "find,read,read,read" {
-		t.Fatalf("tool_call rows = %q; want find,read,read,read", names)
-	}
-}
-
 // Run's own logic is the command line it builds; a stub on the Bin path lets
 // that be checked without a provider, a key, or the network.
 func TestRunBuildsCommandAndStreams(t *testing.T) {
@@ -373,65 +324,28 @@ func TestRunBuildsCommandAndStreams(t *testing.T) {
 }
 
 // Hand-run: LATHE_PI_LIVE=1 go test ./internal/pi -run Live -v spends real
-// tokens against the real provider and writes to the real data root, so a
-// second terminal can watch rows arrive with sqlite3.
+// tokens against the real provider.
 func TestLiveScout(t *testing.T) {
 	if os.Getenv("LATHE_PI_LIVE") == "" {
 		t.Skip("set LATHE_PI_LIVE=1 to spawn the real agent")
 	}
-	root, err := trace.DataRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
 	repo, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID, err := db.Submit(trace.Request{Workflow: "scout", Repo: repo, Request: "live phase 3 check"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ph := trace.NewPhase(runID, 1, "scout", "scout")
-	if err := db.PhaseUpsert(ph); err != nil {
-		t.Fatal(err)
-	}
-
-	runDir := filepath.Join(root, "runs", runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	rawFile, err := os.Create(filepath.Join(runDir, "raw.jsonl"))
+	rawFile, err := os.Create(filepath.Join(t.TempDir(), "raw.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rawFile.Close()
-
 	res, err := Run(context.Background(), Options{
 		Dir: repo, Provider: "moonshotai", Model: "kimi-k2.7-code",
-		Tools: []string{"read", "grep", "find", "ls"},
-		Raw:   rawFile, SessionID: runID,
-		OnStart: func(pid int) { db.Event(runID, ph.ID, "log", "pi_pid", map[string]int{"pid": pid}) },
-	}, "Read every .go file under internal/ and list what each package does.", func(ev Event) bool {
-		if ev.Type == "tool_execution_end" {
-			db.Event(runID, ph.ID, "tool_call", ev.ToolName,
-				map[string]any{"id": ev.ToolCallID, "args": ev.Args, "isError": ev.IsError})
-		}
-		return true
-	})
+		Tools: []string{"read", "grep", "find", "ls"}, Raw: rawFile,
+	}, "Read every .go file under internal/ and list what each package does.", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ph.Finish("success", "")
-	if err := db.PhaseUpsert(ph); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("run %s: %d events, %d tokens, $%.5f\n%s", runID, res.Events, res.Tokens, res.Cost, res.Text)
+	t.Logf("%d events, %d tokens, $%.5f\n%s", res.Events, res.Tokens, res.Cost, res.Text)
 	if res.Events == 0 || res.Text == "" {
 		t.Fatal("the agent produced nothing")
 	}
