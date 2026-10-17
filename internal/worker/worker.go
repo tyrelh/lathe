@@ -688,8 +688,7 @@ func revisionOf(db *trace.DB, dataRoot string, row trace.Row, repo string, out i
 		return nil, fmt.Errorf("fetching %s: %w; nothing was changed", ev.Branch, err)
 	}
 	if fetched != ev.Commit {
-		return nil, fmt.Errorf("origin/%s is at %s, but lathe last shipped %s: the pull request's branch changed outside lathe; bring it back to %s, or start a new build; nothing was changed",
-			ev.Branch, workspace.Short(fetched), workspace.Short(ev.Commit), workspace.Short(ev.Commit))
+		return nil, fmt.Errorf("%w; nothing was changed", workspace.BranchChanged(ev.Branch, fetched, ev.Commit))
 	}
 	// The planner's branch diff is taken against origin's base; a stale or
 	// missing one would describe the wrong change.

@@ -204,10 +204,16 @@ func CheckRevisable(repo string, e Evidence) (PR, error) {
 		return pr, err
 	}
 	if remote != e.Commit {
-		return pr, fmt.Errorf("origin/%s is at %s, but lathe last shipped %s: the pull request's branch changed outside lathe (a push, or an accepted suggestion); bring it back to %s, or start a new build",
-			e.Branch, orNone(Short(remote)), Short(e.Commit), Short(e.Commit))
+		return pr, BranchChanged(e.Branch, remote, e.Commit)
 	}
 	return pr, nil
+}
+
+// BranchChanged is the refusal for origin's branch having moved from shipped,
+// the commit lathe last shipped to it, to at.
+func BranchChanged(branch, at, shipped string) error {
+	return fmt.Errorf("origin/%s is at %s, but lathe last shipped %s: the pull request's branch changed outside lathe (a push, or an accepted suggestion); bring it back to %s, or start a new build",
+		branch, orNone(Short(at)), Short(shipped), Short(shipped))
 }
 
 // Short is a commit abbreviated the way the banners print it.
