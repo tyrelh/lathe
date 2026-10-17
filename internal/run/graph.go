@@ -18,8 +18,6 @@ type Node struct {
 	// SendBacks is how many times this node may name an earlier node. A target
 	// declared later is a forward and costs nothing; only going back is bounded.
 	SendBacks int
-	// RevertOnly tolerates leavings, as Params.RevertOnly does.
-	RevertOnly bool
 }
 
 // Entry is one execution of a node. It is the phase's Handle plus the two
@@ -80,7 +78,7 @@ func (g *Graph) Run() error {
 		n := g.nodes[i]
 		var target string
 		err := g.run.Phase(Params{
-			Name: n.Name, Owner: n.Owner, SessionID: n.session, RevertOnly: n.RevertOnly,
+			Name: n.Name, Owner: n.Owner, SessionID: n.session,
 		}, func(h *Handle) error {
 			// The first entry adopts the phase's own id, so every later entry
 			// resumes the same Pi session without the workflow threading it.
