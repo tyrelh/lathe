@@ -244,7 +244,11 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 	g.Add(run.Node{Name: "plan", Owner: "planner"}, func(e *run.Entry) (string, error) {
 		request := plannerRequest()
 		if !planned {
-			request += recoveryContext(r, c)
+			carried, outstanding := recoveryContext(r, c != nil)
+			if outstanding != nil {
+				c.outstanding = outstanding
+			}
+			request += carried
 			planned = true
 		}
 		gates := []run.Gate{run.ArtifactsExist, run.FilesNonEmpty, FilesPermitted(r.Protected())}
