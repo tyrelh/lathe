@@ -134,7 +134,7 @@ func TestPlanRejectsProtectedPath(t *testing.T) {
 // The other three ways a file list stops being a usable write scope: a path
 // outside the repo, an absolute path, and a pattern instead of a file.
 func TestFilesPermitted(t *testing.T) {
-	gate := FilesPermitted([]string{".git/", ".env*", "*.pem", "*.key"})
+	gate := FilesPermitted(config.Protected)
 	for _, tc := range []struct{ file, want string }{
 		{"fetch.go", ""},
 		{"internal/run/run.go", ""},
