@@ -304,43 +304,18 @@ func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOpt
 			return trace.Recovery{}, err
 		}
 		rs.Publication = own.pub
-		published := own.pub != nil && own.pub.Head != ""
 		if o.Restart {
 			// Restoration evidence is never read: only ownership and the base.
-			if published {
-				// A published branch is never rewritten from another base.
-				base = own.pub.Head
-				if o.Base != "" {
-					sha, err := workspace.ResolveCommit(spec.Workspace.Path, o.Base)
-					if err != nil {
-						return trace.Recovery{}, err
-					}
-					if sha != base {
-						return trace.Recovery{}, fmt.Errorf("%w: %s is published at %s; a restart from %s would rewrite it",
-							trace.ErrNotRecoverable, own.pub.Branch, workspace.Short(base), workspace.Short(sha))
-					}
-				}
-			} else if base, err = restartBase(spec, src, o.Base); err != nil {
+			if base, err = restartPlan(spec, src, own, o.Base); err != nil {
 				return trace.Recovery{}, err
 			}
 			rs.Unavailable = unrestored(n, own.patch)
 		} else {
-			if base = own.base; base == "" {
-				return trace.Recovery{}, fmt.Errorf("%w: iteration %d records no base commit to restore its work at; resume with --restart --base <ref>", trace.ErrNotRecoverable, n)
+			var patch, digest, unavailable string
+			if base, patch, digest, unavailable, err = restorePlan(dataRoot, row, spec, src, own); err != nil {
+				return trace.Recovery{}, err
 			}
-			patch, digest := own.patch, own.digest
-			if own.published != "" {
-				// Only the work beyond the published commit is restored, at it.
-				if patch, err = residualOf(dataRoot, row, spec, src, own); err != nil {
-					return trace.Recovery{}, fmt.Errorf("%w: %v%s", trace.ErrNotRecoverable, err, restartHint(runID))
-				}
-				base, digest = own.published, ""
-			}
-			if own.published != "" && patch == "" {
-				rs.Unavailable = fmt.Sprintf("iteration %d's work is already published at %s; it is validated again, not reapplied", n, workspace.Short(base))
-			} else if err := restorable(spec, src, patch, digest, rs); err != nil {
-				return trace.Recovery{}, fmt.Errorf("%w: %v%s", trace.ErrNotRecoverable, err, restartHint(runID))
-			}
+			rs.Patch, rs.Digest, rs.Unavailable = patch, digest, unavailable
 		}
 	} else if o.Restart {
 		return trace.Recovery{}, fmt.Errorf("%w: %s runs read the checkout and have no work to restart without", trace.ErrNotRecoverable, spec.Workflow)
@@ -370,39 +345,87 @@ func restartHint(runID string) string {
 	return fmt.Sprintf("; continue without it with lathe resume --restart %s \"guidance\"", runID)
 }
 
+// restartPlan is the commit a restart starts from. A published branch is never
+// rewritten from another base, so with one ref must name its head.
+func restartPlan(spec Spec, src trace.Iteration, own owned, ref string) (string, error) {
+	if own.pub == nil || own.pub.Head == "" {
+		return restartBase(spec, src, ref)
+	}
+	base := own.pub.Head
+	if ref != "" {
+		sha, err := workspace.ResolveCommit(spec.Workspace.Path, ref)
+		if err != nil {
+			return "", err
+		}
+		if sha != base {
+			return "", fmt.Errorf("%w: %s is published at %s; a restart from %s would rewrite it",
+				trace.ErrNotRecoverable, own.pub.Branch, workspace.Short(base), workspace.Short(sha))
+		}
+	}
+	return base, nil
+}
+
+// restorePlan is the commit a recovery restores the source iteration's work
+// at, the saved patch and its digest to restore, and why no work is restored
+// when none is. Only work beyond a published commit is restored, at it.
+func restorePlan(dataRoot string, row trace.Row, spec Spec, src trace.Iteration, own owned) (base, patch, digest, unavailable string, err error) {
+	if base = own.base; base == "" {
+		return "", "", "", "", fmt.Errorf("%w: iteration %d records no base commit to restore its work at; resume with --restart --base <ref>", trace.ErrNotRecoverable, row.Iteration)
+	}
+	patch, recorded := own.patch, own.digest
+	if own.published != "" {
+		if patch, err = residualOf(dataRoot, row, spec, src, own); err != nil {
+			return "", "", "", "", evidenceErr(err, row.ID)
+		}
+		base, recorded = own.published, ""
+		if patch == "" {
+			return base, "", "", fmt.Sprintf("iteration %d's work is already published at %s; it is validated again, not reapplied", row.Iteration, workspace.Short(base)), nil
+		}
+	}
+	if patch, digest, unavailable, err = restorable(spec, src, patch, recorded); err != nil {
+		return "", "", "", "", evidenceErr(err, row.ID)
+	}
+	return base, patch, digest, unavailable, nil
+}
+
+// evidenceErr refuses a recovery of run runID whose saved evidence err says is
+// missing or damaged.
+func evidenceErr(err error, runID string) error {
+	return fmt.Errorf("%w: %v%s", trace.ErrNotRecoverable, err, restartHint(runID))
+}
+
 // restorable settles what the source iteration left to restore: a saved
-// patch that is intact and touches no protected path, or known emptiness.
-// Anything else is missing or damaged evidence.
-func restorable(spec Spec, src trace.Iteration, patch, recorded string, rs *RecoverySpec) error {
+// patch that is intact and touches no protected path, with its digest, or why
+// nothing is restored. Anything else is missing or damaged evidence.
+func restorable(spec Spec, src trace.Iteration, patch, recorded string) (savedPatch, digest, unavailable string, err error) {
 	switch {
 	case patch != "":
 		if _, err := os.Stat(patch); err != nil {
-			return fmt.Errorf("iteration %d's saved patch %s is missing", src.N, patch)
+			return "", "", "", fmt.Errorf("iteration %d's saved patch %s is missing", src.N, patch)
 		}
 		digest, err := workspace.PatchDigest(patch)
 		if err != nil {
-			return err
+			return "", "", "", err
 		}
 		// Evidence an earlier recovery recorded is trusted only unchanged.
 		if recorded != "" && digest != recorded {
-			return fmt.Errorf("saved patch %s changed since it was recorded", patch)
+			return "", "", "", fmt.Errorf("saved patch %s changed since it was recorded", patch)
 		}
 		if _, err := workspace.PatchPaths(spec.Workspace.Path, patch, spec.Roster.Protected); err != nil {
-			return err
+			return "", "", "", err
 		}
-		rs.Patch, rs.Digest = patch, digest
+		return patch, digest, "", nil
 	case src.Worktree == "" || src.Preservation == trace.PreservedUnstarted:
-		rs.Unavailable = fmt.Sprintf("iteration %d never created a worktree, so it wrote nothing", src.N)
+		return "", "", fmt.Sprintf("iteration %d never created a worktree, so it wrote nothing", src.N), nil
 	case src.Preservation == trace.PreservedEmpty:
-		rs.Unavailable = fmt.Sprintf("iteration %d's cleanup exported its worktree and found no changes", src.N)
+		return "", "", fmt.Sprintf("iteration %d's cleanup exported its worktree and found no changes", src.N), nil
 	case src.Preservation == trace.PreservedMissing:
-		return fmt.Errorf("iteration %d's worktree was gone before its work could be saved, so that work is unavailable", src.N)
+		return "", "", "", fmt.Errorf("iteration %d's worktree was gone before its work could be saved, so that work is unavailable", src.N)
 	default:
 		// Removal alone, as older records show it, does not say the
 		// worktree was empty.
-		return fmt.Errorf("iteration %d's worktree is %s with no record that its work was saved or found empty", src.N, cmp.Or(src.WorktreeState, "in an unknown state"))
+		return "", "", "", fmt.Errorf("iteration %d's worktree is %s with no record that its work was saved or found empty", src.N, cmp.Or(src.WorktreeState, "in an unknown state"))
 	}
-	return nil
 }
 
 // restartBase freezes the commit a restart starts from: ref when given, else
