@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -790,7 +791,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.R
 	// agent_end) cannot inherit an earlier turn's snapshot. A phase's
 	// invocations run one after another, so one path per phase is enough.
 	contextFile := filepath.Join(scopeDir, "context.json")
-	if err := os.Remove(contextFile); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(contextFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return pi.Result{}, err
 	}
 
@@ -898,7 +899,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.R
 	case snapErr == nil:
 		snapshot["attempt"] = turn
 		_ = h.event("context", a.Name, snapshot)
-	case !os.IsNotExist(snapErr):
+	case !errors.Is(snapErr, fs.ErrNotExist):
 		_ = h.event("log", "context_snapshot",
 			map[string]any{"attempt": turn, "error": snapErr.Error()})
 	}
