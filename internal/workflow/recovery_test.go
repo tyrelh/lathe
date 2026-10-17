@@ -165,23 +165,25 @@ func TestUnacceptedRecoveryLeavesThePullRequest(t *testing.T) {
 // caught immediately before delivery: nothing is pushed, and completing with
 // no new code is refused.
 func TestRecoveredDeliveryRechecksPublication(t *testing.T) {
-	for _, tc := range []struct{ name, tester, builder string }{
-		{"closed", "echo CLOSED > " + "$d/pr-state\n", "printf 'hello there\\n' > hello.txt\n"},
-		{"moved", "c=$(git commit-tree HEAD^{tree} -p HEAD -m external); git push -q -f origin $c:refs/heads/feat/x\n", ":\n"},
+	for _, tc := range []struct {
+		name, tester, builder, builderReply string
+		wantOriginUnchanged                 bool
+	}{
+		{"closed", "echo CLOSED > " + "$d/pr-state\n", "printf 'hello there\\n' > hello.txt\n", "", true},
+		{"moved", "c=$(git commit-tree HEAD^{tree} -p HEAD -m external); git push -q -f origin $c:refs/heads/feat/x\n", ":\n", jsonReply(t, map[string]any{"summary": "already done", "changed": []string{}, "needed": []string{}, "artifacts": []string{}}), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, repo, origin, head := publishedBranch(t)
 			stub := publishedStub(t)
 			write(t, filepath.Join(stub, "builder.sh"), tc.builder)
-			if tc.name == "moved" {
-				write(t, filepath.Join(stub, "builder"), jsonReply(t, map[string]any{
-					"summary": "already done", "changed": []string{}, "needed": []string{}, "artifacts": []string{}}))
+			if tc.builderReply != "" {
+				write(t, filepath.Join(stub, "builder"), tc.builderReply)
 			}
 			write(t, filepath.Join(stub, "tester.sh"), tc.tester)
 			if code := executeRecovery(t, cfg, "build", repo, "greet the world", publishedRecovery(head, true)); code != 1 {
 				t.Fatalf("code = %d", code)
 			}
-			if tc.name == "closed" {
+			if tc.wantOriginUnchanged {
 				if got := strings.TrimSpace(gitBuild(t, origin, "rev-parse", "feat/x")); got != head {
 					t.Fatal("pushed to a closed pull request")
 				}

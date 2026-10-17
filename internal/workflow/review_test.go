@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,18 +75,19 @@ func TestPlanReviewLoop(t *testing.T) {
 	ceiling = append(ceiling, objections)
 	last := maxReviewSendBacks + 1
 	for _, tc := range []struct {
-		name     string
-		replies  []string
-		reviews  int
-		failed   int
-		risks    int
-		wantLine string
+		name                string
+		replies             []string
+		reviews             int
+		failed              int
+		risks               int
+		wantLine            string
+		retriedAfterFailure bool
 	}{
-		{"first acceptance", []string{initial, reviewOK(t)}, 1, 0, 0, ""},
-		{"revision", []string{initial, objections, revised, reviewOK(t)}, 2, 0, 0, "plan revised 1 times; reviewer accepted"},
-		{"ceiling", ceiling, last, 0, 2, fmt.Sprintf("plan revised %d times; 2 objections unresolved", maxReviewSendBacks)},
-		{"failed review", []string{initial, bad, bad, bad, revised, reviewOK(t)}, 2, 1, 0, "plan revised 1 times; reviewer accepted"},
-		{"failed final review", failedFinal, last, 1, 1, fmt.Sprintf("plan revised %d times; 1 objections unresolved", maxReviewSendBacks)},
+		{"first acceptance", []string{initial, reviewOK(t)}, 1, 0, 0, "", false},
+		{"revision", []string{initial, objections, revised, reviewOK(t)}, 2, 0, 0, "plan revised 1 times; reviewer accepted", false},
+		{"ceiling", ceiling, last, 0, 2, fmt.Sprintf("plan revised %d times; 2 objections unresolved", maxReviewSendBacks), false},
+		{"failed review", []string{initial, bad, bad, bad, revised, reviewOK(t)}, 2, 1, 0, "plan revised 1 times; reviewer accepted", true},
+		{"failed final review", failedFinal, last, 1, 1, fmt.Sprintf("plan revised %d times; 1 objections unresolved", maxReviewSendBacks), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stubPi(t, tc.replies...)
@@ -134,17 +136,18 @@ func TestPlanReviewLoop(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(phases) != 2+2*tc.reviews {
-				t.Fatalf("unexpected phase count: %v", phases)
+			first := slices.IndexFunc(phases, func(p trace.PhaseRow) bool { return p.Name == "review" })
+			if first < 1 || phases[first-1].Name != "plan" || len(phases) != first+2*tc.reviews-1 {
+				t.Fatalf("unexpected phases: %v", phases)
 			}
 			failed := 0
-			for i, ph := range phases[3:] {
+			for i, ph := range phases[first:] {
 				want := "review"
 				if i%2 == 1 {
 					want = "plan"
 				}
 				if ph.Name != want {
-					t.Fatalf("phase %d: %s, want %s", i+3, ph.Name, want)
+					t.Fatalf("phase %d: %s, want %s", first+i, ph.Name, want)
 				}
 				if ph.Status == "fail" {
 					failed++
@@ -180,7 +183,7 @@ func TestPlanReviewLoop(t *testing.T) {
 					} else if plannerSession != input.Session {
 						t.Fatal("replan lost planner session")
 					}
-					if tc.name == "failed review" && round == 1 && !strings.Contains(input.Prompt, "same plan unchanged") {
+					if tc.retriedAfterFailure && round == 1 && !strings.Contains(input.Prompt, "same plan unchanged") {
 						t.Fatal("failed review did not permit unchanged plan")
 					}
 				} else if ev.Name == "plan-reviewer" {
@@ -192,7 +195,7 @@ func TestPlanReviewLoop(t *testing.T) {
 					if input.Session == plannerSession {
 						t.Fatal("reviewer shares planner session")
 					}
-					if round > 1 && (input.Session == reviewerSession) == (tc.name == "failed review") {
+					if round > 1 && (input.Session == reviewerSession) == (tc.retriedAfterFailure) {
 						t.Fatal("incorrect reviewer session reuse/reset")
 					}
 					if round > 1 && !strings.Contains(input.Prompt, "fetch_test.go") {

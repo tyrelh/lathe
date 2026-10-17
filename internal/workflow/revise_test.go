@@ -457,12 +457,12 @@ func TestRevisionPublication(t *testing.T) {
 		reason  []string
 		// arrived is whether the commit reached origin; shipped, whether the
 		// run records it as published, which needs origin to confirm it.
-		arrived, shipped bool
+		arrived, shipped, raced bool
 	}{
 		{name: "delivered", code: 0, arrived: true, shipped: true},
 		{name: "lost acknowledgement", markers: []string{"push-lie"}, code: 0, arrived: true, shipped: true},
 		{name: "push refused", markers: []string{"push-refuse"}, code: 1, reason: []string{"not published", "git push failed"}},
-		{name: "concurrent update", markers: []string{"push-race"}, code: 1, reason: []string{"not published", "committed locally"}},
+		{name: "concurrent update", markers: []string{"push-race"}, code: 1, raced: true, reason: []string{"not published", "committed locally"}},
 		{name: "origin unreadable after the push", markers: []string{"ls-fail"}, code: 1, arrived: true,
 			reason: []string{"publication is uncertain", "last verified at"}},
 		{name: "closed before the push", states: "OPEN\nOPEN\nCLOSED\n", code: 1, reason: []string{"is closed; nothing was pushed"}},
@@ -500,7 +500,7 @@ func TestRevisionPublication(t *testing.T) {
 			switch {
 			case tc.arrived:
 				want = local
-			case tc.name == "concurrent update":
+			case tc.raced:
 				want = rev(t, repo, built+"^") // the update lathe must not overwrite
 			}
 			if remote != want {
