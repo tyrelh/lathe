@@ -321,7 +321,7 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 	if err := r.db.PhaseUpsert(ph); err != nil {
 		return r.fail(err)
 	}
-	r.db.Event(r.ID, ph.ID, "phase_start", p.Name, nil)
+	_ = r.event(ph.ID, "phase_start", p.Name, nil)
 
 	h := &Handle{run: r, phase: ph, params: p}
 	defer func() {
@@ -338,11 +338,11 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 			status, msg = trace.PhaseFail, h.failed.Error()
 		}
 		if msg != "" {
-			r.db.Event(r.ID, ph.ID, "error", p.Name, msg)
+			_ = r.event(ph.ID, "error", p.Name, msg)
 		}
 		ph.Finish(status, msg)
 		r.db.PhaseUpsert(ph)
-		r.db.Event(r.ID, ph.ID, "phase_end", p.Name, map[string]string{"status": status})
+		_ = r.event(ph.ID, "phase_end", p.Name, map[string]string{"status": status})
 		if err != nil {
 			r.fail(err)
 		}
@@ -432,7 +432,7 @@ func (r *Run) sweep(h *Handle) ([]string, error) {
 	// back is no longer dirty, so it drops out rather than being protected
 	// forever.
 	r.accepted = kept
-	r.db.Event(r.ID, h.phase.ID, "permit", h.phase.Name,
+	_ = h.event("permit", h.phase.Name,
 		map[string]any{"kept": kept, "reverted": reverted})
 	return reverted, nil
 }
@@ -550,9 +550,20 @@ func (h *Handle) permit() permit.Scope {
 	}
 }
 
+// event appends a typ event for phaseID to the run's trace and returns the
+// write error. Trace events are best-effort unless the caller returns it.
+func (r *Run) event(phaseID, typ, name string, payload any) error {
+	return r.db.Event(r.ID, phaseID, typ, name, payload)
+}
+
+// event appends a typ event to h's phase and returns the write error.
+func (h *Handle) event(typ, name string, payload any) error {
+	return h.run.event(h.phase.ID, typ, name, payload)
+}
+
 // Log records something lathe itself did, with no agent involved.
 func (h *Handle) Log(name, payload string) error {
-	return h.run.db.Event(h.run.ID, h.phase.ID, "log", name, payload)
+	return h.event("log", name, payload)
 }
 
 // AuthPreflight checks each captured provider once, every tier's included, and
@@ -662,7 +673,7 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		// not decode is an ordinary invalid report, corrected like any other.
 		if failed, ok := out.(Failing); ok && len(violations) == 0 {
 			if err := failed.Failure(); err != nil {
-				r.db.Event(r.ID, h.phase.ID, "envelope", agent.Name, out)
+				_ = h.event("envelope", agent.Name, out)
 				return err
 			}
 		}
@@ -683,7 +694,7 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 			// Keep the report and exact response together so the dashboard can
 			// show each phase's result, including plans later revised. A final
 			// plan.json alone cannot reconstruct that history.
-			return r.db.Event(r.ID, h.phase.ID, "output", agent.Name, map[string]any{
+			return h.event("output", agent.Name, map[string]any{
 				"attempt": attempt, "report": out, "text": res.Text,
 			})
 		}
@@ -704,7 +715,7 @@ func (h *Handle) recordCheck(typ, agent string, attempt int, violations []string
 	if len(violations) > 0 {
 		payload["text"] = text
 	}
-	h.run.db.Event(h.run.ID, h.phase.ID, typ, agent, payload)
+	_ = h.event(typ, agent, payload)
 }
 
 // maxRepoInstructions keeps the prompt argument under Linux's 128 KiB MAX_ARG_STRLEN.
@@ -789,14 +800,14 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		Raw:          r.rawW,
 		Runner:       r.runner,
 		OnStart: func(pid int) {
-			r.db.Event(r.ID, h.phase.ID, "log", "pi_pid", map[string]int{"pid": pid})
+			_ = h.event("log", "pi_pid", map[string]int{"pid": pid})
 		},
 	}
 
 	// Recorded off the options actually passed to Pi, so the trace cannot drift
 	// from what was sent. Session history stays in Pi's transcript; this is the
 	// input we supply, including corrections and resumed fix prompts.
-	r.db.Event(r.ID, h.phase.ID, "input", a.Name, map[string]any{
+	_ = h.event("input", a.Name, map[string]any{
 		"attempt": attempt, "system": opts.SystemPrompt, "prompt": prompt,
 		"session_id": opts.SessionID, "allow": scope.Allow,
 		"thinking": opts.Thinking,
@@ -838,13 +849,13 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 			if ev.IsError {
 				payload["result"] = ev.Result
 			}
-			r.db.Event(r.ID, h.phase.ID, "tool_call", ev.ToolName, payload)
+			_ = h.event("tool_call", ev.ToolName, payload)
 			// Ending the read is what ends the turn: killing Pi alone leaves
 			// its own tool children holding the pipe open. The session on disk
 			// keeps the context, so the next prompt resumes it rather than
 			// starting cold.
 			if calls++; calls == toolBudget {
-				r.db.Event(r.ID, h.phase.ID, "log", "budget_spent",
+				_ = h.event("log", "budget_spent",
 					map[string]int{"attempt": attempt, "calls": calls})
 				cancel()
 				return false
@@ -868,9 +879,9 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	switch {
 	case snapErr == nil:
 		snapshot["attempt"] = attempt
-		r.db.Event(r.ID, h.phase.ID, "context", a.Name, snapshot)
+		_ = h.event("context", a.Name, snapshot)
 	case !os.IsNotExist(snapErr):
-		r.db.Event(r.ID, h.phase.ID, "log", "context_snapshot",
+		_ = h.event("log", "context_snapshot",
 			map[string]any{"attempt": attempt, "error": snapErr.Error()})
 	}
 
@@ -907,7 +918,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	}
 	// Checked on this turn's own context: a cancelled run is not a spent budget.
 	if err != nil && r.ctx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		r.db.Event(r.ID, h.phase.ID, "log", "deadline_spent",
+		_ = h.event("log", "deadline_spent",
 			map[string]int{"attempt": attempt, "calls": calls})
 		return res, errBudget
 	}

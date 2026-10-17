@@ -99,7 +99,7 @@ func (h *Handle) Route(agent string, state any) error {
 	if !ok {
 		return nil
 	}
-	if err := r.db.Event(r.ID, h.phase.ID, "input", "jev", map[string]any{
+	if err := h.event("input", "jev", map[string]any{
 		"model": jev.Model, "instructions": rt.Instructions, "criteria": rt.Criteria(), "state": state,
 	}); err != nil {
 		return err
@@ -142,5 +142,5 @@ func (h *Handle) Route(agent string, state any) error {
 		r.cost += a.Cost()
 	}
 	r.mu.Unlock()
-	return r.db.Event(r.ID, h.phase.ID, "output", "jev", map[string]any{"report": report, "text": d.Raw})
+	return h.event("output", "jev", map[string]any{"report": report, "text": d.Raw})
 }
