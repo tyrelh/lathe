@@ -23,6 +23,7 @@ import (
 	"github.com/tyrelh/lathe/internal/install"
 	"github.com/tyrelh/lathe/internal/manager"
 	"github.com/tyrelh/lathe/internal/process"
+	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 	"github.com/tyrelh/lathe/internal/workflow"
@@ -557,11 +558,7 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 	if len(its) > 1 {
 		label = fmt.Sprintf(" iteration %d", n)
 	}
-	fmt.Printf("\nlathe %s %s%s: %s  %d tokens  $%.5f\n  %s\n",
-		row.Workflow, row.ID, label, it.Status, row.Tokens, row.Cost, dir)
-	if it.Reason != "" {
-		fmt.Printf("  %s\n", it.Reason)
-	}
+	run.Banner(os.Stdout, row.Workflow, row.ID, label, it.Status, row.Tokens, row.Cost, dir, it.Reason)
 	if row.Commit != "" {
 		fmt.Printf("  %s @ %s\n", row.Branch, workspace.Short(row.Commit))
 	}

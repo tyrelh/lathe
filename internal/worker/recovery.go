@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -152,13 +153,6 @@ func adoptPR(dataRoot string, row trace.Row, repo string, pub *run.Publication) 
 	}
 	pub.PR, pub.Draft, pub.LatheDraft = url, draft, draft && lathe
 	return nil
-}
-
-func orState(s string) string {
-	if s == "" {
-		return "in an unknown state"
-	}
-	return s
 }
 
 // residualOf is the saved work beyond own.published, written beside the
@@ -413,7 +407,7 @@ func restorable(spec Spec, src trace.Iteration, patch, recorded string, rs *Reco
 	default:
 		// Removal alone, as older records show it, does not say the
 		// worktree was empty.
-		return fmt.Errorf("iteration %d's worktree is %s with no record that its work was saved or found empty", src.N, orState(src.WorktreeState))
+		return fmt.Errorf("iteration %d's worktree is %s with no record that its work was saved or found empty", src.N, cmp.Or(src.WorktreeState, "in an unknown state"))
 	}
 	return nil
 }

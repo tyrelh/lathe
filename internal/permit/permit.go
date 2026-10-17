@@ -143,6 +143,12 @@ func Write(dir string, s Scope) (string, error) {
 	return path, os.WriteFile(path, b, 0o600)
 }
 
+// Env is the environment guard.ts reads: the scope file Write returned and the
+// file it writes the context snapshot to.
+func Env(permitFile, contextFile string) []string {
+	return []string{"LATHE_PERMIT=" + permitFile, "LATHE_CONTEXT_SNAPSHOT=" + contextFile}
+}
+
 // Clean fails if repo has uncommitted changes. Rollback cannot tell the agent's
 // edits from yours, so it refuses to guess: a writing run starts from a tree
 // where everything that is there afterwards is the agent's doing.
