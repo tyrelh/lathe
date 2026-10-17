@@ -17,7 +17,12 @@ const good = `{"model":"jev-1.13.0","answers":{"level":{"type":"score","score":1
 
 // serve points Endpoint at a server that answers each request with the next of
 // replies, as status and body, and counts requests.
-func serve(t *testing.T, replies ...[2]string) *atomic.Int32 {
+type reply struct {
+	status int
+	body   string
+}
+
+func serve(t *testing.T, replies ...reply) *atomic.Int32 {
 	t.Helper()
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,15 +38,13 @@ func serve(t *testing.T, replies ...[2]string) *atomic.Int32 {
 			} `json:"questions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model != Model ||
-			req.Questions["level"].Type != "score" || len(req.Questions["level"].Criteria) != 3 {
+			req.Questions["level"].Type != "score" || len(req.Questions["level"].Criteria) != len(criteria) {
 			t.Errorf("request: %+v %v", req, err)
 		}
 		reply := replies[min(i, len(replies)-1)]
 		w.Header().Set("Retry-After", "0")
-		var status int
-		json.Unmarshal([]byte(reply[0]), &status)
-		w.WriteHeader(status)
-		w.Write([]byte(reply[1]))
+		w.WriteHeader(reply.status)
+		w.Write([]byte(reply.body))
 	}))
 	t.Cleanup(srv.Close)
 	old, oldBackoff := Endpoint, Backoff
@@ -53,7 +56,7 @@ func serve(t *testing.T, replies ...[2]string) *atomic.Int32 {
 var criteria = []string{"a", "b", "c"}
 
 func TestScore(t *testing.T) {
-	n := serve(t, [2]string{"529", "busy"}, [2]string{"429", "slow"}, [2]string{"200", good})
+	n := serve(t, reply{529, "busy"}, reply{429, "slow"}, reply{200, good})
 	a, err := Score(context.Background(), "k", "how hard?", criteria, map[string]string{"request": "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +70,7 @@ func TestScore(t *testing.T) {
 }
 
 func TestScoreRetriesAreBounded(t *testing.T) {
-	n := serve(t, [2]string{"529", "busy"})
+	n := serve(t, reply{529, "busy"})
 	if _, err := Score(context.Background(), "k", "q", criteria, "s"); err == nil || !strings.Contains(err.Error(), "529") {
 		t.Fatalf("err = %v", err)
 	}
@@ -77,7 +80,7 @@ func TestScoreRetriesAreBounded(t *testing.T) {
 }
 
 func TestScoreDoesNotRetryOtherErrors(t *testing.T) {
-	n := serve(t, [2]string{"401", "no"})
+	n := serve(t, reply{401, "no"})
 	if _, err := Score(context.Background(), "k", "q", criteria, "s"); err == nil {
 		t.Fatal("401 accepted")
 	}
@@ -87,7 +90,7 @@ func TestScoreDoesNotRetryOtherErrors(t *testing.T) {
 }
 
 func TestScoreNeedsAKey(t *testing.T) {
-	n := serve(t, [2]string{"200", good})
+	n := serve(t, reply{200, good})
 	if _, err := Score(context.Background(), "", "q", criteria, "s"); err == nil || !strings.Contains(err.Error(), "TYPESAFE_API_KEY") {
 		t.Fatalf("err = %v", err)
 	}
