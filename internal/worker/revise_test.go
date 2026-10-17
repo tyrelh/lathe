@@ -98,7 +98,7 @@ func TestRevisionRechecksBeforeAnyAgent(t *testing.T) {
 	// After queueing, someone pushes to the pull request's branch by hand, and
 	// leaves the checkout dirty, which on its own would not matter.
 	write(t, filepath.Join(f.dir, "hello.txt"), "mine\n")
-	git(t, f.dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "manual")
+	git(t, f.dir, "commit", "-qam", "manual")
 	git(t, f.dir, "push", "-q", "origin", "feat/x")
 	write(t, filepath.Join(f.dir, "hello.txt"), "dirty\n")
 	manual := strings.TrimSpace(git(t, f.dir, "rev-parse", "HEAD"))

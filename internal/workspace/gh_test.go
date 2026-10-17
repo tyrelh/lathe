@@ -73,26 +73,26 @@ func TestCheckRevisable(t *testing.T) {
 	const open = `{"url":"u","state":"OPEN","headRefName":"feat/x","baseRefName":"main"}`
 	commit := func(t *testing.T, repo string) {
 		os.WriteFile(filepath.Join(repo, "a.txt"), []byte("mine\n"), 0o644)
-		run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "manual")
+		gitTest(t, repo, "commit", "-qam", "manual")
 	}
 	for _, tc := range []struct {
 		name, pr, want string
 		change         func(t *testing.T, repo, origin, sha string)
 	}{
 		{"eligible", open, "", nil},
-		{"checkout on another branch", open, "", func(t *testing.T, repo, _, _ string) { run(t, repo, "checkout", "-q", "main") }},
+		{"checkout on another branch", open, "", func(t *testing.T, repo, _, _ string) { gitTest(t, repo, "checkout", "-q", "main") }},
 		{"an unpushed local commit", open, "", func(t *testing.T, repo, _, _ string) { commit(t, repo) }},
 		{"a dirty checkout", open, "", func(t *testing.T, repo, _, _ string) {
 			os.WriteFile(filepath.Join(repo, "a.txt"), []byte("dirty\n"), 0o644)
 		}},
-		{"local branch reset back", open, "", func(t *testing.T, repo, _, _ string) { run(t, repo, "reset", "-q", "--hard", "HEAD^") }},
+		{"local branch reset back", open, "", func(t *testing.T, repo, _, _ string) { gitTest(t, repo, "reset", "-q", "--hard", "HEAD^") }},
 		{"a push to the pull request", open, "is at", func(t *testing.T, repo, _, sha string) {
 			commit(t, repo)
-			run(t, repo, "push", "-q", "origin", "feat/x")
-			run(t, repo, "reset", "-q", "--hard", sha)
+			gitTest(t, repo, "push", "-q", "origin", "feat/x")
+			gitTest(t, repo, "reset", "-q", "--hard", sha)
 		}},
 		{"branch deleted on origin", open, "does not exist", func(t *testing.T, _, origin, _ string) {
-			run(t, origin, "update-ref", "-d", "refs/heads/feat/x")
+			gitTest(t, origin, "update-ref", "-d", "refs/heads/feat/x")
 		}},
 		{"closed", strings.Replace(open, "OPEN", "CLOSED", 1), "is closed", nil},
 		{"merged", strings.Replace(open, "OPEN", "MERGED", 1), "is merged", nil},

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/gittest"
 	"github.com/tyrelh/lathe/internal/run"
 )
 
@@ -27,12 +28,10 @@ func gitBuild(t *testing.T, repo string, args ...string) string {
 func buildRepo(t *testing.T) (config.Config, string) {
 	t.Helper()
 	cfg, repo := load(t)
-	gitBuild(t, repo, "init", "-q")
+	gittest.Init(t, repo)
 	write(t, filepath.Join(repo, "hello.txt"), "hello\n")
-	gitBuild(t, repo, "config", "user.name", "Test")
-	gitBuild(t, repo, "config", "user.email", "test@example.com")
-	gitBuild(t, repo, "add", ".")
-	gitBuild(t, repo, "commit", "-qm", "initial")
+	gittest.Git(t, repo, "add", ".")
+	gittest.Git(t, repo, "commit", "-qm", "initial")
 	return cfg, repo
 }
 

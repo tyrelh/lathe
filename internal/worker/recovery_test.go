@@ -4,26 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/gittest"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
 func gitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 // committedBuild is a build whose only iteration committed feat/x and then
@@ -40,10 +34,7 @@ func newCommittedBuild(t *testing.T) *committedBuild {
 	b := &committedBuild{dataRoot: t.TempDir(), repo: t.TempDir(), gh: t.TempDir()}
 	origin := t.TempDir()
 	gitT(t, origin, "init", "-q", "--bare")
-	gitT(t, b.repo, "init", "-q", "-b", "main")
-	gitT(t, b.repo, "config", "user.name", "T")
-	gitT(t, b.repo, "config", "user.email", "t@example.com")
-	gitT(t, b.repo, "config", "commit.gpgsign", "false")
+	gittest.Init(t, b.repo)
 	os.WriteFile(filepath.Join(b.repo, "hello.txt"), []byte("hello\n"), 0o644)
 	gitT(t, b.repo, "add", ".")
 	gitT(t, b.repo, "commit", "-qm", "base")
@@ -146,10 +137,7 @@ type failedImplement struct {
 func newFailedImplement(t *testing.T) *failedImplement {
 	t.Helper()
 	f := &failedImplement{dataRoot: t.TempDir(), repo: t.TempDir()}
-	gitT(t, f.repo, "init", "-q", "-b", "main")
-	gitT(t, f.repo, "config", "user.name", "T")
-	gitT(t, f.repo, "config", "user.email", "t@example.com")
-	gitT(t, f.repo, "config", "commit.gpgsign", "false")
+	gittest.Init(t, f.repo)
 	os.WriteFile(filepath.Join(f.repo, "hello.txt"), []byte("hello\n"), 0o644)
 	gitT(t, f.repo, "add", ".")
 	gitT(t, f.repo, "commit", "-qm", "base")

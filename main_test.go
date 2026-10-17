@@ -5,13 +5,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/gittest"
 	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
@@ -260,22 +260,11 @@ func TestEndToEnd(t *testing.T) {
 // that is empty.
 func gitRepo(t *testing.T, project string) string {
 	t.Helper()
-	repo := t.TempDir()
-	os.WriteFile(filepath.Join(repo, "hello.txt"), []byte("hello\n"), 0o644)
+	files := map[string]string{"hello.txt": "hello\n"}
 	if project != "" {
-		os.WriteFile(filepath.Join(repo, "lathe.toml"), []byte(project), 0o644)
+		files["lathe.toml"] = project
 	}
-	for _, args := range [][]string{
-		{"init", "-q", "-b", "main"},
-		{"add", "."},
-		{"-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "initial"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
-		}
-	}
+	repo, _ := gittest.Repo(t, files)
 	return repo
 }
 

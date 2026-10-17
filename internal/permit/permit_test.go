@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/gittest"
 	"github.com/tyrelh/lathe/internal/process"
 )
 
@@ -76,11 +77,7 @@ func TestEscapes(t *testing.T) {
 // Clean demands and the state Enforce reverts back to.
 func gitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	write(t, dir, "tracked.txt", "original\n")
-	gitIn(t, dir, "init", "-q", "-b", "main")
-	gitIn(t, dir, "add", "-A")
-	gitIn(t, dir, "commit", "-qm", "init")
+	dir, _ := gittest.Repo(t, map[string]string{"tracked.txt": "original\n"})
 	return dir
 }
 
@@ -212,11 +209,7 @@ func TestGuardWritesTheExtension(t *testing.T) {
 
 func gitIn(t *testing.T, repo string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-c", "user.email=t@example.com", "-c", "user.name=t"}, args...)...)
-	cmd.Dir = repo
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
-	}
+	gittest.Git(t, repo, args...)
 }
 
 // `git checkout -- <path>` restores the worktree from the index, so an

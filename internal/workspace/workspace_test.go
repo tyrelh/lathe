@@ -1,20 +1,16 @@
 package workspace
 
 import (
+	"github.com/tyrelh/lathe/internal/gittest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func run(t *testing.T, dir string, args ...string) {
+func gitTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v %s", args, err, out)
-	}
+	gittest.Git(t, dir, args...)
 }
 
 // A local workspace names one checkout on one host and is refused on any other
@@ -47,12 +43,12 @@ func TestLocalDescribesThisHost(t *testing.T) {
 // detached HEAD has to fail rather than record nothing.
 func TestBranchAndCommit(t *testing.T) {
 	dir := t.TempDir()
-	run(t, dir, "init", "-q", "-b", "main")
+	gittest.Init(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run(t, dir, "add", ".")
-	run(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "one")
+	gitTest(t, dir, "add", ".")
+	gitTest(t, dir, "commit", "-qm", "one")
 
 	branch, err := Branch(dir)
 	if err != nil || branch != "main" {
@@ -62,7 +58,7 @@ func TestBranchAndCommit(t *testing.T) {
 	if err != nil || len(commit) < 7 {
 		t.Fatalf("commit = %q, %v", commit, err)
 	}
-	run(t, dir, "checkout", "-q", "--detach")
+	gitTest(t, dir, "checkout", "-q", "--detach")
 	if _, err := Branch(dir); err == nil {
 		t.Fatal("a detached HEAD reported a branch")
 	}
@@ -106,16 +102,16 @@ func TestLockIsExclusivePerCheckout(t *testing.T) {
 // the named paths are committed, and the branch reaches origin.
 func TestBranchCommitPush(t *testing.T) {
 	dir, origin := t.TempDir(), t.TempDir()
-	run(t, origin, "init", "-q", "--bare")
-	run(t, dir, "init", "-q", "-b", "main")
-	run(t, dir, "config", "user.name", "T")
-	run(t, dir, "config", "user.email", "t@example.com")
+	gitTest(t, origin, "init", "-q", "--bare")
+	gittest.Init(t, dir)
+	gitTest(t, dir, "config", "user.name", "T")
+	gitTest(t, dir, "config", "user.email", "t@example.com")
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run(t, dir, "add", ".")
-	run(t, dir, "commit", "-qm", "one")
-	run(t, dir, "remote", "add", "origin", origin)
+	gitTest(t, dir, "add", ".")
+	gitTest(t, dir, "commit", "-qm", "one")
+	gitTest(t, dir, "remote", "add", "origin", origin)
 
 	if !ValidBranch(dir, "feat/ship") || ValidBranch(dir, "feat//ship") {
 		t.Fatal("ValidBranch disagrees with git check-ref-format")

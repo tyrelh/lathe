@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/gittest"
 	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
@@ -59,26 +59,13 @@ func write(t *testing.T, path, body string) {
 
 func git(t *testing.T, repo string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repo
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
-	}
-	return string(out)
+	return gittest.Git(t, repo, args...)
 }
 
 // repo is a committed checkout on a known branch.
 func repo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	git(t, dir, "init", "-q", "-b", "main")
-	// These checkout tests do not exercise signing; isolate fixture commits
-	// from host GPG settings and resources, including later commits.
-	git(t, dir, "config", "--local", "commit.gpgsign", "false")
-	write(t, filepath.Join(dir, "hello.txt"), "hello\n")
-	git(t, dir, "add", ".")
-	git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "initial")
+	dir, _ := gittest.Repo(t, map[string]string{"hello.txt": "hello\n"})
 	return dir
 }
 
@@ -213,7 +200,7 @@ func TestExecutionTimeCheckoutChecks(t *testing.T) {
 			change: func(t *testing.T, dir string) {
 				write(t, filepath.Join(dir, "later.txt"), "later\n")
 				git(t, dir, "add", ".")
-				git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "later")
+				git(t, dir, "commit", "-qm", "later")
 			},
 		},
 		{
@@ -293,7 +280,7 @@ func TestWritingRunUsesCapturedCommitAndCleansUp(t *testing.T) {
 	git(t, dir, "checkout", "-q", "-b", "elsewhere")
 	write(t, filepath.Join(dir, "later.txt"), "later\n")
 	git(t, dir, "add", ".")
-	git(t, dir, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "later")
+	git(t, dir, "commit", "-qm", "later")
 	write(t, filepath.Join(dir, "hello.txt"), "mine\n")
 	git(t, dir, "add", "hello.txt")
 	beforeHead := git(t, dir, "rev-parse", "HEAD")

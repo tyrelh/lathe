@@ -12,11 +12,11 @@ import (
 func TestFetchBranch(t *testing.T) {
 	repo, origin, sha := shipped(t)
 	other := t.TempDir()
-	run(t, other, "clone", "-q", origin, ".")
-	run(t, other, "checkout", "-q", "feat/x")
+	gitTest(t, other, "clone", "-q", origin, ".")
+	gitTest(t, other, "checkout", "-q", "feat/x")
 	os.WriteFile(filepath.Join(other, "a.txt"), []byte("theirs\n"), 0o644)
-	run(t, other, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "theirs")
-	run(t, other, "push", "-q", "origin", "feat/x")
+	gitTest(t, other, "commit", "-qam", "theirs")
+	gitTest(t, other, "push", "-q", "origin", "feat/x")
 	theirs, _ := Head(other)
 
 	got, err := FetchBranch(repo, "feat/x")
@@ -51,7 +51,7 @@ func TestFetchBranchWaitsForALockedRef(t *testing.T) {
 func TestPushExpecting(t *testing.T) {
 	repo, origin, sha := shipped(t)
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("c\n"), 0o644)
-	run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "next")
+	gitTest(t, repo, "commit", "-qam", "next")
 	next, _ := Head(repo)
 	if err := PushExpecting(repo, "feat/x", sha); err != nil {
 		t.Fatal(err)
@@ -62,9 +62,9 @@ func TestPushExpecting(t *testing.T) {
 
 	// Someone else moves origin back; the next push expecting next is refused
 	// and leaves their update in place.
-	run(t, origin, "update-ref", "refs/heads/feat/x", sha)
+	gitTest(t, origin, "update-ref", "refs/heads/feat/x", sha)
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("d\n"), 0o644)
-	run(t, repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qam", "again")
+	gitTest(t, repo, "commit", "-qam", "again")
 	if err := PushExpecting(repo, "feat/x", next); err == nil {
 		t.Fatal("pushed over an update lathe did not expect")
 	}
