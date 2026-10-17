@@ -1,0 +1,65 @@
+{
+  "protected": [
+    ".git/",
+    ".env*",
+    "*.pem",
+    "*.key"
+  ],
+  "cases": [
+    {
+      "path": ".git/config",
+      "want": true,
+      "why": "git metadata"
+    },
+    {
+      "path": "vendor/x/.git/HEAD",
+      "want": true,
+      "why": "directory at any depth"
+    },
+    {
+      "path": ".env",
+      "want": true,
+      "why": "environment file"
+    },
+    {
+      "path": ".env.production",
+      "want": true,
+      "why": "environment suffix"
+    },
+    {
+      "path": "config/.env.local",
+      "want": true,
+      "why": "nested environment file"
+    },
+    {
+      "path": "certs/server.pem",
+      "want": true,
+      "why": "pem extension"
+    },
+    {
+      "path": "deploy/id.key",
+      "want": true,
+      "why": "key extension"
+    },
+    {
+      "path": "internal/run/run.go",
+      "want": false,
+      "why": "source file"
+    },
+    {
+      "path": "gitignore.md",
+      "want": false,
+      "why": "segment, not prefix"
+    },
+    {
+      "path": "env.go",
+      "want": false,
+      "why": "anchored dot"
+    },
+    {
+      "path": "keys/README.md",
+      "want": false,
+      "why": "extension, not directory"
+    }
+  ]
+}

@@ -21,9 +21,7 @@
 // the boundary, not part of it; a failed write is dropped.
 //
 // denied() is a port of internal/permit.Denied and the two must not drift: the
-// Go tests and this file's tests each pass on their own while a divergence
-// between them leaks. Change one, change both. guard_test.ts is what holds the
-// two to the same table.
+// Go and TS tests read the same deny fixture to check both implementations.
 
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";

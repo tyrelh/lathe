@@ -1,6 +1,7 @@
 package permit
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/process"
 )
 
@@ -22,32 +24,31 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// The shipped deny list, so the test is about the patterns lathe actually runs
-// with rather than fixtures that could drift away from them.
-var shipped = []string{".git/", ".env*", "*.pem", "*.key"}
-
 func TestDenied(t *testing.T) {
-	for _, tc := range []struct {
-		path string
-		want bool
-	}{
-		{".git/config", true},
-		{"vendor/x/.git/HEAD", true}, // a directory name, at any depth
-		{".env", true},
-		{".env.production", true},
-		{"config/.env.local", true},
-		{"certs/server.pem", true},
-		{"deploy/id.key", true},
-		{"internal/run/run.go", false},
-		{"gitignore.md", false},   // ".git/" is a segment, not a prefix
-		{"env.go", false},         // ".env*" is anchored at the dot
-		{"keys/README.md", false}, // "*.key" is the extension, not the directory
-	} {
-		if _, got := Denied(tc.path, shipped); got != tc.want {
-			t.Errorf("Denied(%q) = %v; want %v", tc.path, got, tc.want)
+	var fixture struct {
+		Protected []string `json:"protected"`
+		Cases     []struct {
+			Path string `json:"path"`
+			Want bool   `json:"want"`
+			Why  string `json:"why"`
+		} `json:"cases"`
+	}
+	b, err := os.ReadFile(filepath.Join("testdata", "denied.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fixture.Protected, config.Protected) {
+		t.Fatalf("fixture protected = %v; config protected = %v", fixture.Protected, config.Protected)
+	}
+	for _, tc := range fixture.Cases {
+		if _, got := Denied(tc.Path, config.Protected); got != tc.Want {
+			t.Errorf("Denied(%q) = %v; want %v (%s)", tc.Path, got, tc.Want, tc.Why)
 		}
 	}
-	if pattern, _ := Denied(".env", shipped); pattern != ".env*" {
+	if pattern, _ := Denied(".env", config.Protected); pattern != ".env*" {
 		t.Errorf("pattern = %q; want the rule that matched, for the agent to read", pattern)
 	}
 }
@@ -134,7 +135,7 @@ func TestEnforceRevertsOnlyWhatIsOutOfScope(t *testing.T) {
 	write(t, repo, "a dir/with space.go", "package a\n") // out of scope, and -z is why it parses
 	write(t, repo, "nested/deep/junk.txt", "coverage\n") // out of scope, and -uall is why it is listed
 
-	kept, reverted, err := Enforce(repo, Scope{Allow: []string{"tracked.txt", "new.go"}, Deny: shipped})
+	kept, reverted, err := Enforce(repo, Scope{Allow: []string{"tracked.txt", "new.go"}, Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestEnforceRevertsOnlyWhatIsOutOfScope(t *testing.T) {
 func TestEnforceRestoresATrackedFile(t *testing.T) {
 	repo := gitRepo(t)
 	write(t, repo, "tracked.txt", "out of scope\n")
-	if _, _, err := Enforce(repo, Scope{Deny: shipped}); err != nil {
+	if _, _, err := Enforce(repo, Scope{Deny: config.Protected}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, repo, "tracked.txt"); got != "original\n" {
@@ -179,7 +180,7 @@ func TestEnforceRestoresATrackedFile(t *testing.T) {
 func TestEnforceRevertsAProtectedPathEvenWhenAllowed(t *testing.T) {
 	repo := gitRepo(t)
 	write(t, repo, ".env", "SECRET=1\n")
-	_, reverted, err := Enforce(repo, Scope{Allow: []string{".env"}, Deny: shipped})
+	_, reverted, err := Enforce(repo, Scope{Allow: []string{".env"}, Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +235,7 @@ func TestEnforceRevertsAStagedEdit(t *testing.T) {
 	write(t, repo, "tracked.txt", "out of scope\n")
 	gitIn(t, repo, "add", "tracked.txt")
 
-	_, reverted, err := Enforce(repo, Scope{Deny: shipped})
+	_, reverted, err := Enforce(repo, Scope{Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestEnforceRemovesAStagedNewFile(t *testing.T) {
 	write(t, repo, "added.go", "package main\n")
 	gitIn(t, repo, "add", "added.go")
 
-	_, reverted, err := Enforce(repo, Scope{Deny: shipped})
+	_, reverted, err := Enforce(repo, Scope{Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +317,7 @@ func TestEnforceTreatsBracketedPathsLiterally(t *testing.T) {
 	write(t, repo, "pages/blog/[slug].tsx", "out of scope\n")
 	write(t, repo, "pages/blog/s.tsx", "allowed edit\n")
 
-	kept, reverted, err := Enforce(repo, Scope{Allow: []string{"pages/blog/s.tsx"}, Deny: shipped})
+	kept, reverted, err := Enforce(repo, Scope{Allow: []string{"pages/blog/s.tsx"}, Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +353,7 @@ func TestEnforceStaysInsideItsWorktree(t *testing.T) {
 	write(t, wt, "tracked.txt", "the agent's edit\n")
 	write(t, wt, "escaped.go", "package main\n")
 
-	kept, reverted, err := Enforce(wt, Scope{Allow: []string{"tracked.txt"}, Deny: shipped})
+	kept, reverted, err := Enforce(wt, Scope{Allow: []string{"tracked.txt"}, Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +387,7 @@ func TestEnforceRevertsProtectedPathsInAWorktree(t *testing.T) {
 		write(t, wt, p, "secret\n")
 	}
 
-	_, reverted, err := Enforce(wt, Scope{Allow: protected, Deny: shipped})
+	_, reverted, err := Enforce(wt, Scope{Allow: protected, Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +413,7 @@ func TestEnforceRemovesASymlinkOutOfTheWorktree(t *testing.T) {
 	if err := os.Symlink(filepath.Join(repo, "tracked.txt"), filepath.Join(wt, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	_, reverted, err := Enforce(wt, Scope{Deny: shipped})
+	_, reverted, err := Enforce(wt, Scope{Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +482,7 @@ func TestBoundaryRunsGitSupervised(t *testing.T) {
 	if !slices.Equal(changed, []string{"tracked.txt"}) {
 		t.Fatalf("mutations = %v; want tracked.txt", changed)
 	}
-	_, reverted, err := Enforce(wt, Scope{Deny: shipped})
+	_, reverted, err := Enforce(wt, Scope{Deny: config.Protected})
 	if err != nil {
 		t.Fatal(err)
 	}

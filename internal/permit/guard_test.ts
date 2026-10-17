@@ -1,5 +1,4 @@
-// guard_test.ts — the other half of the boundary, held to the same table as
-// permit_test.go. Run by TestGuardMatchesGo, which is what makes it part of
+// guard_test.ts reads the shared deny table with permit_test.go. Run by TestGuardMatchesGo, which is what makes it part of
 // `go test ./...` rather than a file someone has to remember.
 //
 // Node runs the TypeScript directly, the way jiti does inside Pi, so there is
@@ -12,27 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import guard, { decide, denied, normalize, unreadable, withhold } from "./guard.ts";
 
-const shipped = [".git/", ".env*", "*.pem", "*.key"];
-
-// The table permit_test.go's TestDenied runs. A divergence between the two
-// halves is a hole neither half's own tests can see, so this is the same list
-// of cases, not a similar one.
-for (
-	const [path, want] of [
-		[".git/config", true],
-		["vendor/x/.git/HEAD", true],
-		[".env", true],
-		[".env.production", true],
-		["config/.env.local", true],
-		["certs/server.pem", true],
-		["deploy/id.key", true],
-		["internal/run/run.go", false],
-		["gitignore.md", false],
-		["env.go", false],
-		["keys/README.md", false],
-	] as [string, boolean][]
-) {
-	assert.equal(denied(path, shipped) !== undefined, want, `denied(${path})`);
+const fixture = JSON.parse(readFileSync(new URL("./testdata/denied.json", import.meta.url), "utf8")) as {
+	protected: string[];
+	cases: { path: string; want: boolean; why: string }[];
+};
+const shipped = fixture.protected;
+for (const { path, want, why } of fixture.cases) {
+	assert.equal(denied(path, shipped) !== undefined, want, `denied(${path}): ${why}`);
 }
 assert.equal(denied(".env", shipped), ".env*", "the matching rule is what the agent is told");
 
