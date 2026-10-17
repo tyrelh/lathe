@@ -586,3 +586,19 @@ func CombinedOutput(cmd *exec.Cmd) ([]byte, error) {
 func Run(cmd *exec.Cmd) error {
 	return Installed().Exec(context.Background(), cmd)
 }
+
+// GroupCommand returns an exec.CommandContext command that runs in its own
+// process group, which cancellation kills as a whole.
+func GroupCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	// The command's children inherit its pipes, so cancellation has to reach
+	// the process group: killing the command alone leaves them running,
+	// holding the pipes open after the caller has stopped.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// A buffered stdout or stderr is copied through a pipe those children
+	// inherit. Without a delay, Wait blocks on that copy until the last
+	// grandchild exits, which is the case cancellation is trying to escape.
+	cmd.WaitDelay = time.Second
+	return cmd
+}
