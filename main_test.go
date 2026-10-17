@@ -17,6 +17,55 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
+func TestPreparePreservesTaskIssue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	repo := gitRepo(t, "")
+	ref := "https://github.com/o/r/issues/42"
+	req, err := prepare("build", repo, "issue request", ref, config.Overrides{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec worker.Spec
+	if err := json.Unmarshal(req.Spec, &spec); err != nil || spec.Issue != ref || req.Issue != ref {
+		t.Fatalf("issue = %q / %q, %v", req.Issue, spec.Issue, err)
+	}
+	root, err := trace.DataRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(req.Request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := db.Get(id)
+	if row.TaskID == nil {
+		t.Fatal("prepared build has no task")
+	}
+	task, _ := db.GetTask(*row.TaskID)
+	if task.IssueRef == nil || *task.IssueRef != ref {
+		t.Fatalf("task = %+v", task)
+	}
+	id, err = prepareAndSubmit("build", req.Repo, "", "o/r#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.Get(id)
+	if row.TaskID == nil {
+		t.Fatal("New Run build has no task")
+	}
+	task, _ = db.GetTask(*row.TaskID)
+	if task.IssueRef == nil || *task.IssueRef != ref {
+		t.Fatalf("New Run task = %+v", task)
+	}
+}
+
 // init is gone with lathe.toml.
 func TestInitIsRemoved(t *testing.T) {
 	t.Chdir(t.TempDir())

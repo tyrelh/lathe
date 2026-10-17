@@ -10,6 +10,64 @@ import (
 	"testing"
 )
 
+func TestDatabasePathsWithURICharactersAreIsolated(t *testing.T) {
+	parent := t.TempDir()
+	for _, name := range []string{"store#first", "store#second", "store?third", "store%fourth"} {
+		root := filepath.Join(parent, name)
+		db, err := Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := submit(t, db, "build", "/repo")
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, opener := range []func(string) (*DB, error){Open, OpenRO} {
+			db, err := opener(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks, taskErr := db.Tasks("")
+			runs, runErr := db.Recent(10)
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if taskErr != nil || len(tasks) != 1 || runErr != nil || len(runs) != 1 || runs[0].ID != id {
+				t.Fatalf("database %q is not isolated: tasks=%+v (%v), runs=%+v (%v)", root, tasks, taskErr, runs, runErr)
+			}
+		}
+	}
+}
+
+func TestRunReadersPreserveNullableTaskID(t *testing.T) {
+	db := open(t)
+	build := submit(t, db, "build", "/repo")
+	plan := submit(t, db, "plan", "/repo")
+	legacy := submit(t, db, "build", "/repo")
+	if _, err := db.sql.Exec(`UPDATE runs SET task_id = NULL WHERE run_id = ?`, legacy); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Recent(10)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("recent = %+v, %v", rows, err)
+	}
+	for _, row := range rows {
+		if (row.ID == build) != (row.TaskID != nil) {
+			t.Fatalf("task association = %+v", row)
+		}
+	}
+	for _, id := range []string{plan, legacy} {
+		row, err := db.Get(id)
+		if err != nil || row.TaskID != nil {
+			t.Fatalf("taskless = %+v, %v", row, err)
+		}
+	}
+	queued, err := db.Queued()
+	if err != nil || len(queued) != 3 {
+		t.Fatalf("queued = %+v, %v", queued, err)
+	}
+}
+
 // TestWriteFakeRun checks that a run with two phases and four events reads back
 // in the order it was written.
 func TestWriteFakeRun(t *testing.T) {

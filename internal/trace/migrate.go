@@ -118,6 +118,25 @@ ALTER TABLE iterations ADD COLUMN preservation TEXT;
 ALTER TABLE runs ADD COLUMN pr_state TEXT CHECK (pr_state IN ('open', 'merged', 'closed'));
 ALTER TABLE runs ADD COLUMN pr_state_at TEXT;
 `,
+	// 8: tracked tasks and nullable run associations; backfill follows PR polling.
+	`
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  text TEXT NOT NULL,
+  archived_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  tracker TEXT CHECK (tracker IN ('github')),
+  issue_ref TEXT,
+  issue_url TEXT,
+  issue_title TEXT,
+  issue_body TEXT
+);
+ALTER TABLE runs ADD COLUMN task_id TEXT REFERENCES tasks(id);
+CREATE INDEX tasks_repo ON tasks (repo, created_at DESC, id DESC);
+CREATE INDEX runs_task ON runs (task_id, submitted_at DESC, run_id DESC);
+`,
 }
 
 // migrate applies every migration the database has not seen yet.

@@ -6,6 +6,98 @@ import (
 	"time"
 )
 
+func TestSubmitTasks(t *testing.T) {
+	db := open(t)
+	id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Request: "change", Issue: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.Get(id)
+	if err != nil || row.TaskID == nil {
+		t.Fatalf("run = %+v, %v", row, err)
+	}
+	task, err := db.GetTask(*row.TaskID)
+	if err != nil || task.Text != "change" || task.Repo != "/repo" || task.IssueRef == nil || *task.IssueRef != "42" || *task.Tracker != "github" {
+		t.Fatalf("task = %+v, %v", task, err)
+	}
+	attached, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.Get(attached)
+	if row.TaskID == nil || *row.TaskID != task.ID {
+		t.Fatalf("attached = %+v", row)
+	}
+	for _, req := range []Request{
+		{Workflow: "build", Repo: "/repo", TaskID: "missing"},
+		{Workflow: "build", Repo: "/repo/", TaskID: task.ID},
+	} {
+		if _, err := db.Submit(req); err == nil {
+			t.Fatalf("accepted %+v", req)
+		}
+	}
+	if _, err := db.sql.Exec(`UPDATE tasks SET archived_at = 'now' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: task.ID}); err == nil {
+		t.Fatal("accepted archived task")
+	}
+	for _, workflow := range []string{"scout", "plan", "implement"} {
+		id, err := db.Submit(Request{Workflow: workflow, Repo: "/repo", TaskID: "missing", Issue: "42"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, _ := db.Get(id)
+		if row.TaskID != nil {
+			t.Fatalf("non-build has task: %+v", row)
+		}
+	}
+	if tasks, _ := db.Tasks(""); len(tasks) != 1 {
+		t.Fatalf("unexpected tasks: %+v", tasks)
+	}
+}
+
+func TestSubmitTaskIssueConflict(t *testing.T) {
+	for _, recorded := range []string{"", "42", "https://github.com/o/r/issues/42"} {
+		t.Run(recorded, func(t *testing.T) {
+			db := open(t)
+			id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Issue: recorded})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, _ := db.Get(id)
+			if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID, Issue: "43"}); err == nil {
+				t.Fatal("accepted conflicting issue")
+			}
+			for _, table := range []string{"tasks", "runs", "iterations"} {
+				var count int
+				if err := db.sql.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("conflict changed %s: count = %d, %v", table, count, err)
+				}
+			}
+			if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID, Issue: recorded}); err != nil {
+				t.Fatalf("matching issue refused: %v", err)
+			}
+		})
+	}
+}
+
+func TestSubmitTaskRollback(t *testing.T) {
+	db := open(t)
+	if _, err := db.sql.Exec(`CREATE TRIGGER refuse_iteration BEFORE INSERT ON iterations BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo"}); err == nil {
+		t.Fatal("submission succeeded")
+	}
+	for _, table := range []string{"tasks", "runs", "iterations"} {
+		var count int
+		if err := db.sql.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s count = %d, %v", table, count, err)
+		}
+	}
+}
+
 func open(t *testing.T) *DB {
 	t.Helper()
 	db, err := Open(t.TempDir())

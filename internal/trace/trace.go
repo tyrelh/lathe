@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -150,7 +151,7 @@ func Open(dataRoot string) (*DB, error) {
 	// The busy timeout is in the DSN so it holds on every connection before
 	// its first statement: switching to WAL takes a lock, and a second lathe
 	// opening the same database meanwhile must wait rather than fail.
-	db, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_pragma=busy_timeout("+busyMillis+")")
+	db, err := sql.Open("sqlite", databaseURI(path)+"?_txlock=immediate&_pragma=busy_timeout("+busyMillis+")")
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +417,7 @@ func (d *DB) Event(runID, phaseID, typ, name string, payload any) error {
 
 // Row is one run as `lathe runs` lists it and the dashboard renders it.
 type Row struct {
+	TaskID    *string `json:"task_id"`
 	PRState   *string `json:"pr_state"`
 	PRStateAt *string `json:"pr_state_at"`
 	ID        string  `json:"run_id"`
@@ -450,7 +452,7 @@ const runColumns = `SELECT run_id, workflow, repo, request, status,
 	COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(attempt_id, ''),
 	COALESCE(reason, ''), COALESCE(submitted_at, ''), COALESCE(started_at, ''),
 	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, ''),
-	iteration, COALESCE(activity_at, ''), pr_state, pr_state_at`
+	iteration, COALESCE(activity_at, ''), pr_state, pr_state_at, task_id`
 
 // queryer is a *sql.DB or *sql.Tx.
 type queryer interface {
@@ -482,7 +484,7 @@ func scanRows(rows *sql.Rows) ([]Row, error) {
 		var spec string
 		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status,
 			&r.Branch, &r.Commit, &r.AttemptID, &r.Reason, &r.Submitted, &r.Started,
-			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity, &r.PRState, &r.PRStateAt); err != nil {
+			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity, &r.PRState, &r.PRStateAt, &r.TaskID); err != nil {
 			return nil, err
 		}
 		r.Spec = []byte(spec)
@@ -513,6 +515,11 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
+// databaseURI encodes a filesystem path as a SQLite file URI.
+func databaseURI(path string) string {
+	return "file:" + (&url.URL{Path: path}).EscapedPath()
+}
+
 // OpenRO opens lathe.db read-only, which is what the dashboard uses: a UI bug
 // cannot write, and mode=ro fails loudly if the file is not there rather than
 // creating an empty database that looks like "no runs yet".
@@ -521,7 +528,7 @@ func OpenRO(dataRoot string) (*DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("no trace database at %s — run something first", path)
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout("+busyMillis+")")
+	db, err := sql.Open("sqlite", databaseURI(path)+"?mode=ro&_pragma=busy_timeout("+busyMillis+")")
 	if err != nil {
 		return nil, err
 	}

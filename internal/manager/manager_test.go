@@ -66,6 +66,15 @@ func submit(t *testing.T, db *trace.DB, workflow, repo string) string {
 	return id
 }
 
+func TestBackfillFailureIsLogged(t *testing.T) {
+	m, db, out := newManager(t, 1, &fake{})
+	db.Close()
+	m.backfillTasks()
+	if !strings.Contains(out.String(), "task backfill:") {
+		t.Fatalf("backfill error not logged: %s", out.String())
+	}
+}
+
 // Capacity is the whole scheduling rule: one run executes, the rest wait, and
 // the dispatch is recorded before the worker is launched.
 func TestCapacityHoldsTheQueue(t *testing.T) {
