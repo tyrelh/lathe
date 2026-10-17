@@ -203,7 +203,7 @@ that came back:
 `agent_start` → (`turn_start` … `turn_end`) × N → `agent_settled` → `agent_end`,
 and `agent_end` carries `willRetry` (`false` here) plus the full message list.
 
-## Pointers vs values, for Phase 3
+## Pointers vs values
 
 | Field | Go type |
 |---|---|

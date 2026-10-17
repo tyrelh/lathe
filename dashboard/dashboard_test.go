@@ -113,9 +113,9 @@ func claimed(t *testing.T, db *trace.DB, workflow, repo, request string) (id, at
 	return id, attempt, token
 }
 
-// TestRoutes is Phase 6's done-when, minus the browser: a run written by the
-// writer is readable through the read-only handles, and ?after= only returns
-// what the caller has not seen — which is the whole polling contract.
+// TestRoutes checks that a run written by the writer is readable through the
+// read-only handles, and that ?after= returns only what the caller has not
+// seen.
 func TestRoutes(t *testing.T) {
 	root := t.TempDir()
 	db, err := trace.Open(root)

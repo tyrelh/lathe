@@ -10,8 +10,8 @@ import (
 	"testing"
 )
 
-// TestWriteFakeRun is Phase 2's done-when: a run with two phases and four
-// events, read back in the order they were written.
+// TestWriteFakeRun checks that a run with two phases and four events reads back
+// in the order it was written.
 func TestWriteFakeRun(t *testing.T) {
 	root := t.TempDir()
 	db, err := Open(root)

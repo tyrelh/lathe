@@ -265,8 +265,8 @@ func TestRunHugeToolResult(t *testing.T) {
 	}
 }
 
-// Phase 3's done-when, minus the second terminal: the sample's tool calls
-// arrive in the global DB as tool_call rows while the stream is being read.
+// The sample's tool calls arrive in the global DB as tool_call rows while the
+// stream is being read.
 func TestScanStreamsToolCallsToDB(t *testing.T) {
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	db, err := trace.Open(dataRoot)
