@@ -256,7 +256,7 @@ func agentViews(roster func() (config.Config, error), bodies bool) ([]agentView,
 	views := make([]agentView, len(prompts))
 	for i, p := range prompts {
 		agent := p.Name
-		if p.Kind == "routing" {
+		if p.Kind == config.KindRouting {
 			agent = p.Routes
 		}
 		views[i] = agentView{AgentPrompts: p, Workflows: []string{}}

@@ -67,8 +67,8 @@ func savePrompt(mu *sync.Mutex, roster func() (config.Config, error), save func(
 		case body.BaseHash == "":
 			submitError(w, http.StatusBadRequest, "base_hash is required")
 			return
-		case role == "user" && !strings.Contains(body.Body, "{{request}}"):
-			submitError(w, http.StatusBadRequest, "a user prompt has to contain {{request}}")
+		case role == "user" && !strings.Contains(body.Body, config.RequestPlaceholder):
+			submitError(w, http.StatusBadRequest, "a user prompt has to contain "+config.RequestPlaceholder)
 			return
 		}
 		err := save(p.Key, body.Body, body.BaseHash)

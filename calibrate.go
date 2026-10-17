@@ -68,7 +68,7 @@ func calibrate(ctx context.Context, w io.Writer, db *trace.DB, dataRoot, dir, ag
 	}
 	rt, ok := snap.Routing[agent]
 	if !ok {
-		return fmt.Errorf("~/.lathe/%s gives %s no tiers", config.AgentFile(agent, "config.yaml"), agent)
+		return fmt.Errorf("~/.lathe/%s gives %s no tiers", config.AgentFile(agent, config.ConfigFile), agent)
 	}
 	ws, err := workspace.Local(root)
 	if err != nil {

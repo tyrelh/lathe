@@ -333,7 +333,7 @@ func Load(home string) (config.Config, error) {
 	var agents []config.Agent
 	allTiers := map[string][]config.TierConfig{}
 	for _, p := range config.Permissions {
-		key := config.AgentFile(p.Name, "config.yaml")
+		key := config.AgentFile(p.Name, config.ConfigFile)
 		f, err := readFile(home, key)
 		if err != nil {
 			return config.Config{}, err
@@ -343,14 +343,14 @@ func Load(home string) (config.Config, error) {
 			return config.Config{}, err
 		}
 		files[key] = f
-		for _, role := range []string{"system.md", "user.md"} {
+		for _, role := range []string{config.SystemFile, config.UserFile} {
 			k := config.AgentFile(p.Name, role)
 			f, err := readText(home, k)
 			if err != nil {
 				return config.Config{}, err
 			}
-			if role == "user.md" && !strings.Contains(f.Body, "{{request}}") {
-				return config.Config{}, invalidf(f.Path, "a user prompt has to contain {{request}}")
+			if role == config.UserFile && !strings.Contains(f.Body, config.RequestPlaceholder) {
+				return config.Config{}, invalidf(f.Path, "a user prompt has to contain %s", config.RequestPlaceholder)
 			}
 			files[k] = f
 		}
@@ -483,7 +483,7 @@ type Settings struct {
 // not the current file's hash, or wrapping config.ErrInvalid when the result
 // does not validate. It holds the home's lock from the check to the write.
 func SaveSettings(home, agent string, s Settings, baseHash string) error {
-	return editLocked(home, config.AgentFile(agent, "config.yaml"), baseHash, func(path, cur string) error {
+	return editLocked(home, config.AgentFile(agent, config.ConfigFile), baseHash, func(path, cur string) error {
 		var doc yaml.Node
 		if err := yaml.Unmarshal([]byte(cur), &doc); err != nil {
 			return invalidf(path, "%v", err)
