@@ -13,5 +13,5 @@ func writeResult(dir, name string, out any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o644)
+	return os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o600)
 }

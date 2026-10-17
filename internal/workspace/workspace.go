@@ -95,10 +95,10 @@ func Acquire(dataRoot, repo string) (*Lock, error) {
 	// In the data root, not the repository: nothing lathe does is stamped into
 	// the repository it acts on.
 	dir := filepath.Join(dataRoot, "locks")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, lockName(repo)+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, lockName(repo)+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

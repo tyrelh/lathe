@@ -278,7 +278,7 @@ func Open(o Options) (*Run, error) {
 	if r.seq, err = r.db.MaxSeq(r.ID); err != nil {
 		return nil, err
 	}
-	if r.raw, err = os.Create(filepath.Join(r.Work, "raw.jsonl")); err != nil {
+	if r.raw, err = os.OpenFile(filepath.Join(r.Work, "raw.jsonl"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600); err != nil {
 		return nil, err
 	}
 	r.rawW = &lockedWriter{w: r.raw}
@@ -779,7 +779,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.R
 		extensions = append(extensions, r.read)
 	}
 	scopeDir := filepath.Join(r.Work, h.phase.ID)
-	if err := os.MkdirAll(scopeDir, 0o755); err != nil {
+	if err := os.MkdirAll(scopeDir, 0o700); err != nil {
 		return pi.Result{}, err
 	}
 	scopeFile, err := permit.Write(scopeDir, scope)

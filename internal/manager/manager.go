@@ -126,7 +126,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 // holding it means no manager is running, which is the branch auto-start
 // hangs off.
 func Lock(dataRoot string) (*workspace.Lock, error) {
-	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
+	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
 		return nil, err
 	}
 	return workspace.Acquire(dataRoot, filepath.Join(dataRoot, "manager"))
@@ -209,7 +209,7 @@ func (m *manager) dispatch() error {
 func (m *manager) launch(row trace.Row, mode string) error {
 	attemptID := trace.NewAttemptID(row.ID)
 	logPath := worker.LogPath(m.dataRoot, row.ID, attemptID)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return err
 	}
 	if err := m.db.ReserveMode(row.ID, attemptID, logPath, mode); err != nil {
