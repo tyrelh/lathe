@@ -269,7 +269,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			if err := e.Call(report, reviewRequest(c), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 				return err
 			}
-			report.stamp(name, cur.Round)
+			report.stamp(name, cur.number())
 			return nil
 		}})
 	}
@@ -322,7 +322,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 
 		findings := cur.findings()
 		var out AdjudicationOutput
-		err := e.Call(&out, adjudicationRequest(c, r.Request, e.Round+1, e.SendBacksLeft),
+		err := e.Call(&out, adjudicationRequest(c, r.Request, e.SendBacksLeft),
 			run.ArtifactsExist, run.FilesNonEmpty, Adjudicated(findings, cur.Tests, r.Protected()))
 		if err != nil {
 			return "", err

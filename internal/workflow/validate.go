@@ -71,13 +71,13 @@ func (c *CodeReviewOutput) Artifacts() []string {
 }
 
 // stamp gives every finding its source and a reference of the form
-// security-2.1: reviewer, implementation round counted from one, position.
-func (c *CodeReviewOutput) stamp(source string, round int) {
+// security-2.1: reviewer, implementation round n counted from one, position.
+func (c *CodeReviewOutput) stamp(source string, n int) {
 	short := strings.TrimPrefix(source, "code-review-")
 	for i := range *c.Findings {
 		f := &(*c.Findings)[i]
 		f.Source = source
-		f.Ref = fmt.Sprintf("%s-%d.%d", short, round+1, i+1)
+		f.Ref = fmt.Sprintf("%s-%d.%d", short, n, i+1)
 	}
 }
 
@@ -290,6 +290,9 @@ func newRound(n int) *Round {
 	return r
 }
 
+// number is the round counted from one.
+func (r *Round) number() int { return r.Round + 1 }
+
 // findings is every reviewer's findings, in reviewer order.
 func (r *Round) findings() []Finding {
 	var out []Finding
@@ -357,7 +360,7 @@ func (v *Validation) settle(outcome, reason string) {
 // evidence renders the parts of a round every worker and the adjudicator are
 // shown: the implementation as it now stands.
 func evidence(w io.Writer, c *code) {
-	fmt.Fprintf(w, "\n## Implementation (round %d)\n\n%s\n", len(c.v.Rounds), *c.out.Summary)
+	fmt.Fprintf(w, "\n## Implementation (round %d)\n\n%s\n", c.v.current().number(), *c.out.Summary)
 	section(w, "### Changed files", *c.out.Changed)
 }
 
@@ -427,11 +430,11 @@ func testRequest(c *code) string {
 // adjudicationRequest is everything the adjudicator weighs: the request, the
 // plan as amended, the implementation, the test run, every report, and
 // every earlier decision.
-func adjudicationRequest(c *code, request string, round, left int) string {
+func adjudicationRequest(c *code, request string, left int) string {
 	cur := c.v.current()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Adjudication round %d of %d.\nYou may send the implementation back %d more times.\n",
-		round, maxRepairs+1, left)
+		cur.number(), maxRepairs+1, left)
 	b.WriteString("\n")
 	b.WriteString(implementRequest(request, &c.plan, c.v.Amendments))
 	evidence(&b, c)
@@ -456,7 +459,7 @@ func adjudicationRequest(c *code, request string, round, left int) string {
 
 	for _, prev := range c.v.Rounds[:len(c.v.Rounds)-1] {
 		if a := prev.Adjudication; a != nil {
-			fmt.Fprintf(&b, "\n## Your decision in round %d: %s\n\n%s\n", prev.Round+1, *a.Verdict, *a.Summary)
+			fmt.Fprintf(&b, "\n## Your decision in round %d: %s\n\n%s\n", prev.number(), *a.Verdict, *a.Summary)
 			section(&b, "### Decisions", decisionLines(*a.Decisions))
 		}
 	}
