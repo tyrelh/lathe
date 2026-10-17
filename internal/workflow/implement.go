@@ -23,7 +23,7 @@ type ImplementOutput struct {
 
 func (b *ImplementOutput) Validate() []string {
 	var v []string
-	if b.Summary == nil || strings.TrimSpace(*b.Summary) == "" {
+	if blank(b.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
 	if b.Changed == nil {

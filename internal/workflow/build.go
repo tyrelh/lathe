@@ -24,10 +24,10 @@ type BranchOutput struct {
 
 func (b *BranchOutput) Validate() []string {
 	var v []string
-	if b.Summary == nil || strings.TrimSpace(*b.Summary) == "" {
+	if blank(b.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
-	if b.Branch == nil || strings.TrimSpace(*b.Branch) == "" {
+	if blank(b.Branch) {
 		v = append(v, `"branch" is missing or empty`)
 	}
 	if b.Wrote == nil {
@@ -76,10 +76,10 @@ type CommitOutput struct {
 
 func (c *CommitOutput) Validate() []string {
 	var v []string
-	if c.Summary == nil || strings.TrimSpace(*c.Summary) == "" {
+	if blank(c.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
-	if c.Message == nil || strings.TrimSpace(*c.Message) == "" {
+	if blank(c.Message) {
 		v = append(v, `"message" is missing or empty; it is the whole commit message, subject and body`)
 	}
 	if c.Wrote == nil {
@@ -105,13 +105,13 @@ type PROutput struct {
 
 func (p *PROutput) Validate() []string {
 	var v []string
-	if p.Summary == nil || strings.TrimSpace(*p.Summary) == "" {
+	if blank(p.Summary) {
 		v = append(v, `"summary" is missing or empty`)
 	}
-	if p.Title == nil || strings.TrimSpace(*p.Title) == "" {
+	if blank(p.Title) {
 		v = append(v, `"title" is missing or empty`)
 	}
-	if p.Body == nil || strings.TrimSpace(*p.Body) == "" {
+	if blank(p.Body) {
 		v = append(v, `"body" is missing or empty`)
 	}
 	if p.Wrote == nil {
