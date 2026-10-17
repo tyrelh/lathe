@@ -40,11 +40,11 @@ func (a Agent) WantsRepoInstructions() bool {
 // TierConfig is one configured tier. Empty fields inherit the agent's own
 // resolved configuration.
 type TierConfig struct {
-	When     string
-	Default  bool
-	Provider string
-	Model    string
-	Thinking string
+	When     string `yaml:"when"`
+	Default  bool   `yaml:"default"`
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+	Thinking string `yaml:"thinking"`
 }
 
 // File is one configuration file as loaded. Seed is the binary's seed for it,
