@@ -501,7 +501,7 @@ addEventListener('scroll', e => { if (!$('tooltip').contains(e.target)) tooltip.
 addEventListener('resize', () => tooltip.hide());
 addEventListener('blur', () => tooltip.hide());
 
-const PAGE = 500;   // the server's per-poll event cap
+const PAGE = 500;   // the server's per-poll event cap, dashboard.go's eventPage
 // How often each page asks for fresh data. Overview aggregates the whole
 // database and changes slowly; a live run's log does not. Agents load once,
 // then set done; until then they retry.

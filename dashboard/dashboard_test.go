@@ -201,6 +201,14 @@ func TestRoutes(t *testing.T) {
 	}
 }
 
+// TestEventPage pins index.html's PAGE to the server's per-poll event cap.
+func TestEventPage(t *testing.T) {
+	want := fmt.Sprintf("const PAGE = %d;", eventPage)
+	if !bytes.Contains(indexHTML, []byte(want)) {
+		t.Fatalf("index.html does not declare %q", want)
+	}
+}
+
 // Exercise pagination, rendering, and state retention in the shipped script.
 func TestClient(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {

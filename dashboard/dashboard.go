@@ -67,6 +67,9 @@ type Sources struct {
 	Roster func() (config.Config, error)
 }
 
+// eventPage is the per-poll event cap; index.html's PAGE must match.
+const eventPage = 500
+
 // maxWriteBody bounds any write route's JSON body; a prompt is text someone
 // typed.
 const maxWriteBody = 64 << 10
@@ -305,7 +308,7 @@ func runDetail(db *trace.DB) http.HandlerFunc {
 		// The cursor bounds one poll; whatever is left arrives on the next one.
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.
-		events, err := db.Events(id, int64(intParam(r, "after", 0)), 500)
+		events, err := db.Events(id, int64(intParam(r, "after", 0)), eventPage)
 		writeJSON(w, map[string]any{"run": run, "phases": phases, "events": events, "iterations": views}, err)
 	}
 }
