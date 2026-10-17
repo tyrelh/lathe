@@ -167,17 +167,12 @@ func Plan(r *run.Run) int {
 		func(e *run.Entry) (string, error) { return "", e.Log("request", r.Request) })
 	addPlanNodes(g, r, &out, "", nil)
 
-	err := g.Run()
-	// The plan is the product of this workflow, so it goes to the terminal as
-	// well as to disk; a failed phase has nothing to print.
-	if err == nil {
-		printPlan(r.Out, &out)
+	if err := g.Run(); err != nil {
+		return r.Finish(false, err.Error())
 	}
-	reason := ""
-	if err != nil {
-		reason = err.Error()
-	}
-	return r.Finish(err == nil, reason)
+	// The plan prints only on success; a failed phase has nothing to print.
+	printPlan(r.Out, &out)
+	return r.Finish(true, "")
 }
 
 // maxReviewSendBacks is how many times plan review may return a plan to the

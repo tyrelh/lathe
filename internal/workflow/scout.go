@@ -105,9 +105,9 @@ func Scout(r *run.Run) int {
 		return "", writeResult(r.Dir, "result.json", &out)
 	})
 
-	// A failed phase already settles the run's status, so there is nothing for
-	// this workflow to decide on top of it.
-	g.Run()
+	if err := g.Run(); err != nil {
+		return r.Finish(false, err.Error())
+	}
 	return r.Finish(true, "")
 }
 
