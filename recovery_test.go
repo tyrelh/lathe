@@ -271,7 +271,7 @@ type crashRegistrar struct {
 }
 
 func (c crashRegistrar) Intent(id string, argv []string) error {
-	if err := c.db.LaunchIntent(c.runID, c.attemptID, id, argv); err != nil {
+	if err := c.db.RecordLaunchIntent(c.runID, c.attemptID, id, argv); err != nil {
 		return err
 	}
 	c.holdAt("intent")
@@ -281,14 +281,14 @@ func (c crashRegistrar) Intent(id string, argv []string) error {
 func (c crashRegistrar) Register(id string, reg process.Registration) error {
 	os.WriteFile(filepath.Join(c.marks, "helper"), []byte(strconv.Itoa(reg.PID)), 0o644)
 	c.holdAt("started")
-	if err := c.db.LaunchRegistered(id, reg.Host, reg.PID, reg.PGID, reg.Endpoint, reg.Token); err != nil {
+	if err := c.db.RegisterLaunch(id, reg.Host, reg.PID, reg.PGID, reg.Endpoint, reg.Token); err != nil {
 		return err
 	}
 	c.holdAt("registered")
 	return nil
 }
 
-func (c crashRegistrar) Drained(id string) error { return c.db.LaunchDrainedAt(id) }
+func (c crashRegistrar) Drained(id string) error { return c.db.DrainLaunch(id) }
 
 func (c crashRegistrar) holdAt(stage string) {
 	if c.stage != stage {

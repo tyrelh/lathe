@@ -116,28 +116,28 @@ func TestLaunchLifecycle(t *testing.T) {
 	db := open(t)
 	id := submit(t, db, "build", "/repo")
 	attempt, _ := dispatch(t, db, id)
-	if err := db.LaunchIntent(id, attempt, "l1", []string{"git", "status"}); err != nil {
+	if err := db.RecordLaunchIntent(id, attempt, "l1", []string{"git", "status"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.LaunchRegistered("l1", "host", 10, 10, "127.0.0.1:9", "tok"); err != nil {
+	if err := db.RegisterLaunch("l1", "host", 10, 10, "127.0.0.1:9", "tok"); err != nil {
 		t.Fatal(err)
 	}
 	if open, _ := db.OpenLaunches(id); len(open) != 1 || open[0].State != LaunchRegistered || open[0].Token != "tok" {
 		t.Fatalf("open = %+v", open)
 	}
-	if err := db.LaunchDrainedAt("l1"); err != nil {
+	if err := db.DrainLaunch("l1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.LaunchIntent(id, attempt, "l2", nil); err != nil {
+	if err := db.RecordLaunchIntent(id, attempt, "l2", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.MarkLost(id, "gone"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.LaunchRegistered("l2", "host", 11, 11, "x", "y"); err != ErrLaunchRevoked {
+	if err := db.RegisterLaunch("l2", "host", 11, 11, "x", "y"); err != ErrLaunchRevoked {
 		t.Fatalf("a lost run's intent registered: %v", err)
 	}
-	if err := db.LaunchIntent(id, attempt, "l3", nil); err == nil {
+	if err := db.RecordLaunchIntent(id, attempt, "l3", nil); err == nil {
 		t.Fatal("a lost run recorded a new intent")
 	}
 	if cancelled, err := db.CancelLaunch("l2"); !cancelled || err != nil {

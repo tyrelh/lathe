@@ -349,7 +349,7 @@ func (m *manager) stopLaunches(runID, keep, host string) error {
 				}
 			}
 		}
-		if err := m.db.LaunchDrainedAt(l.ID); err != nil {
+		if err := m.db.DrainLaunch(l.ID); err != nil {
 			errs = append(errs, err)
 		}
 	}
