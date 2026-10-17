@@ -287,12 +287,11 @@ type Phase struct {
 	Attempt   string
 }
 
-// NewRunID builds the canonical run ID <UTC timestamp>_<workflow>_<random>.
-// The suffix is random rather than the process ID because after the
-// submitter/worker split the submitting process executes nothing, so its PID
-// identifies nothing. The format stays sortable, greppable and usable as a
-// directory name.
+// NewRunID returns <UTC timestamp>_<workflow>_<8 hex chars>: sortable,
+// greppable and safe as a directory name.
 func NewRunID(workflow string) string {
+	// Random, not the PID: the submitting process executes nothing, so its PID
+	// identifies nothing.
 	return fmt.Sprintf("%s_%s_%s", time.Now().UTC().Format("20060102T150405Z"), workflow, randomHex(4))
 }
 

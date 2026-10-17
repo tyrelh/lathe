@@ -86,8 +86,8 @@ func (d *DB) Submit(r Request) (string, error) {
 // iteration and puts the same run back in the queue. expect is the iteration
 // the caller checked the pull request against; if another was submitted
 // since, those checks describe the wrong state and this refuses.
-// Eligibility, the append and the requeue share one transaction,
-// so two submitters cannot both be accepted. The run keeps its ID, its totals,
+// Eligibility, the append and the requeue share one transaction: of concurrent
+// calls with the same expect, at most one succeeds. The run keeps its ID, its totals,
 // its creation and first-start times; the new submission time is what the
 // queue orders it by.
 func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int, error) {
@@ -323,10 +323,11 @@ func (d *DB) Claim(attemptID, token, host string, pid int, lease time.Duration) 
 	return out[0], tx.Commit()
 }
 
-// Beat extends the lease and reports whether a cancellation is waiting. The
-// worker polls cancellation here rather than in a second query because the
-// heartbeat already has to run on its own clock, independent of model output.
+// Beat extends the lease and reports whether a cancellation is waiting. It
+// returns ErrClaimLost if the attempt no longer holds its claim.
 func (d *DB) Beat(attemptID, token string, lease time.Duration) (cancel bool, err error) {
+	// Cancellation is polled here rather than in a second query because the
+	// heartbeat already runs on its own clock, independent of model output.
 	res, err := d.sql.Exec(
 		`UPDATE attempts SET heartbeat_at = ?, lease_until = ?
 		 WHERE attempt_id = ? AND claim_token = ? AND outcome IS NULL`,
@@ -451,12 +452,9 @@ func (d *DB) SetCommit(runID, attemptID, sha string) error {
 		`UPDATE iterations SET base_commit = ?`, []any{sha})
 }
 
-// SetShipped moves a run's branch and commit to where its work now lives. A
-// build starts from the branch it was submitted against and ends on one it
-// created, so without this the run would name its base as its result. The base
-// is not lost: it is the shipped commit's parent, and the pull request's base.
-// A revision calls it only once its push is verified, so the run's commit is
-// always the last one lathe knows reached the pull request.
+// SetShipped records the run's shipped branch and commit, and the current
+// iteration's commit. It writes nothing and returns ErrClaimLost if attemptID
+// no longer owns the run.
 func (d *DB) SetShipped(runID, attemptID, branch, sha string) error {
 	return d.guarded(runID, attemptID,
 		`UPDATE runs SET branch = ?, commit_sha = ? WHERE run_id = ?`, []any{branch, sha, runID},

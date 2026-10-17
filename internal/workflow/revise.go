@@ -152,6 +152,8 @@ func publish(e *run.Entry, r *run.Run, rev *run.Revision, sha string) error {
 	if after != sha {
 		return fmt.Errorf("not published: %s, and origin/%s is at %s; %s", pushed(pushErr), rev.Branch, short(after), local)
 	}
+	// Only once the push is verified, so the run's commit is always the last
+	// one lathe knows reached the pull request.
 	if err := r.Shipped(rev.Branch, sha); err != nil {
 		return err
 	}

@@ -252,7 +252,8 @@ func Build(r *run.Run) int {
 			return "", err
 		}
 		// Recorded here rather than at the end, so a failed pull request still
-		// leaves a run that names where its commit is.
+		// leaves a run that names where its commit is. The base is not lost: it
+		// is the shipped commit's parent, and the pull request's base.
 		if err := r.Shipped(branch, sha); err != nil {
 			return "", err
 		}

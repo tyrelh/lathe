@@ -70,8 +70,7 @@ func scanProjects(rows *sql.Rows, total float64) ([]ProjectSpend, error) {
 
 // ProjectRuns pages through every run for an exact repository, most recently
 // active first. The cursor is the last displayed row's ordering pair, so new
-// runs cannot shift an offset; a run revised mid-page moves to the top, where
-// the dashboard's merge by ID absorbs it.
+// runs cannot shift an offset; a run revised mid-page moves to the top.
 func (d *DB) ProjectRuns(repo, beforeAt, beforeID string, limit int) ([]Row, bool, error) {
 	if limit < 1 {
 		limit = 50
