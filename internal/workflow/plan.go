@@ -430,6 +430,17 @@ func printPlan(w io.Writer, p *PlanOutput) {
 	section(w, "proposed future tickets (not part of this run)", tickets)
 }
 
+// findingSection writes title and each finding, or nothing when fs is empty.
+func findingSection(w io.Writer, title string, fs []Finding) {
+	if len(fs) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n%s\n", title)
+	for _, f := range fs {
+		writeFinding(w, f)
+	}
+}
+
 func section(w io.Writer, title string, items []string) {
 	if len(items) == 0 {
 		return

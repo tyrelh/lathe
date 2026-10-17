@@ -495,12 +495,7 @@ func repairRequest(c *code, request string, a *AdjudicationOutput, fixes []Findi
 	var b strings.Builder
 	b.WriteString(implementRequest(request, &c.plan, c.v.Amendments))
 	fmt.Fprintf(&b, "\n## Repair requested (send-back %d of %d)\n\n%s\n", sent, maxRepairs, *a.Changes)
-	if len(fixes) > 0 {
-		b.WriteString("\n### Findings to fix\n")
-		for _, f := range fixes {
-			writeFinding(&b, f)
-		}
-	}
+	findingSection(&b, "### Findings to fix", fixes)
 	var added []string
 	for _, s := range *a.Scope {
 		added = append(added, fmt.Sprintf("%s: %s", s.Path, s.Reason))
@@ -551,12 +546,7 @@ func validationReport(v *Validation) string {
 	if t := cur.Tests; t != nil {
 		fmt.Fprintf(&b, "\n### Tests\n\nCommand: `%s`\nResult: %s\n\n````\n%s\n````\n", *t.Command, t.Result(), *t.Output)
 	}
-	if len(v.Unresolved) > 0 {
-		b.WriteString("\n### Unresolved findings\n")
-		for _, f := range v.Unresolved {
-			writeFinding(&b, f)
-		}
-	}
+	findingSection(&b, "### Unresolved findings", v.Unresolved)
 	var failures []string
 	for _, f := range cur.Failures {
 		failures = append(failures, f.Worker+": "+f.Error)

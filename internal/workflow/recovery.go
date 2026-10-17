@@ -155,10 +155,7 @@ func recoveryContext(r *run.Run, c *code) string {
 		}
 	}
 	if c != nil && len(c.outstanding) > 0 {
-		b.WriteString("\n### Outstanding findings from prior validation\n")
-		for _, f := range c.outstanding {
-			writeFinding(&b, f)
-		}
+		findingSection(&b, "### Outstanding findings from prior validation", c.outstanding)
 		b.WriteString("\nCarry these forward, or dismiss in `dismissals` any the new approach makes moot.\n")
 	}
 	section(&b, "### Work restored into the tree from the prior iteration", rec.Restored)

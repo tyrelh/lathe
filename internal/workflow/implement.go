@@ -211,14 +211,9 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			c.handoff = implementRequest(r.Request, &c.plan, nil)
 			request = c.handoff
 			// A recovery carries prior findings the plan did not dismiss.
-			if len(c.outstanding) > 0 {
-				var b strings.Builder
-				b.WriteString("\n### Findings from prior validation still to fix\n")
-				for _, f := range c.outstanding {
-					writeFinding(&b, f)
-				}
-				request += b.String()
-			}
+			var b strings.Builder
+			findingSection(&b, "### Findings from prior validation still to fix", c.outstanding)
+			request += b.String()
 			if r.Recovery != nil && len(r.Recovery.Restored) > 0 {
 				request += "\nThe tree already holds the prior iteration's work on the paths the plan keeps; continue from it.\n"
 			}
