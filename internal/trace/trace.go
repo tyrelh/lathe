@@ -98,9 +98,6 @@ CREATE TABLE IF NOT EXISTS events (
 // busyMillis is how long a connection waits for a lock rather than fail.
 const busyMillis = "5000"
 
-// busyTimeout applies busyMillis to one connection.
-const busyTimeout = "PRAGMA busy_timeout=" + busyMillis
-
 // DataRoot is where the database and per-run artifacts live: $XDG_DATA_HOME/lathe,
 // falling back to ~/.local/share/lathe.
 func DataRoot() (string, error) {
@@ -468,11 +465,11 @@ func OpenRO(dataRoot string) (*DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("no trace database at %s — run something first", path)
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout("+busyMillis+")")
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(busyTimeout); err != nil {
+	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
 	}
