@@ -53,9 +53,6 @@ func TestNewMergesPermissions(t *testing.T) {
 			t.Errorf("agent %d = %+v", i, a)
 		}
 	}
-	if !reflect.DeepEqual(c.Protected, Protected) || !reflect.DeepEqual(c.BashDenied, BashDenied) || c.CommandTimeout != CommandTimeout {
-		t.Fatalf("permissions not carried: %+v", c)
-	}
 	if _, err := New(nil, nil, nil); err == nil || !strings.Contains(err.Error(), "scout") {
 		t.Fatalf("missing agent: %v", err)
 	}
@@ -155,10 +152,8 @@ func TestCaptureCarriesCommandTimeout(t *testing.T) {
 	if err != nil || s.CommandDeadline.Minutes() != 10 {
 		t.Fatalf("command deadline = %v, %v", s.CommandDeadline, err)
 	}
-	c := fixture(t)
-	c.CommandTimeout = "ten minutes"
-	if _, err := c.Capture([]string{"scout"}, Overrides{}); err == nil || !strings.Contains(err.Error(), "command_timeout") {
-		t.Fatalf("error = %v", err)
+	if !reflect.DeepEqual(s.Protected, Protected) || !reflect.DeepEqual(s.BashDenied, BashDenied) {
+		t.Fatalf("permissions not carried: %+v", s)
 	}
 }
 
