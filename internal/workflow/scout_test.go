@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,9 +20,42 @@ import (
 	"github.com/tyrelh/lathe/internal/trace"
 )
 
-// stubPi puts a fake `pi` on PATH that serves replies[n] on its nth
-// invocation. Every workflow resolves the binary from PATH, so this is
-// the only seam a workflow test needs — no provider, no key, no network.
+type workflowHarness struct{ dataRoot, piBin string }
+
+var harnesses sync.Map
+
+func harness(t *testing.T) *workflowHarness {
+	t.Helper()
+	if state, ok := harnesses.Load(t); ok {
+		return state.(*workflowHarness)
+	}
+	state := &workflowHarness{}
+	actual, loaded := harnesses.LoadOrStore(t, state)
+	if !loaded {
+		t.Cleanup(func() { harnesses.Delete(t) })
+	}
+	return actual.(*workflowHarness)
+}
+
+func dataRoot(t *testing.T) string {
+	t.Helper()
+	root := harness(t).dataRoot
+	if root == "" {
+		t.Fatal("test did not load a data root")
+	}
+	return root
+}
+
+func piBin(t *testing.T) string {
+	t.Helper()
+	bin := harness(t).piBin
+	if bin == "" {
+		t.Fatal("test did not install pi")
+	}
+	return bin
+}
+
+// stubPi serves replies[n] on its nth invocation.
 func stubPi(t *testing.T, replies ...string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,30 +64,36 @@ func stubPi(t *testing.T, replies ...string) {
 	for i, r := range replies {
 		write(t, filepath.Join(dir, fmt.Sprintf("reply%d.jsonl", i)), r)
 	}
-	onPath(t, dir, fmt.Sprintf("#!/bin/sh\nn=$(cat %q)\necho $((n+1)) > %q\ncat %q/reply$n.jsonl\n", count, count, dir))
+	installPi(t, dir, fmt.Sprintf("#!/bin/sh\nn=$(cat %q)\necho $((n+1)) > %q\ncat %q/reply$n.jsonl\n", count, count, dir))
 }
 
-// onPath installs script as an executable `pi` in dir and puts dir first on
-// PATH, which is the whole seam a workflow test needs. Every stub differs only
-// in the script, so only the script belongs in one.
+// onPath installs pi and prepends its directory to PATH.
 func onPath(t *testing.T, dir, script string) {
 	t.Helper()
+	installPi(t, dir, script)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installPi(t *testing.T, dir, script string) {
+	t.Helper()
+	failed := filepath.Join(dir, "auth-fail")
 	auth := fmt.Sprintf(`if [ "$1 $2" = "auth check" ]; then
   echo "$4" >> %q
-  if [ "$4" = "$LATHE_TEST_AUTH_FAIL" ]; then
+  if [ -f %q ] && [ "$4" = "$(cat %q)" ]; then
     printf '{"provider":"%%s","status":"not_ready","reason":"credentials_not_configured"}\n' "$4"
     exit 1
   fi
   printf '{"provider":"%%s","status":"ready","authType":"api_key"}\n' "$4"
   exit 0
 fi
-`, filepath.Join(dir, "auth-providers"))
+`, filepath.Join(dir, "auth-providers"), failed, failed)
 	script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\n"+auth, 1)
-	write(t, filepath.Join(dir, "pi"), script)
-	if err := os.Chmod(filepath.Join(dir, "pi"), 0o755); err != nil {
+	bin := filepath.Join(dir, "pi")
+	write(t, bin, script)
+	if err := os.Chmod(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	harness(t).piBin = bin
 }
 
 func write(t *testing.T, path, body string) {
@@ -100,8 +140,8 @@ func dispatch(t *testing.T, cfg config.Config, name, repo, request string, ctx c
 	if err != nil {
 		t.Fatal(err)
 	}
-	dataRoot := filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe")
-	db, err := trace.Open(dataRoot)
+	root := dataRoot(t)
+	db, err := trace.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,8 +160,8 @@ func dispatch(t *testing.T, cfg config.Config, name, repo, request string, ctx c
 	}
 	r, err := run.Open(run.Options{
 		ID: id, Workflow: name, Request: request, Repo: repo,
-		Dir: filepath.Join(dataRoot, "runs", id), Snapshot: roster, DB: db,
-		Out: out, Ctx: ctx, Attempt: attempt, Recovery: rec,
+		Dir: filepath.Join(root, "runs", id), Snapshot: roster, DB: db,
+		Out: out, Ctx: ctx, Attempt: attempt, Recovery: rec, PiBin: piBin(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +178,7 @@ func dispatch(t *testing.T, cfg config.Config, name, repo, request string, ctx c
 
 func load(t *testing.T) (config.Config, string) {
 	t.Helper()
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	harness(t).dataRoot = filepath.Join(t.TempDir(), "lathe")
 	seed, err := fs.Sub(os.DirFS(filepath.Join("..", "..")), "seed")
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +194,7 @@ func load(t *testing.T) (config.Config, string) {
 
 // A good scout run exits 0 and leaves raw.jsonl and result.json behind.
 func TestScoutWritesResult(t *testing.T) {
+	t.Parallel()
 	stubPi(t, reply(t, ""))
 	cfg, repo := load(t)
 
@@ -180,6 +221,7 @@ func TestScoutWritesResult(t *testing.T) {
 
 // A gate the agent never satisfies fails the phase, and the run exits 1.
 func TestScoutFailsOnGateViolation(t *testing.T) {
+	t.Parallel()
 	stubPi(t, reply(t, `"invented.md"`), reply(t, `"invented.md"`), reply(t, `"invented.md"`))
 	cfg, repo := load(t)
 
@@ -196,7 +238,7 @@ func TestScoutFailsOnGateViolation(t *testing.T) {
 
 func latestRunDir(t *testing.T) string {
 	t.Helper()
-	runs := filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe", "runs")
+	runs := filepath.Join(dataRoot(t), "runs")
 	entries, err := os.ReadDir(runs)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("want exactly one run directory under %s: %v", runs, err)

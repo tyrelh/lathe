@@ -39,7 +39,7 @@ func buildRepo(t *testing.T) (config.Config, string) {
 // stub can bypass the extension, so out-of-scope writes test defense in depth.
 func implementStub(t *testing.T, action, report string) string {
 	t.Helper()
-	dir := codeStub(t)
+	dir := codeStubNoPath(t)
 	write(t, filepath.Join(dir, "builder.sh"), action+"\n")
 	write(t, filepath.Join(dir, "builder"), piReply(t, "```json\n"+report+"\n```"))
 	return dir
@@ -56,14 +56,15 @@ func totalSpawns(t *testing.T, dir string) int {
 }
 
 func TestImplementAuthPreflight(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprint(fail), func(t *testing.T) {
 			cfg, repo := buildRepo(t)
 			preflightProviders(&cfg, "adjudicator")
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			want := 0
 			if fail {
-				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				write(t, filepath.Join(stub, "auth-fail"), "later-auth")
 				want = 1
 			}
 			if got := execute(t, cfg, "implement", repo, "greet the world"); got != want {
@@ -78,10 +79,11 @@ func TestImplementAuthPreflight(t *testing.T) {
 }
 
 func TestImplementEnvironmentFailure(t *testing.T) {
+	t.Parallel()
 	for _, exit := range []int{126, 127} {
 		t.Run(fmt.Sprint(exit), func(t *testing.T) {
 			cfg, repo := buildRepo(t)
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			head := rev(t, repo, "HEAD")
 			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
 			write(t, filepath.Join(stub, "tester"), testerReply(t, command, exit, "ENV-TAIL\n"))
@@ -97,6 +99,7 @@ func TestImplementEnvironmentFailure(t *testing.T) {
 }
 
 func TestImplement(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, action, changed, needed string
 		want, builds, calls           int
@@ -213,6 +216,7 @@ func TestImplementOutputRequiresEveryKey(t *testing.T) {
 }
 
 func TestImplementBlockedWriteTrace(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
 	dir := implementStub(t, ":", `{"summary":"blocked","changed":[],"needed":["forbidden.txt"],"artifacts":[]}`)
 	replyPath := filepath.Join(dir, "builder")
@@ -250,6 +254,7 @@ func TestImplementBlockedWriteTrace(t *testing.T) {
 // planner rather than being corrected: the corrected reply is free to come
 // back without the needed list. No builder turn is a correction.
 func TestImplementNeededOutranksAnInvalidEnvelope(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
 	stub := implementStub(t, ":", `{"summary":"blocked","changed":[],"needed":["missing.txt"]}`)
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {

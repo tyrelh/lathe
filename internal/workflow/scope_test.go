@@ -46,8 +46,9 @@ func readScope(t *testing.T, n string) ScopeRequest {
 // survives read-only planning, the builder resumes its session with the
 // refreshed scope, and one full validation checks the finished work.
 func TestScopeRequestReplansAndKeepsPartialWork(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder.sh"), "printf 'hello world\\n' > hello.txt\nif [ \"$n\" = 1 ]; then echo extra > extra.txt; fi\n")
 	write(t, filepath.Join(stub, "builder.0"), neededReply(t, []string{"hello.txt"}, []string{"extra.txt"}, "THE-GREETING-LIVES-IN-EXTRA"))
 	write(t, filepath.Join(stub, "builder.1"), jsonReply(t, map[string]any{"summary": "done",
@@ -118,8 +119,9 @@ func TestBuildScopeRequestCreatesTheBranchOnce(t *testing.T) {
 // A planner that drops uncommitted work without abandoning it is corrected;
 // an explicit reversal saves the work, then reverts it.
 func TestReplanReversalsPreserveAbandonedWork(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder.sh"), "if [ \"$n\" = 0 ]; then echo ABANDONED > hello.txt; else echo other > other.txt; fi\n")
 	write(t, filepath.Join(stub, "builder.0"), neededReply(t, []string{"hello.txt"}, []string{"extra.txt"}, ""))
 	write(t, filepath.Join(stub, "builder.1"), jsonReply(t, map[string]any{"summary": "another way",
@@ -150,8 +152,9 @@ func TestReplanReversalsPreserveAbandonedWork(t *testing.T) {
 // which may dismiss one with a reason; fresh validation follows, and rounds
 // count completed implementations.
 func TestScopeRequestDuringRepair(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "code-review-general.0"), reviewerReply(t, "GREETING-TOO-LOUD"))
 	write(t, filepath.Join(stub, "adjudicator.0"), adjudicatorReply(t, "revise", "SOFTEN-IT",
 		[]map[string]string{decide("general-1.1", "fix")}, nil))
@@ -180,8 +183,9 @@ func TestScopeRequestDuringRepair(t *testing.T) {
 
 // A protected path can be asked for and replanned around, but never granted.
 func TestProtectedScopeRequestReplansWithoutGranting(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder.0"), neededReply(t, []string{"hello.txt"}, []string{".env"}, ""))
 	bad := planReply(t, `"hello.txt", ".env"`)
 	write(t, filepath.Join(stub, "planner.1"), bad)
@@ -202,10 +206,11 @@ func TestProtectedScopeRequestReplansWithoutGranting(t *testing.T) {
 
 // Malformed or escaping paths end the run without replanning.
 func TestMalformedScopeRequestIsTerminal(t *testing.T) {
+	t.Parallel()
 	for _, needed := range []string{"../outside.txt", "src/*.go", "./hello2.txt", "hello.txt"} {
 		t.Run(needed, func(t *testing.T) {
 			cfg, repo := buildRepo(t)
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			write(t, filepath.Join(stub, "builder"), neededReply(t, []string{"hello.txt"}, []string{needed}, ""))
 			if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
 				t.Fatalf("code = %d", code)
@@ -226,8 +231,9 @@ func TestMalformedScopeRequestIsTerminal(t *testing.T) {
 // A third scope request ends the iteration after two send-backs, keeps every
 // request's evidence and points at manual recovery.
 func TestThirdScopeRequestFails(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder"), neededReply(t, []string{"hello.txt"}, []string{"extra.txt"}, ""))
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d", code)
@@ -250,8 +256,9 @@ func TestThirdScopeRequestFails(t *testing.T) {
 
 // Review that still blocks at its limit after a scope request stops the run.
 func TestUnresolvedScopeBlockerStopsAtReviewExhaustion(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder.0"), neededReply(t, []string{"hello.txt"}, []string{"extra.txt"}, ""))
 	write(t, filepath.Join(stub, "plan-reviewer"), blockedReply(t, "the plan still does not reach extra.txt"))
 	write(t, filepath.Join(stub, "plan-reviewer.0"), reviewOK(t))
@@ -272,8 +279,9 @@ func TestUnresolvedScopeBlockerStopsAtReviewExhaustion(t *testing.T) {
 // A report that did not decode is an ordinary invalid report, even when its
 // needed list happened to decode: it is corrected, never replanned.
 func TestUndecodableNeededReportIsNotAScopeRequest(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder"), piReply(t,
 		"```json\n"+`{"summary":42,"changed":["hello.txt"],"needed":["extra.txt"],"artifacts":[]}`+"\n```"))
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
@@ -298,8 +306,9 @@ func TestUndecodableNeededReportIsNotAScopeRequest(t *testing.T) {
 // A scope cycle whose last review is unusable at the limit stops: nothing
 // established that the request was answered, so the builder never resumes.
 func TestUnusableFinalScopeReviewStopsTheRun(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "builder.0"), neededReply(t, []string{"hello.txt"}, []string{"extra.txt"}, ""))
 	write(t, filepath.Join(stub, "plan-reviewer"), piReply(t, "not an envelope"))
 	write(t, filepath.Join(stub, "plan-reviewer.0"), reviewOK(t))

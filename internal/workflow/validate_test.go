@@ -28,6 +28,16 @@ import (
 // its arguments and prints a URL.
 func codeStub(t *testing.T) string {
 	t.Helper()
+	return codeStubWithPath(t, true)
+}
+
+func codeStubNoPath(t *testing.T) string {
+	t.Helper()
+	return codeStubWithPath(t, false)
+}
+
+func codeStubWithPath(t *testing.T, onSearchPath bool) string {
+	t.Helper()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "planner"), planReply(t, `"hello.txt"`))
 	write(t, filepath.Join(dir, "plan-reviewer"), reviewOK(t))
@@ -78,7 +88,7 @@ echo %[2]q
 		t.Fatal(err)
 	}
 
-	onPath(t, dir, fmt.Sprintf(`#!/bin/sh
+	script := fmt.Sprintf(`#!/bin/sh
 d=%[1]q
 a=unknown
 for name in %[3]s; do
@@ -100,7 +110,12 @@ if [ "$a" = adjudicator ] && [ "$(ls "$d" | grep -c '^done\.')" -lt %[2]d ]; the
 [ ! -f "$d/$a.sh" ] || . "$d/$a.sh"
 if [ -f "$d/$a.$n" ]; then cat "$d/$a.$n"; else cat "$d/$a"; fi
 case $a in tester|code-review-*) touch "$d/done.$a" ;; esac
-`, dir, len(validators), strings.Join(Agents["build"], " ")))
+`, dir, len(validators), strings.Join(Agents["build"], " "))
+	if onSearchPath {
+		onPath(t, dir, script)
+	} else {
+		installPi(t, dir, script)
+	}
 	return dir
 }
 
@@ -184,7 +199,7 @@ func readValidationIn(t *testing.T, dir string) Validation {
 
 func openTrace(t *testing.T) *trace.DB {
 	t.Helper()
-	db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
+	db, err := trace.Open(dataRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,10 +272,11 @@ func assertEnvironmentFailure(t *testing.T, stub, dir, command string, exit, ite
 }
 
 func TestEnvironmentFailureRetainsJoinedEvidence(t *testing.T) {
+	t.Parallel()
 	for _, exit := range []int{126, 127} {
 		t.Run(fmt.Sprint(exit), func(t *testing.T) {
 			cfg, repo := buildRepo(t)
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			command := fmt.Sprintf("echo ENV-TAIL; exit %d", exit)
 			write(t, filepath.Join(stub, "tester.sh"), "echo mutated > hello.txt\n")
 			write(t, filepath.Join(stub, "tester"), testerReply(t, command, exit, "ENV-TAIL\n"))
@@ -281,8 +297,9 @@ func TestEnvironmentFailureRetainsJoinedEvidence(t *testing.T) {
 }
 
 func TestOrdinaryRedSuiteStillAdjudicatesAndRepairs(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "tester.0"), testerReply(t, "echo RED-TAIL; exit 7", 7, "RED-TAIL\n"))
 	write(t, filepath.Join(stub, "adjudicator.0"), adjudicatorReply(t, "revise", "fix the suite", nil, nil))
 	if got := execute(t, cfg, "implement", repo, "greet the world"); got != 0 {
@@ -318,7 +335,7 @@ var validators = append([]string{"tester"}, reviewers...)
 // adjudicator starts only once all of them have finished.
 func TestValidationRunsWorkersInParallel(t *testing.T) {
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "barrier"), "")
 
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
@@ -374,8 +391,9 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 // the repair with the previous decision in front of it, and a scope addition
 // reaches the builder once the gate has refused the protected one.
 func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "code-review-general.0"), reviewerReply(t, "GREETING-TOO-LOUD"))
 	write(t, filepath.Join(stub, "code-review-slop.0"), reviewerReply(t, "GREETING-OVERWROUGHT"))
 	decisions := []map[string]string{decide("general-1.1", "fix"), decide("slop-1.1", "dismiss")}
@@ -435,8 +453,9 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 // still unaccepted after the last repair is handed off with its findings — after
 // that repair got a full round of its own. Implement keeps it local.
 func TestSendBacksAreBoundedAndRedIsNeverAccepted(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "tester"), testerReply(t, "echo RED-TAIL; false", 1, "RED-TAIL\n"))
 	write(t, filepath.Join(stub, "adjudicator.0"), acceptReply(t))
 	write(t, filepath.Join(stub, "adjudicator"), adjudicatorReply(t, "revise", "make the suite pass", nil, nil))
@@ -485,7 +504,7 @@ func TestWorkerRetries(t *testing.T) {
 	}{{"recovers", true}, {"exhausted", false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, repo := buildRepo(t)
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			write(t, filepath.Join(stub, "code-review-security"), piReply(t, "no json here"))
 			if tc.recovers {
 				write(t, filepath.Join(stub, "code-review-security.4"), reviewerReply(t))

@@ -98,7 +98,7 @@ func TestBuildAuthPreflight(t *testing.T) {
 			stub := codeStub(t)
 			want := 0
 			if fail {
-				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				write(t, filepath.Join(stub, "auth-fail"), "later-auth")
 				want = 1
 			}
 			if got := execute(t, cfg, "build", repo, "greet the world"); got != want {
