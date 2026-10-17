@@ -78,8 +78,8 @@ func (d *DB) Submit(r Request) (string, error) {
 		return "", err
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO iterations (run_id, iteration, request, spec, status, submitted_at)
-		 VALUES (?, 0, ?, ?, 'queued', ?)`, id, r.Request, string(r.Spec), at); err != nil {
+		`INSERT INTO iterations (run_id, iteration, request, spec, status, submitted_at, kind)
+		 VALUES (?, 0, ?, ?, 'queued', ?, ?)`, id, r.Request, string(r.Spec), at, KindSubmission); err != nil {
 		return "", err
 	}
 	return id, tx.Commit()
@@ -115,8 +115,8 @@ func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int,
 
 	at, next := nowUTC(), n+1
 	if _, err := tx.Exec(
-		`INSERT INTO iterations (run_id, iteration, request, spec, status, submitted_at)
-		 VALUES (?, ?, ?, ?, 'queued', ?)`, runID, next, request, string(spec), at); err != nil {
+		`INSERT INTO iterations (run_id, iteration, request, spec, status, submitted_at, kind)
+		 VALUES (?, ?, ?, ?, 'queued', ?, ?)`, runID, next, request, string(spec), at, KindRevision); err != nil {
 		return 0, err
 	}
 	// ended_at, reason and cancel_at describe the iteration that just ended;
@@ -540,10 +540,10 @@ func (d *DB) Iterations(runID string) ([]Iteration, error) {
 		        COALESCE(base_commit, ''), COALESCE(commit_sha, ''), COALESCE(remote_sha, ''),
 		        COALESCE(worktree_path, ''), COALESCE(worktree_state, ''), COALESCE(worktree_error, ''),
 		        COALESCE(patch_path, ''), COALESCE(recovery_ref, ''), COALESCE(spec, ''),
-		        COALESCE(kind, CASE WHEN iteration = 0 THEN 'submission' ELSE 'revision' END),
+		        COALESCE(kind, CASE WHEN iteration = 0 THEN ? ELSE ? END),
 		        COALESCE(source_iteration, -1), COALESCE(guidance, ''), COALESCE(resolved_request, ''), restored,
 		        COALESCE(preservation, '')
-		 FROM iterations WHERE run_id = ? ORDER BY iteration`, runID)
+		 FROM iterations WHERE run_id = ? ORDER BY iteration`, KindSubmission, KindRevision, runID)
 	if err != nil {
 		return nil, err
 	}

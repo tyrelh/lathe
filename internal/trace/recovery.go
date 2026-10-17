@@ -6,7 +6,8 @@ import (
 	"fmt"
 )
 
-// Iteration kinds. A nonzero iteration is a revision only when it says so.
+// Iteration kinds. Rows written before kind was recorded have NULL kind and
+// are read as a submission at iteration 0 and a revision otherwise.
 const (
 	KindSubmission = "submission"
 	KindRevision   = "revision"
