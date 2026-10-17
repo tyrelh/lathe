@@ -487,7 +487,7 @@ func settle(db *trace.DB, dataRoot string, w trace.Worktree, protected []string,
 	case err == nil && fi.IsDir():
 		outcome := trace.PreservedSkipped
 		if keepPatch {
-			dest := filepath.Join(ReportDir(dataRoot, w.RunID, w.Iteration), "result.patch")
+			dest := filepath.Join(ReportDir(dataRoot, w.RunID, w.Iteration), run.PatchFile)
 			wrote, err := workspace.SavePatch(w.Path, w.Base, dest, protected)
 			if err != nil {
 				return fmt.Errorf("saving the result patch: %w; the worktree is kept at %s", err, w.Path)

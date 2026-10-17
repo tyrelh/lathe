@@ -74,7 +74,7 @@ func continuePR(e *run.Entry, r *run.Run, c *code, pub *run.Publication, sha, me
 			return "", err
 		}
 	}
-	return pub.PR, writeResult(r.Dir, "pr.json", prResult{URL: pub.PR, Draft: draft, Validation: c.v.Outcome})
+	return pub.PR, writeResult(r.Dir, run.PRFile, prResult{URL: pub.PR, Draft: draft, Validation: c.v.Outcome})
 }
 
 // A recovery is an engineer continuing a failed, cancelled or lost iteration
@@ -99,12 +99,12 @@ func recoveryContext(r *run.Run, c *code) string {
 	fmt.Fprintf(&b, "\n### Engineer guidance\n\n%s\n", rec.Guidance)
 
 	var plan PlanOutput
-	if latest(rec.Prior, "plan.json", &plan) != "" && plan.Printable() {
+	if latest(rec.Prior, run.PlanFile, &plan) != "" && plan.Printable() {
 		b.WriteString("\n### Prior plan\n")
 		printPlan(&b, &plan)
 	}
 	var impl ImplementOutput
-	if latest(rec.Prior, "implement.json", &impl) != "" && impl.Summary != nil {
+	if latest(rec.Prior, run.ImplementFile, &impl) != "" && impl.Summary != nil {
 		fmt.Fprintf(&b, "\n### Prior implementation report\n\n%s\n", *impl.Summary)
 		if impl.Needed != nil {
 			section(&b, "Files the builder said it needed", *impl.Needed)
@@ -117,7 +117,7 @@ func recoveryContext(r *run.Run, c *code) string {
 		dir := rec.Prior[n-1].Dir
 		for i := maxScopeSendBacks + 1; i >= 1; i-- {
 			var req ScopeRequest
-			if readReport(dir, fmt.Sprintf("scope-%d.json", i), &req) {
+			if readReport(dir, run.ScopeFile(i), &req) {
 				fmt.Fprintf(&b, "\n### Prior scope request %d (%s)\n", req.N, req.Outcome)
 				section(&b, "Needed", req.Needed)
 				if req.Explanation != "" {
@@ -130,7 +130,7 @@ func recoveryContext(r *run.Run, c *code) string {
 	// A validation report saved mid-repair has rounds and decisions but no
 	// summary, which only settling writes; its evidence still counts.
 	var v Validation
-	dir := latest(rec.Prior, "validation.json", &v)
+	dir := latest(rec.Prior, run.ValidationFile, &v)
 	if dir != "" && (v.Summary != "" || len(v.Rounds) > 0) {
 		source := priorIteration(rec.Prior, dir)
 		b.WriteString("\n### Prior validation\n\n")
@@ -210,16 +210,16 @@ func dismissalsOf(prior []run.Prior, v *Validation, source int) []Dismissal {
 // iterations, those in its validation.json and disposition.json.
 func dismissalsIn(p run.Prior) []Dismissal {
 	all := []Dismissal{}
-	if readReport(p.Dir, "dismissals.json", &all) {
+	if readReport(p.Dir, run.DismissalsFile, &all) {
 		return all
 	}
 	var out []Dismissal
 	var v Validation
-	if readReport(p.Dir, "validation.json", &v) {
+	if readReport(p.Dir, run.ValidationFile, &v) {
 		out = append(out, v.Dismissals...)
 	}
 	var d Disposition
-	if readReport(p.Dir, "disposition.json", &d) {
+	if readReport(p.Dir, run.DispositionFile, &d) {
 		for _, dm := range d.Dismissed {
 			if !slices.ContainsFunc(out, func(x Dismissal) bool { return sameDismissal(x, dm) }) {
 				out = append(out, dm)

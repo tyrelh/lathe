@@ -204,16 +204,16 @@ func revisionBrief(request string, rev *run.Revision, repo string) string {
 	b.WriteString(request)
 
 	var plan PlanOutput
-	if latest(rev.Prior, "plan.json", &plan) != "" && plan.Printable() {
+	if latest(rev.Prior, run.PlanFile, &plan) != "" && plan.Printable() {
 		b.WriteString("\n### Previous plan\n")
 		printPlan(&b, &plan)
 	}
 	var impl ImplementOutput
-	if latest(rev.Prior, "implement.json", &impl) != "" && impl.Summary != nil {
+	if latest(rev.Prior, run.ImplementFile, &impl) != "" && impl.Summary != nil {
 		fmt.Fprintf(&b, "\n### Previous implementation\n\n%s\n", *impl.Summary)
 	}
 	var v Validation
-	if latest(rev.Prior, "validation.json", &v) != "" && v.Summary != "" {
+	if latest(rev.Prior, run.ValidationFile, &v) != "" && v.Summary != "" {
 		fmt.Fprintf(&b, "\n### Previous validation\n\n%s\n", v.Summary)
 	}
 

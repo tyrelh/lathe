@@ -318,7 +318,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			// No usable review established that the scope request is answered,
 			// so the candidate plan is kept for diagnosis and never handed on.
 			req := c.scope.pending
-			if err := writeResult(r.Dir, fmt.Sprintf("plan-%d.json", req.N), out); err != nil {
+			if err := writeResult(r.Dir, run.PlanVersionFile(req.N), out); err != nil {
 				return "", err
 			}
 			req.Outcome = scopeUnreviewed
@@ -331,7 +331,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 		if unusable && c != nil && r.Recovery != nil && !c.disposed {
 			// A recovery's plan decides what happens to restored work and
 			// prior findings; without a usable review it decides nothing.
-			if err := writeResult(r.Dir, "plan.json", out); err != nil {
+			if err := writeResult(r.Dir, run.PlanFile, out); err != nil {
 				return "", err
 			}
 			return "", fmt.Errorf("plan review: no usable review of the recovery's plan after %d send-backs; the candidate plan is saved unapplied, and the restored work and prior findings are as they were%s",
@@ -340,10 +340,10 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 		if len(blocking) > 0 {
 			// Saved for diagnosis, but never handed on: the reviewer said this
 			// plan cannot succeed, and nothing after this node could change that.
-			name := "plan.json"
+			name := run.PlanFile
 			if c != nil && c.scope.pending != nil {
 				// The plan the builder was blocked on stays in plan.json.
-				name = fmt.Sprintf("plan-%d.json", c.scope.pending.N)
+				name = run.PlanVersionFile(c.scope.pending.N)
 			}
 			if err := writeResult(r.Dir, name, out); err != nil {
 				return "", err
@@ -364,7 +364,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 		for _, objection := range feedback {
 			*out.Risks = append(*out.Risks, "unresolved review: "+objection)
 		}
-		if err := writeResult(r.Dir, "plan.json", out); err != nil {
+		if err := writeResult(r.Dir, run.PlanFile, out); err != nil {
 			return "", err
 		}
 		if round > 1 {
@@ -385,7 +385,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			if err != nil {
 				return "", err
 			}
-			return "", writeResult(r.Dir, "disposition.json", &d)
+			return "", writeResult(r.Dir, run.DispositionFile, &d)
 		}
 		return "", nil
 	})

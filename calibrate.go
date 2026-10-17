@@ -158,7 +158,7 @@ func sample(db *trace.DB, dataRoot string, row trace.Row, agent string) (calibra
 	}
 	dir := worker.ReportDir(dataRoot, row.ID, 0)
 	var issue workspace.Issue
-	if b, err := os.ReadFile(filepath.Join(dir, "issue.json")); err == nil && json.Unmarshal(b, &issue) == nil {
+	if b, err := os.ReadFile(filepath.Join(dir, run.IssueFile)); err == nil && json.Unmarshal(b, &issue) == nil {
 		c.request = issue.Request()
 	}
 
@@ -166,7 +166,7 @@ func sample(db *trace.DB, dataRoot string, row trace.Row, agent string) (calibra
 		c.state = workflow.PlanRouteState(c.request)
 	} else {
 		var plan workflow.PlanOutput
-		b, err := os.ReadFile(filepath.Join(dir, "plan.json"))
+		b, err := os.ReadFile(filepath.Join(dir, run.PlanFile))
 		if err != nil || json.Unmarshal(b, &plan) != nil || !plan.Printable() {
 			return c, false, nil
 		}

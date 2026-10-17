@@ -2,13 +2,7 @@
 // agent's report must satisfy, and the briefs given to agents.
 package workflow
 
-import (
-	"encoding/json"
-	"os"
-	"path/filepath"
-
-	"github.com/tyrelh/lathe/internal/run"
-)
+import "github.com/tyrelh/lathe/internal/run"
 
 // Graphs is every workflow by name: what the worker executes, and the list a
 // submission validates a command against.
@@ -102,21 +96,11 @@ func Scout(r *run.Run) int {
 		if err := e.Call(&out, r.Request+recoveryContext(r, nil), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 			return "", err
 		}
-		return "", writeResult(r.Dir, "result.json", &out)
+		return "", writeResult(r.Dir, run.ResultFile, &out)
 	})
 
 	if err := g.Run(); err != nil {
 		return r.Finish(false, err.Error())
 	}
 	return r.Finish(true, "")
-}
-
-// writeResult puts the accepted envelope beside raw.jsonl, under the name the
-// workflow's readers expect. Callers must propagate disk failures to the workflow.
-func writeResult(dir, name string, out any) error {
-	b, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o644)
 }

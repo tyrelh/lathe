@@ -515,11 +515,6 @@ func outcome(status string) int {
 	}
 }
 
-// reportFiles are the structured results a workflow leaves in its run
-// directory, in the order they are produced. build.json and test.json are
-// legacy names kept so lathe show still reads older runs.
-var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "validation.json", "pr.json"}
-
 // report prints what an iteration produced, including the partial reports of
 // one that failed, was cancelled, or was lost, and the run's history around
 // it. Tokens and cost are the run's, across every iteration. An iteration
@@ -540,7 +535,7 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 	}
 	dir := worker.ReportDir(dataRoot, row.ID, from)
 	var present []string
-	for _, name := range reportFiles {
+	for _, name := range run.Reports {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			present = append(present, name)
 		}
@@ -600,11 +595,11 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 			Draft   bool   `json:"draft"`
 		}
 		json.Unmarshal(b, &out)
-		if name == "issue.json" {
+		if name == run.IssueFile {
 			out.Summary = out.Title
 		}
 		// A draft is unaccepted work, and says so rather than passing as shipped.
-		if name == "pr.json" && out.Draft {
+		if name == run.PRFile && out.Draft {
 			out.Summary = "draft, validation not accepted: " + out.URL
 		}
 		fmt.Printf("  %s  %s\n", name, out.Summary)

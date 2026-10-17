@@ -311,7 +311,7 @@ func openPR(e *run.Entry, r *run.Run, c *code, branch, message string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return url, writeResult(r.Dir, "pr.json", prResult{PROutput: &out, URL: url, Draft: draft, Validation: c.v.Outcome})
+	return url, writeResult(r.Dir, run.PRFile, prResult{PROutput: &out, URL: url, Draft: draft, Validation: c.v.Outcome})
 }
 
 // commit has the committer write the message for paths and lathe make the

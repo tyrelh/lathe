@@ -225,7 +225,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			summary, none := "No code changes: "+*c.plan.Summary, []string{}
 			c.out = ImplementOutput{Summary: &summary, Changed: &none, Needed: &none, Wrote: &none}
 			c.v.Rounds = append(c.v.Rounds, newRound(len(c.v.Rounds)))
-			return "", writeResult(r.Dir, "implement.json", &c.out)
+			return "", writeResult(r.Dir, run.ImplementFile, &c.out)
 		}
 		e.Scope(*c.plan.Files)
 		err := e.Call(&c.out, request, run.ArtifactsExist, run.FilesNonEmpty, ChangesMatchClaim)
@@ -236,7 +236,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		if err != nil {
 			return "", err
 		}
-		if err := writeResult(r.Dir, "implement.json", &c.out); err != nil {
+		if err := writeResult(r.Dir, run.ImplementFile, &c.out); err != nil {
 			return "", err
 		}
 		c.v.Rounds = append(c.v.Rounds, newRound(len(c.v.Rounds)))
@@ -290,7 +290,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		cur.Mutated = res.Mutated
 		if environmentErr != nil {
 			c.v.settle(outcomeEnvironmentFailed, environmentErr.Error())
-			if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+			if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
 				return "", err
 			}
 			return "", environmentErr
@@ -299,12 +299,12 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			reason := "source changed while validation ran, so this round cannot approve the implementation: " +
 				strings.Join(res.Mutated, ", ")
 			c.v.settle(outcomeInvalidated, reason)
-			if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+			if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
 				return "", err
 			}
 			return "", errors.New(reason)
 		}
-		return "", writeResult(r.Dir, "validation.json", &c.v)
+		return "", writeResult(r.Dir, run.ValidationFile, &c.v)
 	})
 
 	g.Add(run.Node{Name: "adjudicate", Owner: "adjudicator", SendBacks: maxRepairs}, func(e *run.Entry) (string, error) {
@@ -317,7 +317,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 				names = append(names, f.Worker)
 			}
 			c.v.settle(outcomeIncomplete, "validation incomplete: "+strings.Join(names, ", ")+" failed after retries")
-			return "", writeResult(r.Dir, "validation.json", &c.v)
+			return "", writeResult(r.Dir, run.ValidationFile, &c.v)
 		}
 
 		findings := cur.findings()
@@ -332,7 +332,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 		if *out.Verdict == verdictAccept {
 			c.outstanding, c.changes = nil, ""
 			c.v.settle(outcomeAccepted, "")
-			return "", writeResult(r.Dir, "validation.json", &c.v)
+			return "", writeResult(r.Dir, run.ValidationFile, &c.v)
 		}
 		fixes := out.fixes(findings)
 		if e.SendBacksLeft == 0 {
@@ -342,12 +342,12 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 				reason += "; " + cur.Tests.Result()
 			}
 			c.v.settle(outcomeUnresolved, reason)
-			return "", writeResult(r.Dir, "validation.json", &c.v)
+			return "", writeResult(r.Dir, run.ValidationFile, &c.v)
 		}
 		c.amend(r.Request, &out)
 		c.repair = repairRequest(c, r.Request, &out, fixes, maxRepairs-e.SendBacksLeft+1)
 		c.mode, c.outstanding, c.changes = buildRepair, fixes, *out.Changes
-		if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+		if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
 			return "", err
 		}
 		return "implement", nil

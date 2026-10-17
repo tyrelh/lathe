@@ -158,7 +158,7 @@ func (c *code) blocked(e *run.Entry, r *run.Run, s *ScopeError) (string, error) 
 		req.Outcome = scopeReplanning
 	}
 	c.v.ScopeRequests = c.scope.requests
-	if err := writeResult(r.Dir, "implement.json", &c.out); err != nil {
+	if err := writeResult(r.Dir, run.ImplementFile, &c.out); err != nil {
 		return "", err
 	}
 	if err := saveScope(r, req); err != nil {
@@ -191,7 +191,7 @@ func (c *code) replanned(e *run.Entry, r *run.Run) (string, error) {
 	}
 	req.Reversed, req.Abandoned, req.Dismissed = d.Reversed, d.Abandoned, d.Dismissed
 	req.Outcome = scopeReplanned
-	if err := writeResult(r.Dir, fmt.Sprintf("plan-%d.json", req.N), &c.plan); err != nil {
+	if err := writeResult(r.Dir, run.PlanVersionFile(req.N), &c.plan); err != nil {
 		return "", err
 	}
 	if err := saveScope(r, req); err != nil {
@@ -267,11 +267,11 @@ func (c *code) dispose(e *run.Entry, r *run.Run, name string, request int) (Disp
 		// writes the report again, and a recovery must not resurrect these.
 		// dismissals.json keeps every dismissal of this iteration even when
 		// it never validates, for later recoveries.
-		if err := writeResult(r.Dir, "dismissals.json", c.v.Dismissals); err != nil {
+		if err := writeResult(r.Dir, run.DismissalsFile, c.v.Dismissals); err != nil {
 			return d, err
 		}
 		if len(c.v.Rounds) > 0 {
-			if err := writeResult(r.Dir, "validation.json", &c.v); err != nil {
+			if err := writeResult(r.Dir, run.ValidationFile, &c.v); err != nil {
 				return d, err
 			}
 		}
@@ -281,7 +281,7 @@ func (c *code) dispose(e *run.Entry, r *run.Run, name string, request int) (Disp
 
 // saveScope writes req to scope-<n>.json.
 func saveScope(r *run.Run, req *ScopeRequest) error {
-	return writeResult(r.Dir, fmt.Sprintf("scope-%d.json", req.N), req)
+	return writeResult(r.Dir, run.ScopeFile(req.N), req)
 }
 
 // neededProblems is why each needed path cannot be planned at all: empty,
