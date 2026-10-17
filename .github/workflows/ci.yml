@@ -13,11 +13,8 @@ jobs:
   tests:
     uses: ./.github/workflows/tests.yml
 
-  build:
-    uses: ./.github/workflows/build.yml
-
   release:
-    needs: [tests, build]
+    needs: [tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/release.yml
     permissions:
