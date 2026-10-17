@@ -309,7 +309,6 @@ func TestIntentIsNotDraftProvenance(t *testing.T) {
 	gitT(t, b.repo, "push", "-q", "origin", "feat/x")
 	dir := ReportDir(b.dataRoot, b.id, 0)
 	os.MkdirAll(dir, 0o700)
-	os.WriteFile(filepath.Join(dir, "pr-intent.json"), []byte(`{"branch":"feat/x","draft":true,"validation":"unresolved"}`), 0o644)
 	os.WriteFile(filepath.Join(b.gh, "list"), []byte(`[{"url":"https://x/pull/5","state":"OPEN","headRefName":"feat/x","isDraft":true,"headRefOid":"`+b.commit+`","isCrossRepository":false}]`), 0o644)
 	s, err := b.prepare(t, ResumeOptions{})
 	if err != nil {
