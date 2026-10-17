@@ -3,9 +3,7 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -310,51 +308,13 @@ func loadRosterWarn(warn io.Writer) (config.Config, error) {
 	return cfg, nil
 }
 
-// submitRevision validates that runID can take a revision (run state, recorded
-// evidence, checkout, pull request, origin), then appends a revision iteration
-// with the configuration resolved now. It returns the new iteration number. A
-// refusal changes nothing; see ADR 0005 for the race between the two checks.
+// submitRevision is the one revision submission; the CLI and the dashboard
+// both call it. The configuration is resolved now and recorded with the
+// iteration.
 func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Overrides, warn io.Writer) (int, error) {
-	request = strings.TrimSpace(request)
-	if request == "" {
-		return 0, errors.New("a revision needs the change to make")
-	}
-	row, err := db.Get(runID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("no run %s", runID)
-	} else if err != nil {
-		return 0, err
-	}
-	if err := trace.Revisable(row); err != nil {
-		return 0, err
-	}
-	ev, err := worker.Evidence(dataRoot, row)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %v", trace.ErrNotRevisable, err)
-	}
-	var recorded worker.Spec
-	if err := json.Unmarshal(row.Spec, &recorded); err != nil || recorded.Workspace.Path == "" {
-		return 0, fmt.Errorf("%w: %s records no checkout to revise it in", trace.ErrNotRevisable, runID)
-	}
-	ws := recorded.Workspace
-	if err := ws.Check(); err != nil {
-		return 0, err
-	}
-	if _, err := workspace.CheckRevisable(ws.Path, ev); err != nil {
-		return 0, err
-	}
-	roster, err := capture(workflow.NameRevise, ov, warn)
-	if err != nil {
-		return 0, err
-	}
-	spec, err := worker.Spec{
-		Version: worker.SpecVersion, Workflow: workflow.NameRevise, Request: request,
-		Workspace: ws, Roster: roster, Overrides: ov, Base: ev.Commit,
-	}.Marshal()
-	if err != nil {
-		return 0, err
-	}
-	return db.Revise(runID, row.Iteration, request, spec)
+	return worker.Revise(db, dataRoot, runID, request, ov, func(name string, ov config.Overrides) (config.Snapshot, error) {
+		return capture(name, ov, warn)
+	})
 }
 
 // reviseCmd submits a revision and, unless detached, waits for the iteration
