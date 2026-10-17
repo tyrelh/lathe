@@ -3,7 +3,6 @@ package trace
 import (
 	"database/sql"
 	"fmt"
-	"time"
 )
 
 // migrations run in order; PRAGMA user_version counts how many have been
@@ -133,7 +132,7 @@ func migrate(db *sql.DB) error {
 // migrateOne applies the next pending migration and its version in one
 // transaction, and reports whether none was pending.
 func migrateOne(db *sql.DB) (bool, error) {
-	tx, err := beginRetrying(db)
+	tx, err := retryContended(db.Begin)
 	if err != nil {
 		return false, err
 	}
@@ -153,18 +152,4 @@ func migrateOne(db *sql.DB) (bool, error) {
 		return false, fmt.Errorf("migration %d: %w", version+1, err)
 	}
 	return false, tx.Commit()
-}
-
-// beginRetrying begins a transaction, retrying contention the busy timeout
-// does not wait out, as execRetrying does.
-func beginRetrying(db *sql.DB) (*sql.Tx, error) {
-	var err error
-	for try := 0; try <= initRetries; try++ {
-		var tx *sql.Tx
-		if tx, err = db.Begin(); err == nil || !contended(err) {
-			return tx, err
-		}
-		time.Sleep(time.Duration(try+1) * 25 * time.Millisecond)
-	}
-	return nil, err
 }
