@@ -448,11 +448,11 @@ func (m *manager) refuse(active []trace.Row) {
 	}
 	m.warned = true
 	for _, row := range active {
-		attempt, err := m.db.GetAttempt(row.AttemptID)
-		if err != nil {
+		if !m.uncertain[row.ID] {
 			continue
 		}
-		if !m.uncertain[row.ID] {
+		attempt, err := m.db.GetAttempt(row.AttemptID)
+		if err != nil {
 			continue
 		}
 		fmt.Fprintf(m.out, `lathe manager: capacity is held by a run whose worker cannot be confirmed.
