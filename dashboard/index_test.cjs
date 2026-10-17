@@ -588,6 +588,9 @@ function serve(events, ps = phases, r = run, eligible = {}) {
 const drained = () => new Promise(setImmediate);
 const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phase').innerHTML;
 const costs = () => nodes.get('costs').innerHTML;
+// area names the page area the async checks below are in, so a failed assert
+// says which one. The areas share one page and run in order.
+let area = 'run page';
 (async () => {
   context.location.hash = '#run';
   evaluate('view = route()');
@@ -1002,6 +1005,7 @@ const costs = () => nodes.get('costs').innerHTML;
   await new Promise(setImmediate);
   assert.equal(evaluate('thinking.size'), 0, 'navigation clears thinking');
 
+  area = 'runs list';
   // Runs: the summary says displayed versus total, and says whose numbers those are.
   context.location.hash = '#/runs';
   evaluate('view = route(); generation++; done = false');
@@ -1022,6 +1026,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(queuedRow.includes('class="running">queued'), queuedRow);
   assert(!queuedRow.includes('s queued'), 'no wait in the list');
 
+  area = 'projects';
   // Projects list is complete, sorted by the API, and uses full paths for links.
   context.location.hash = '#/projects';
   evaluate('view = route(); generation++');
@@ -1088,6 +1093,7 @@ const costs = () => nodes.get('costs').innerHTML;
     'a failed project refresh retains the last average');
   routeResponses = null;
 
+  area = 'overview';
   // Overview: lifetime totals, all four rankings, and the attribution caveats.
   context.location.hash = '#/overview';
   evaluate('view = route(); generation++');
@@ -1178,6 +1184,7 @@ const costs = () => nodes.get('costs').innerHTML;
   await evaluate('tick()');
   assert(pageHTML().includes('not found'));
 
+  area = 'agents list';
   // Agents: a list linking every row, read once rather than polled.
   const navOn = id => nodes.get(id).attrs.get('aria-current') === 'page';
   const agentRows = [
@@ -1212,6 +1219,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(evaluate('done'), true, 'the list is not polled');
   assert.equal(nodes.get('note').textContent, 'loaded · reload to refresh');
 
+  area = 'agent page';
   // An agent page: one read-only box per prompt, bodies as text, never markup.
   routeResponses.set('/api/agents/code-review-general', json({...agentRows[1], prompts:[
     {...agentRows[1].prompts[0], body:'Review </textarea><script>alert(1)</script> & report'},
@@ -1287,6 +1295,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(nodes.get('list-body').innerHTML.includes('route-plan'));
   assert.equal(evaluate('done'), true);
 
+  area = 'agent editing';
   // Edited files: the list marks edited agents, and drift over edits.
   const home = '/home/me/.lathe/';
   routeResponses.set('/api/agents', json(agentRows.map((a, i) => ({...a, prompts: a.prompts.map(p => ({...p, edited: i === 1 && p.role === 'system', drift: i === 0 && p.role === 'user'}))}))));
@@ -1474,10 +1483,11 @@ const costs = () => nodes.get('costs').innerHTML;
   assert(!clean.prevented, 'nothing to lose, nothing to ask');
   routeResponses = null;
 
+  area = 'form flags';
   // Leaving a page drops every form's in-flight flag, so its button works on
   // the next page.
   evaluate('runSubmitting = reviseSubmitting = resumeSubmitting = true; navigate()');
   assert(!evaluate('runSubmitting || reviseSubmitting || resumeSubmitting'), 'navigate left a form in flight');
 
   console.log('dashboard client checks passed');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+})().catch(error => { console.error(`${area}:`, error); process.exitCode = 1; });
