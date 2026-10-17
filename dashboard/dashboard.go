@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"net/http"
 	"slices"
@@ -66,8 +67,9 @@ type Sources struct {
 	Roster func() (config.Config, error)
 }
 
-// maxSubmitBody bounds a POST body; a prompt is text someone typed.
-const maxSubmitBody = 64 << 10
+// maxWriteBody bounds any write route's JSON body; a prompt is text someone
+// typed.
+const maxWriteBody = 64 << 10
 
 // Handler is the dashboard as something to mount: the manager serves it
 // alongside the scheduler, so there is no second process and no second
@@ -96,6 +98,7 @@ func failed(err error) http.Handler {
 // handler is the whole server minus the listener, which is what lets a test
 // exercise the routes without binding a port.
 func handler(db *trace.DB, version string, actions Actions, sources Sources) http.Handler {
+	// Read routes answer failures as plain text, write routes as JSON.
 	mux := http.NewServeMux()
 	if sources.Roster != nil {
 		mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, r *http.Request) {
@@ -310,29 +313,29 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 		}
 		prompt, issue := strings.TrimSpace(body.Prompt), strings.TrimSpace(body.Issue)
 		if !workflow.Submittable(body.Workflow) {
-			submitError(w, http.StatusBadRequest, "unknown workflow "+strconv.Quote(body.Workflow))
+			writeError(w, http.StatusBadRequest, "unknown workflow "+strconv.Quote(body.Workflow))
 			return
 		}
 		switch {
 		case (prompt == "") == (issue == ""):
-			submitError(w, http.StatusBadRequest, "enter a prompt or an issue reference, not both")
+			writeError(w, http.StatusBadRequest, "enter a prompt or an issue reference, not both")
 			return
 		case body.Workflow == workflow.NameScout && issue != "":
-			submitError(w, http.StatusBadRequest, "scout takes a prompt, not an issue")
+			writeError(w, http.StatusBadRequest, "scout takes a prompt, not an issue")
 			return
 		}
 		if _, err := db.Project(body.Repo); errors.Is(err, sql.ErrNoRows) {
-			submitError(w, http.StatusBadRequest, "no recorded project at "+body.Repo)
+			writeError(w, http.StatusBadRequest, "no recorded project at "+body.Repo)
 			return
 		} else if err != nil {
-			submitError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		id, err := submit(body.Workflow, body.Repo, prompt, issue)
 		// ponytail: every other failure is reported as the request's problem;
 		// split out 500s if database errors turn up here in practice.
 		if err != nil {
-			submitError(w, http.StatusBadRequest, err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeStatus(w, http.StatusCreated, map[string]string{"run_id": id})
@@ -374,17 +377,17 @@ func resumeRun(resume func(runID, guidance string) (int, error)) http.HandlerFun
 func appendIteration(w http.ResponseWriter, r *http.Request, text, emptyMsg string, refused error, fn func(runID, text string) (int, error)) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		submitError(w, http.StatusBadRequest, emptyMsg)
+		writeError(w, http.StatusBadRequest, emptyMsg)
 		return
 	}
 	id := r.PathValue("id")
 	n, err := fn(id, text)
 	switch {
 	case errors.Is(err, refused):
-		submitError(w, http.StatusConflict, err.Error())
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	case err != nil:
-		submitError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeStatus(w, http.StatusCreated, map[string]any{"run_id": id, "iteration": n})
@@ -400,13 +403,13 @@ func cancelRun(cancel func(runID string) (string, error)) http.HandlerFunc {
 		status, err := cancel(r.PathValue("id"))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			submitError(w, http.StatusNotFound, "no such run")
+			writeError(w, http.StatusNotFound, "no such run")
 			return
 		case errors.Is(err, trace.ErrAlreadyDone):
-			submitError(w, http.StatusConflict, "already finished: "+status)
+			writeError(w, http.StatusConflict, "already finished: "+status)
 			return
 		case err != nil:
-			submitError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeStatus(w, http.StatusOK, map[string]string{"status": status})
@@ -420,22 +423,23 @@ func cancelRun(cancel func(runID string) (string, error)) http.HandlerFunc {
 func browserJSON(w http.ResponseWriter, r *http.Request, body any) bool {
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if r.Header.Get("Origin") != "http://"+r.Host || mediaType != "application/json" {
-		submitError(w, http.StatusForbidden, "forbidden")
+		writeError(w, http.StatusForbidden, "forbidden")
 		return false
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBody)).Decode(body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWriteBody)).Decode(body); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			submitError(w, http.StatusRequestEntityTooLarge, "request is larger than 64 KiB")
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request is larger than %d KiB", maxWriteBody>>10))
 			return false
 		}
-		submitError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}
 	return true
 }
 
-func submitError(w http.ResponseWriter, code int, msg string) {
+// writeError answers code with {"error": msg} as JSON.
+func writeError(w http.ResponseWriter, code int, msg string) {
 	writeStatus(w, code, map[string]string{"error": msg})
 }
 

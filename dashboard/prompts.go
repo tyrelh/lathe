@@ -14,16 +14,16 @@ import (
 func findPrompt(w http.ResponseWriter, roster func() (config.Config, error), name, role string) (config.Prompt, bool) {
 	a, err := findAgent(roster, name, false)
 	if errors.Is(err, errNoAgent) {
-		submitError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, err.Error())
 		return config.Prompt{}, false
 	}
 	if err != nil {
-		submitError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return config.Prompt{}, false
 	}
 	p, ok := a.prompt(role)
 	if !ok {
-		submitError(w, http.StatusNotFound, name+" has no "+role+" prompt")
+		writeError(w, http.StatusNotFound, name+" has no "+role+" prompt")
 		return config.Prompt{}, false
 	}
 	return p, true
@@ -34,7 +34,7 @@ func findPrompt(w http.ResponseWriter, roster func() (config.Config, error), nam
 func writtenAgent(w http.ResponseWriter, roster func() (config.Config, error), name string) {
 	a, err := findAgent(roster, name, true)
 	if err != nil {
-		submitError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, a, nil)
@@ -61,13 +61,13 @@ func savePrompt(mu *sync.Mutex, roster func() (config.Config, error), save func(
 		}
 		switch {
 		case strings.TrimSpace(body.Body) == "":
-			submitError(w, http.StatusBadRequest, "a prompt can't be empty; reset it to go back to the seed")
+			writeError(w, http.StatusBadRequest, "a prompt can't be empty; reset it to go back to the seed")
 			return
 		case body.BaseHash == "":
-			submitError(w, http.StatusBadRequest, "base_hash is required")
+			writeError(w, http.StatusBadRequest, "base_hash is required")
 			return
 		case role == "user" && !strings.Contains(body.Body, config.RequestPlaceholder):
-			submitError(w, http.StatusBadRequest, "a user prompt has to contain "+config.RequestPlaceholder)
+			writeError(w, http.StatusBadRequest, "a user prompt has to contain "+config.RequestPlaceholder)
 			return
 		}
 		err := save(p.Key, body.Body, body.BaseHash)
@@ -76,7 +76,7 @@ func savePrompt(mu *sync.Mutex, roster func() (config.Config, error), save func(
 			return
 		}
 		if err != nil {
-			submitError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writtenAgent(w, roster, name)
@@ -102,7 +102,7 @@ func resetPrompt(mu *sync.Mutex, roster func() (config.Config, error), reset fun
 			return
 		}
 		if body.BaseHash == "" {
-			submitError(w, http.StatusBadRequest, "base_hash is required")
+			writeError(w, http.StatusBadRequest, "base_hash is required")
 			return
 		}
 		err := reset(p.Key, body.BaseHash)
@@ -111,7 +111,7 @@ func resetPrompt(mu *sync.Mutex, roster func() (config.Config, error), reset fun
 			return
 		}
 		if err != nil {
-			submitError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writtenAgent(w, roster, name)
@@ -123,12 +123,12 @@ func resetPrompt(mu *sync.Mutex, roster func() (config.Config, error), reset fun
 func promptConflict(w http.ResponseWriter, roster func() (config.Config, error), name, role string) {
 	a, err := findAgent(roster, name, true)
 	if err != nil {
-		submitError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	current, ok := a.prompt(role)
 	if !ok {
-		submitError(w, http.StatusInternalServerError, name+" has no "+role+" prompt")
+		writeError(w, http.StatusInternalServerError, name+" has no "+role+" prompt")
 		return
 	}
 	writeStatus(w, http.StatusConflict, map[string]any{
@@ -142,7 +142,7 @@ func promptConflict(w http.ResponseWriter, roster func() (config.Config, error),
 func configConflict(w http.ResponseWriter, roster func() (config.Config, error), name string) {
 	a, err := findAgent(roster, name, true)
 	if err != nil {
-		submitError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeStatus(w, http.StatusConflict, map[string]any{
@@ -169,22 +169,22 @@ func saveConfig(mu *sync.Mutex, roster func() (config.Config, error), save func(
 		name := r.PathValue("name")
 		a, err := findAgent(roster, name, false)
 		if errors.Is(err, errNoAgent) || (err == nil && a.Config == nil) {
-			submitError(w, http.StatusNotFound, "no such agent")
+			writeError(w, http.StatusNotFound, "no such agent")
 			return
 		}
 		if err != nil {
-			submitError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		switch {
 		case strings.TrimSpace(body.Provider) == "" || strings.TrimSpace(body.Model) == "":
-			submitError(w, http.StatusBadRequest, "provider and model are required")
+			writeError(w, http.StatusBadRequest, "provider and model are required")
 			return
 		case !config.ValidThinking(body.Thinking):
-			submitError(w, http.StatusBadRequest, "thinking must be one of "+strings.Join(config.Thinking, ", "))
+			writeError(w, http.StatusBadRequest, "thinking must be one of "+strings.Join(config.Thinking, ", "))
 			return
 		case body.BaseHash == "":
-			submitError(w, http.StatusBadRequest, "base_hash is required")
+			writeError(w, http.StatusBadRequest, "base_hash is required")
 			return
 		}
 		err = save(name, strings.TrimSpace(body.Provider), strings.TrimSpace(body.Model), body.Thinking, body.BaseHash)
@@ -193,11 +193,11 @@ func saveConfig(mu *sync.Mutex, roster func() (config.Config, error), save func(
 			return
 		}
 		if errors.Is(err, config.ErrInvalid) {
-			submitError(w, http.StatusBadRequest, err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err != nil {
-			submitError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writtenAgent(w, roster, name)
