@@ -54,9 +54,7 @@ func scanProjects(rows *sql.Rows, total float64) ([]ProjectSpend, error) {
 		if err := rows.Scan(&p.Repo, &p.Runs, &p.Tokens, &p.Cost); err != nil {
 			return nil, err
 		}
-		if total > 0 {
-			p.Share = p.Cost / total
-		}
+		p.Share = share(p.Cost, total)
 		projects = append(projects, p)
 	}
 	return projects, rows.Err()
