@@ -421,13 +421,13 @@ func testRequest(c *code) string {
 // adjudicationRequest is everything the adjudicator weighs: the request, the
 // plan as amended, the implementation, the test run, every report, and
 // every earlier decision.
-func adjudicationRequest(c *code, request string, left int) string {
+func adjudicationRequest(c *code, left int) string {
 	cur := c.v.current()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Adjudication round %d of %d.\nYou may send the implementation back %d more times.\n",
 		cur.number(), maxRepairs+1, left)
 	b.WriteString("\n")
-	b.WriteString(implementRequest(request, &c.plan, c.v.Amendments))
+	b.WriteString(c.handoff)
 	evidence(&b, c)
 
 	t := cur.Tests
@@ -489,9 +489,9 @@ func writeFinding(w io.Writer, f Finding) {
 }
 
 // repairRequest is the one set of changes the implementer is sent back with.
-func repairRequest(c *code, request string, a *AdjudicationOutput, fixes []Finding, sent int) string {
+func repairRequest(c *code, a *AdjudicationOutput, fixes []Finding, sent int) string {
 	var b strings.Builder
-	b.WriteString(implementRequest(request, &c.plan, c.v.Amendments))
+	b.WriteString(c.handoff)
 	fmt.Fprintf(&b, "\n## Repair requested (send-back %d of %d)\n\n%s\n", sent, maxRepairs, *a.Changes)
 	findingSection(&b, "### Findings to fix", fixes)
 	var added []string
@@ -506,7 +506,7 @@ func repairRequest(c *code, request string, a *AdjudicationOutput, fixes []Findi
 // amend applies an adjudicator's scope additions and plan amendments, so every
 // later builder call and every later worker sees the plan as it now stands.
 // The additions passed the same protected-path check a plan's files do.
-func (c *code) amend(request string, a *AdjudicationOutput) {
+func (c *code) amend(a *AdjudicationOutput) {
 	for _, s := range *a.Scope {
 		if !slices.Contains(*c.plan.Files, s.Path) {
 			*c.plan.Files = append(*c.plan.Files, s.Path)
@@ -514,7 +514,7 @@ func (c *code) amend(request string, a *AdjudicationOutput) {
 	}
 	c.v.Scope = append(c.v.Scope, *a.Scope...)
 	c.v.Amendments = append(c.v.Amendments, *a.Amendments...)
-	c.handoff = implementRequest(request, &c.plan, c.v.Amendments)
+	c.refreshHandoff()
 }
 
 // verificationCallout is the section every pull request carries when the last
