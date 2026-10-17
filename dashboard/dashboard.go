@@ -326,9 +326,7 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 			submitError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"run_id": id})
+		writeStatus(w, http.StatusCreated, map[string]string{"run_id": id})
 	}
 }
 
@@ -343,24 +341,7 @@ func reviseRun(revise func(runID, request string) (int, error)) http.HandlerFunc
 		if !browserJSON(w, r, &body) {
 			return
 		}
-		request := strings.TrimSpace(body.Request)
-		if request == "" {
-			submitError(w, http.StatusBadRequest, "describe the change to make")
-			return
-		}
-		id := r.PathValue("id")
-		n, err := revise(id, request)
-		switch {
-		case errors.Is(err, trace.ErrNotRevisable):
-			submitError(w, http.StatusConflict, err.Error())
-			return
-		case err != nil:
-			submitError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"run_id": id, "iteration": n})
+		appendIteration(w, r, body.Request, "describe the change to make", trace.ErrNotRevisable, revise)
 	}
 }
 
@@ -374,25 +355,30 @@ func resumeRun(resume func(runID, guidance string) (int, error)) http.HandlerFun
 		if !browserJSON(w, r, &body) {
 			return
 		}
-		guidance := strings.TrimSpace(body.Guidance)
-		if guidance == "" {
-			submitError(w, http.StatusBadRequest, "say how the run should continue")
-			return
-		}
-		id := r.PathValue("id")
-		n, err := resume(id, guidance)
-		switch {
-		case errors.Is(err, trace.ErrNotRecoverable):
-			submitError(w, http.StatusConflict, err.Error())
-			return
-		case err != nil:
-			submitError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"run_id": id, "iteration": n})
+		appendIteration(w, r, body.Guidance, "say how the run should continue", trace.ErrNotRecoverable, resume)
 	}
+}
+
+// appendIteration calls fn with the request's run ID and trimmed text and
+// answers 201 with the run ID and new iteration. It answers 400 with emptyMsg
+// for blank text, 409 when fn's error is refused, and 400 for any other error.
+func appendIteration(w http.ResponseWriter, r *http.Request, text, emptyMsg string, refused error, fn func(runID, text string) (int, error)) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		submitError(w, http.StatusBadRequest, emptyMsg)
+		return
+	}
+	id := r.PathValue("id")
+	n, err := fn(id, text)
+	switch {
+	case errors.Is(err, refused):
+		submitError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		submitError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeStatus(w, http.StatusCreated, map[string]any{"run_id": id, "iteration": n})
 }
 
 // cancelRun is lathe cancel for the run page: a queued iteration is cancelled
@@ -414,8 +400,7 @@ func cancelRun(cancel func(runID string) (string, error)) http.HandlerFunc {
 			submitError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": status})
+		writeStatus(w, http.StatusOK, map[string]string{"status": status})
 	}
 }
 
