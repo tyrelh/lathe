@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/config"
-	"github.com/tyrelh/lathe/internal/manager"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 	"github.com/tyrelh/lathe/internal/workflow"
@@ -49,9 +48,7 @@ func resumeCmd(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if err := manager.Start(dataRoot); err != nil {
-		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
-	}
+	ensureManager(dataRoot)
 	kind := trace.KindRecovery
 	if *restart {
 		kind = trace.KindRestart

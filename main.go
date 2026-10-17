@@ -177,12 +177,10 @@ func submit(name string, args []string) int {
 			return 2
 		}
 		var err error
-		issueRef, err = workspace.IssueReference(*issue)
-		if err != nil {
+		if request, issueRef, err = issueRequest(*issue); err != nil {
 			fmt.Fprintln(os.Stderr, "lathe:", err)
 			return 2
 		}
-		request = "GitHub issue " + issueRef
 	}
 	if request == "" {
 		fmt.Fprintf(os.Stderr, "lathe %s: needs a request or --issue, e.g. lathe %s %q\n",
@@ -206,14 +204,12 @@ func submit(name string, args []string) int {
 	if db == nil {
 		return code
 	}
+	defer db.Close()
 	id, err := db.Submit(req.Request)
 	if err != nil {
-		db.Close()
 		return fail(err)
 	}
-	if err := manager.Start(dataRoot); err != nil {
-		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
-	}
+	ensureManager(dataRoot)
 	if workflow.Writes[name] {
 		fmt.Printf("lathe %s %s: runs in its own worktree from %s; %s is left as it is.\n",
 			name, id, workspace.Short(req.Base), req.Repo)
@@ -223,10 +219,8 @@ func submit(name string, args []string) int {
 	}
 	fmt.Printf("%s %s queued\n", name, id)
 	if *detach {
-		db.Close()
 		return 0
 	}
-	defer db.Close()
 	return block(db, dataRoot, id, -1, false)
 }
 
@@ -340,9 +334,7 @@ func reviseCmd(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if err := manager.Start(dataRoot); err != nil {
-		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
-	}
+	ensureManager(dataRoot)
 	row, _ := db.Get(id)
 	fmt.Printf("lathe revise %s: runs in its own worktree at %s; %s is left as it is.\n"+
 		"  It pushes to %s only once validation accepts the change.\n",
@@ -360,11 +352,10 @@ func reviseCmd(args []string) int {
 func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 	request, issueRef := prompt, ""
 	if issue != "" {
-		ref, err := workspace.IssueReference(issue)
-		if err != nil {
+		var err error
+		if request, issueRef, err = issueRequest(issue); err != nil {
 			return "", err
 		}
-		request, issueRef = "GitHub issue "+ref, ref
 	}
 	req, err := prepare(name, repo, request, issueRef, config.Overrides{}, io.Discard)
 	if err != nil {
@@ -373,17 +364,29 @@ func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 	if req.Repo != repo {
 		return "", fmt.Errorf("%s now resolves to %s", repo, req.Repo)
 	}
-	reqRow := req.Request
-	dataRoot, err := trace.DataRoot()
-	if err != nil {
-		return "", err
-	}
-	db, err := trace.Open(dataRoot)
+	_, db, err := openWriter()
 	if err != nil {
 		return "", err
 	}
 	defer db.Close()
-	return db.Submit(reqRow)
+	return db.Submit(req.Request)
+}
+
+// issueRequest is the request recorded for a run of issue raw, and its
+// normalized reference.
+func issueRequest(raw string) (request, ref string, err error) {
+	if ref, err = workspace.IssueReference(raw); err != nil {
+		return "", "", err
+	}
+	return "GitHub issue " + ref, ref, nil
+}
+
+// ensureManager starts a manager for dataRoot if none is running, warning on
+// stderr when it cannot.
+func ensureManager(dataRoot string) {
+	if err := manager.Start(dataRoot); err != nil {
+		fmt.Fprintln(os.Stderr, "lathe: starting a manager:", err)
+	}
 }
 
 // dashboardRevise and dashboardCancel are the dashboard's other two writes,
@@ -406,6 +409,7 @@ func dashboardCancel(runID string) (string, error) {
 	return db.RequestCancel(runID)
 }
 
+// openWriter opens lathe's data root and database.
 func openWriter() (string, *trace.DB, error) {
 	dataRoot, err := trace.DataRoot()
 	if err != nil {
@@ -631,13 +635,9 @@ func runs(args []string) int {
 	n := fs.Int("n", 20, "how many runs to show")
 	fs.Parse(args)
 
-	dataRoot, err := trace.DataRoot()
-	if err != nil {
-		return fail(err)
-	}
-	db, err := trace.Open(dataRoot)
-	if err != nil {
-		return fail(err)
+	_, db, code := openData()
+	if db == nil {
+		return code
 	}
 	defer db.Close()
 
@@ -761,12 +761,10 @@ func cancel(args []string) int {
 	return 0
 }
 
+// openData is openWriter for a command: on failure it reports the error and
+// returns a nil db with the exit code.
 func openData() (string, *trace.DB, int) {
-	dataRoot, err := trace.DataRoot()
-	if err != nil {
-		return "", nil, fail(err)
-	}
-	db, err := trace.Open(dataRoot)
+	dataRoot, db, err := openWriter()
 	if err != nil {
 		return "", nil, fail(err)
 	}
