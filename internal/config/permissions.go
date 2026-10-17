@@ -3,6 +3,8 @@ package config
 import (
 	"slices"
 	"time"
+
+	"github.com/tyrelh/lathe/internal/web"
 )
 
 // Agent permissions are compiled in and never written to disk: agent
@@ -33,14 +35,14 @@ type Permission struct {
 // Permissions is every agent, in roster order.
 var Permissions = []Permission{
 	{"scout", with()},
-	{"planner", with("web_read")},
-	{"plan-reviewer", with("web_read")},
+	{"planner", with(web.Tool)},
+	{"plan-reviewer", with(web.Tool)},
 	{"builder", with("write", "edit")},
 	{"tester", with("bash")},
-	{"code-review-general", with("web_read")},
-	{"code-review-security", with("web_read")},
-	{"code-review-slop", with("web_read")},
-	{"code-review-adversarial", with("web_read")},
+	{"code-review-general", with(web.Tool)},
+	{"code-review-security", with(web.Tool)},
+	{"code-review-slop", with(web.Tool)},
+	{"code-review-adversarial", with(web.Tool)},
 	{"adjudicator", with()},
 	{"brancher", with("bash")},
 	{"committer", with("bash")},

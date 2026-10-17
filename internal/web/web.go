@@ -12,10 +12,12 @@ import (
 //go:generate node build.mjs
 
 // ExtensionFile is the name Write gives read.ts in the run directory; the
-// bundle sits next to it under the name read.ts imports.
+// bundle sits next to it under the name read.ts imports. Tool is the tool name
+// read.ts registers.
 const (
 	ExtensionFile = "read.ts"
 	bundleFile    = "defuddle.mjs"
+	Tool          = "web_read"
 )
 
 //go:embed read.ts

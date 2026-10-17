@@ -36,7 +36,7 @@ func TestWritePutsTheBundleBesideTheExtension(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `from "./`+bundleFile+`"`) || !strings.Contains(string(body), `name: "web_read"`) {
+	if !strings.Contains(string(body), `from "./`+bundleFile+`"`) || !strings.Contains(string(body), `name: "`+Tool+`"`) {
 		t.Fatalf("%s is not the web_read extension", path)
 	}
 	if _, err := os.Stat(filepath.Join(dir, bundleFile)); err != nil {
