@@ -74,7 +74,7 @@ func continuePR(e *run.Entry, r *run.Run, c *code, pub *run.Publication, sha, me
 			return "", err
 		}
 	}
-	return pub.PR, writeResult(r.Dir, run.PRFile, prResult{URL: pub.PR, Draft: draft, Validation: c.v.Outcome})
+	return pub.PR, writeResult(r.Dir, run.PRFile, prResult{PRRecord: PRRecord{URL: pub.PR, Draft: draft, Validation: c.v.Outcome}})
 }
 
 // A recovery is an engineer continuing a failed, cancelled or lost iteration
