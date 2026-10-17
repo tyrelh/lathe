@@ -29,7 +29,7 @@ func TestPromptWriteRoutes(t *testing.T) {
 		SaveConfig: func(agent, provider, model, thinking, baseHash string) error {
 			return agentconfig.SaveSettings(home, agent, agentconfig.Settings{Provider: provider, Model: model, Thinking: thinking}, baseHash)
 		},
-	}, Sources{Roster: roster}, t.TempDir())
+	}, Sources{Roster: roster})
 
 	type prompt struct {
 		Role   string `json:"role"`
@@ -250,7 +250,7 @@ func TestPromptWriteRoutes(t *testing.T) {
 	}
 
 	// Without the actions, no write route exists.
-	bare := handler(ro, "dev", Actions{}, Sources{Roster: roster}, t.TempDir())
+	bare := handler(ro, "dev", Actions{}, Sources{Roster: roster})
 	for _, c := range []struct{ method, path string }{{"PUT", path}, {"DELETE", path}, {"PUT", "/api/agents/planner/config"}} {
 		assertNoWriteRoute(t, bare, c.method, c.path)
 	}

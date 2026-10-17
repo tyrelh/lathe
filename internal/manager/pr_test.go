@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestPRPassStatesAndErrors(t *testing.T) {
 		}
 		m.pollPRPass(context.Background())
 		row, _ := db.Get(id)
-		want := map[string]string{"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}[state]
+		want := strings.ToLower(state)
 		if row.PRState == nil || *row.PRState != want {
 			t.Fatalf("state = %+v", row)
 		}

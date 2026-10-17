@@ -282,7 +282,7 @@ func Open(o Options) (*Run, error) {
 	if r.raw, err = os.OpenFile(filepath.Join(r.Work, "raw.jsonl"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600); err != nil {
 		return nil, err
 	}
-	r.rawW = &lockedWriter{w: r.raw}
+	r.rawW = &LockedWriter{W: r.raw}
 	// Every agent runs behind the guard, including the read-only ones: their
 	// empty allow list is what makes "this agent changes nothing" a rule the
 	// tool layer enforces rather than a consequence of the tool list, and the
@@ -538,17 +538,16 @@ func (r *Run) fail(err error) error {
 	return err
 }
 
-// lockedWriter serialises writes to raw.jsonl. pi.Scan writes one whole line
-// per call, so a lock per write keeps concurrent workers' lines whole.
-type lockedWriter struct {
+// LockedWriter serialises writes to W, so concurrent writers' lines stay whole.
+type LockedWriter struct {
 	mu sync.Mutex
-	w  io.Writer
+	W  io.Writer
 }
 
-func (l *lockedWriter) Write(p []byte) (int, error) {
+func (l *LockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.w.Write(p)
+	return l.W.Write(p)
 }
 
 // Handle is what a phase body is given: the only way to write to the trace or

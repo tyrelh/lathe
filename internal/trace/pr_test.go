@@ -8,7 +8,7 @@ import (
 
 func TestPRCandidatesMinimalRows(t *testing.T) {
 	db := open(t)
-	if _, err := db.sql.Exec(`INSERT INTO runs (run_id, repo, iteration, spec, status) VALUES ('old', '/repo', 2, 'large snapshot', 'ok')`); err != nil {
+	if _, err := db.sql.Exec(`INSERT INTO runs (run_id, workflow, repo, iteration, spec, status) VALUES ('old', 'build', '/repo', 2, 'large snapshot', 'ok')`); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := db.PRCandidates()

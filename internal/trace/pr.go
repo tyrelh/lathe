@@ -2,9 +2,10 @@ package trace
 
 import "fmt"
 
-// PRCandidates returns all runs whose PR state is not final.
+// PRCandidates returns publishing runs whose PR state is not final.
 func (d *DB) PRCandidates() ([]Row, error) {
-	rows, err := d.sql.Query(`SELECT run_id, repo, iteration FROM runs WHERE pr_state IS NULL OR pr_state = 'open' ORDER BY run_id`)
+	rows, err := d.sql.Query(`SELECT run_id, repo, iteration FROM runs
+		WHERE workflow IN ('build', 'revise') AND (pr_state IS NULL OR pr_state = 'open') ORDER BY run_id`)
 	if err != nil {
 		return nil, err
 	}

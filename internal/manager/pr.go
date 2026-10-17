@@ -3,26 +3,13 @@ package manager
 import (
 	"context"
 	"fmt"
-	"io"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/tyrelh/lathe/internal/worker"
-	"github.com/tyrelh/lathe/internal/workspace"
 )
 
 const prPoll = 5 * time.Minute
-
-type lockedWriter struct {
-	mu sync.Mutex
-	w io.Writer
-}
-
-func (w *lockedWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.w.Write(p)
-}
 
 // pollPRs runs serial passes until cancellation, invoking after after completed passes.
 func (m *manager) pollPRs(ctx context.Context, interval time.Duration, after func()) {
@@ -50,10 +37,6 @@ func (m *manager) pollPRPass(ctx context.Context) bool {
 		fmt.Fprintln(m.out, "lathe manager: PR candidates:", err)
 		return true
 	}
-	view := m.viewPR
-	if view == nil {
-		view = workspace.ViewPR
-	}
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			return false
@@ -62,22 +45,9 @@ func (m *manager) pollPRPass(ctx context.Context) bool {
 		if url == "" {
 			continue
 		}
-		pr, err := view(row.Repo, url)
+		pr, err := m.viewPR(row.Repo, url)
 		if err == nil {
-			var state string
-			switch pr.State {
-			case "OPEN":
-				state = "open"
-			case "MERGED":
-				state = "merged"
-			case "CLOSED":
-				state = "closed"
-			default:
-				err = fmt.Errorf("unknown PR state %q", pr.State)
-			}
-			if err == nil {
-				err = m.db.ObservePR(row.ID, state)
-			}
+			err = m.db.ObservePR(row.ID, strings.ToLower(pr.State))
 		}
 		if err != nil {
 			fmt.Fprintf(m.out, "lathe manager: PR %s (%s, %s): %v\n", row.ID, row.Repo, url, err)

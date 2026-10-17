@@ -12,9 +12,6 @@ import (
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
-// A run from before revisions can be revised when its records name the pull
-// request, the branch and the commit; missing any of them is explained, and
-// nothing is inferred to fill the gap.
 func TestRecordedPRURL(t *testing.T) {
 	root := t.TempDir()
 	row := trace.Row{ID: "history", Iteration: 3}
@@ -38,6 +35,9 @@ func TestRecordedPRURL(t *testing.T) {
 	}
 }
 
+// A run from before revisions can be revised when its records name the pull
+// request, the branch and the commit; missing any of them is explained, and
+// nothing is inferred to fill the gap.
 func TestEvidence(t *testing.T) {
 	dataRoot := t.TempDir()
 	row := trace.Row{ID: "old", Workflow: "build", Branch: "feat/x", Commit: "abc"}

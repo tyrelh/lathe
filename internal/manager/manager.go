@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/dashboard"
+	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 	"github.com/tyrelh/lathe/internal/workspace"
@@ -78,7 +79,7 @@ var stopWait = 10 * time.Second
 // handed to the dashboard for its forms; nil ones leave it read-only. sources
 // are handed to it for its reads outside the database.
 func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions dashboard.Actions, sources dashboard.Sources) error {
-	out = &lockedWriter{w: out}
+	out = &run.LockedWriter{W: out}
 	lock, err := Lock(dataRoot)
 	if err != nil {
 		return fmt.Errorf("a manager is already running for %s", dataRoot)
@@ -92,7 +93,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 	defer db.Close()
 
 	m := &manager{db: db, dataRoot: dataRoot, out: out, launcher: Local{}, groups: Local{},
-		capacity: Capacity()}
+		capacity: Capacity(), viewPR: workspace.ViewPR}
 
 	// Reservations and attempts are reconciled before anything new is
 	// admitted, so a surviving worker keeps its capacity and its checkout.

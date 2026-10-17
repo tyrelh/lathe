@@ -1580,8 +1580,10 @@ async function loadRun(current) {
   // page means the server capped this poll and there is more to fetch first.
   draining = d.events.length >= PAGE;
   r.pr_url = d.pr_url || '';
-  const pendingPR = r.pr_url && (r.pr_state == null || r.pr_state === 'open');
-  done = !live(r.status) && !draining && !pendingPR;
+  done = !live(r.status) && !draining;
+  // A settled run's PR state changes at most once per manager pass; recheck slowly.
+  if (done && d.pr_pending)
+    setTimeout(() => { if (current === generation) { done = false; tick(); } }, 60000);
   followLabel.style.display = view.page === 'run' ? 'inline-flex' : 'none';
 
   // The header, chart, costs and details are re-rendered every poll; the log
@@ -1629,7 +1631,7 @@ function renderRunSummary(r) {
   $('summary').innerHTML = [
     stat('workflow', esc(r.workflow)),
     stat('status', esc(r.status), cls(r.status)),
-    ...(/^https?:\/\//i.test(r.pr_url || '') ? [stat('pull request', `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a> · ${esc(r.pr_state || 'not checked')}`)] : []),
+    ...(/^https?:\/\//i.test(r.pr_url) ? [stat('pull request', `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a> · ${esc(r.pr_state || 'not checked')}`)] : []),
     stat('tokens', count(r.tokens)),
     stat('queued', span(r.submitted_at, r.started_at)),
     stat('duration', took(r)),
