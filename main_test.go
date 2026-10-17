@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 )
@@ -109,10 +110,8 @@ func TestEndToEnd(t *testing.T) {
 	// A fake agent on PATH: the worker resolves pi the way production does,
 	// and the manager passes PATH through to it.
 	stub := t.TempDir()
-	reply := `{"type":"message_end","message":{"role":"assistant","stopReason":"stop",` +
-		`"usage":{"totalTokens":10,"cost":{"total":0.001}},"content":[{"type":"text","text":` +
-		"\"Looked.\\n\\n```json\\n{\\\"summary\\\":\\\"it dispatches\\\",\\\"findings\\\":[],\\\"artifacts\\\":[]}\\n```\"}]}}"
-	os.WriteFile(filepath.Join(stub, "reply.jsonl"), []byte(reply+"\n"), 0o644)
+	reply := pitest.Message(t, "Looked.\n\n```json\n{\"summary\":\"it dispatches\",\"findings\":[],\"artifacts\":[]}\n```", 10)
+	os.WriteFile(filepath.Join(stub, "reply.jsonl"), []byte(reply), 0o644)
 	os.WriteFile(filepath.Join(stub, "pi"), []byte("#!/bin/sh\ncat "+filepath.Join(stub, "reply.jsonl")+"\n"), 0o755)
 
 	env := []string{

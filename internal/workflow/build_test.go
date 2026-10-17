@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 )
@@ -34,11 +35,7 @@ func shipRepo(t *testing.T) (config.Config, string, string) {
 // multi-paragraph commit message escapes the way a real one would.
 func jsonReply(t *testing.T, report map[string]any) string {
 	t.Helper()
-	b, err := json.Marshal(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return piReply(t, "```json\n"+string(b)+"\n```")
+	return pitest.Report(t, report, 100)
 }
 
 // shipStub is codeStub with the brancher proposing branch.

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
@@ -585,19 +586,7 @@ echo "https://github.com/acme/widget/pull/$$"
 // block in a single assistant message.
 func agentReply(t *testing.T, report map[string]any) string {
 	t.Helper()
-	b, err := json.Marshal(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err = json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{
-		"role": "assistant", "stopReason": "stop",
-		"usage":   map[string]any{"totalTokens": 10, "cost": map[string]any{"total": 0.001}},
-		"content": []map[string]string{{"type": "text", "text": "```json\n" + string(b) + "\n```"}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b) + "\n"
+	return pitest.Report(t, report, 10)
 }
 
 // buildLathe builds this binary for tests that run it as separate processes,
