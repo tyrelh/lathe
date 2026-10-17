@@ -441,7 +441,7 @@ func (d *DB) MarkLost(runID, reason string) error {
 // Like every write below it, it lands only while attemptID owns the run.
 func (d *DB) SetCommit(runID, attemptID, sha string) error {
 	return d.guarded(runID, attemptID,
-		`UPDATE runs SET commit_sha = ? WHERE run_id = ?`, []any{sha, runID},
+		`UPDATE runs SET commit_sha = ?`, []any{sha},
 		`UPDATE iterations SET base_commit = ?`, []any{sha})
 }
 
@@ -450,7 +450,7 @@ func (d *DB) SetCommit(runID, attemptID, sha string) error {
 // no longer owns the run.
 func (d *DB) SetShipped(runID, attemptID, branch, sha string) error {
 	return d.guarded(runID, attemptID,
-		`UPDATE runs SET branch = ?, commit_sha = ? WHERE run_id = ?`, []any{branch, sha, runID},
+		`UPDATE runs SET branch = ?, commit_sha = ?`, []any{branch, sha},
 		`UPDATE iterations SET commit_sha = ?`, []any{sha})
 }
 
@@ -462,17 +462,19 @@ func (d *DB) SetEvidence(runID, attemptID, commit, remote string) error {
 		`UPDATE iterations SET commit_sha = ?, remote_sha = ?`, []any{commit, nullIfEmpty(remote)})
 }
 
-// guarded runs an optional run update and an iteration update, each only while
-// attemptID owns the run, in one transaction. iterSet is an UPDATE ... SET
-// clause; the iteration it applies to is the attempt's own.
-func (d *DB) guarded(runID, attemptID, runSQL string, runArgs []any, iterSet string, iterArgs []any) error {
+// guarded runs an optional run update and an iteration update in one
+// transaction. runSet and iterSet are UPDATE ... SET clauses; guarded scopes
+// the first to runID and the second to the attempt's iteration, both only
+// while attemptID owns the run.
+func (d *DB) guarded(runID, attemptID, runSet string, runArgs []any, iterSet string, iterArgs []any) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if runSQL != "" {
-		res, err := tx.Exec(runSQL+" AND "+owned, append(runArgs, runID, attemptID)...)
+	if runSet != "" {
+		res, err := tx.Exec(runSet+" WHERE run_id = ? AND "+owned,
+			append(append([]any{}, runArgs...), runID, runID, attemptID)...)
 		if err != nil {
 			return err
 		}
