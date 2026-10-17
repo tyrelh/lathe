@@ -244,20 +244,12 @@ func Seed(home string, fsys fs.FS, version string) (Report, error) {
 }
 
 type fileConfig struct {
-	Provider         string     `yaml:"provider"`
-	Model            string     `yaml:"model"`
-	Thinking         string     `yaml:"thinking"`
-	Timeout          string     `yaml:"timeout"`
-	RepoInstructions *bool      `yaml:"repo_instructions"`
-	Tiers            []fileTier `yaml:"tiers"`
-}
-
-type fileTier struct {
-	When     string `yaml:"when"`
-	Default  bool   `yaml:"default"`
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
-	Thinking string `yaml:"thinking"`
+	Provider         string              `yaml:"provider"`
+	Model            string              `yaml:"model"`
+	Thinking         string              `yaml:"thinking"`
+	Timeout          string              `yaml:"timeout"`
+	RepoInstructions *bool               `yaml:"repo_instructions"`
+	Tiers            []config.TierConfig `yaml:"tiers"`
 }
 
 // decodeStrict decodes the single YAML document in b into v, rejecting
@@ -301,18 +293,10 @@ func parseConfig(name, path string, b []byte) (fileConfig, error) {
 	if d, err := time.ParseDuration(fc.Timeout); err != nil || d <= 0 {
 		return fc, invalidf(path, "timeout %q is not a positive duration", fc.Timeout)
 	}
-	if err := config.CheckTiers(name, tiers(fc)); err != nil {
+	if err := config.CheckTiers(name, fc.Tiers); err != nil {
 		return fc, invalidf(path, "tiers: %v", err)
 	}
 	return fc, nil
-}
-
-func tiers(fc fileConfig) []config.TierConfig {
-	var out []config.TierConfig
-	for _, t := range fc.Tiers {
-		out = append(out, config.TierConfig{When: t.When, Default: t.Default, Provider: t.Provider, Model: t.Model, Thinking: t.Thinking})
-	}
-	return out
 }
 
 // readFile reads rel under home and refuses a missing one.
@@ -372,7 +356,7 @@ func Load(home string) (config.Config, error) {
 		}
 		agents = append(agents, config.Agent{Name: p.Name, Provider: fc.Provider, Model: fc.Model,
 			Thinking: fc.Thinking, Timeout: fc.Timeout, RepoInstructions: fc.RepoInstructions})
-		allTiers[p.Name] = tiers(fc)
+		allTiers[p.Name] = fc.Tiers
 	}
 	for _, r := range config.Routes {
 		f, err := readText(home, r.Key)
