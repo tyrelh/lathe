@@ -95,12 +95,11 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `
 
-// busyTimeout makes a second connection wait its turn rather than fail. Both
-// openers set it, so it is one literal.
-const busyTimeout = "PRAGMA busy_timeout=5000"
+// busyMillis is how long a connection waits for a lock rather than fail.
+const busyMillis = "5000"
 
-// busyMillis is busyTimeout's wait, for the DSN.
-const busyMillis = 5000
+// busyTimeout applies busyMillis to one connection.
+const busyTimeout = "PRAGMA busy_timeout=" + busyMillis
 
 // DataRoot is where the database and per-run artifacts live: $XDG_DATA_HOME/lathe,
 // falling back to ~/.local/share/lathe.
@@ -152,7 +151,7 @@ func Open(dataRoot string) (*DB, error) {
 	// The busy timeout is in the DSN so it holds on every connection before
 	// its first statement: switching to WAL takes a lock, and a second lathe
 	// opening the same database meanwhile must wait rather than fail.
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataRoot, dbFile)+"?_txlock=immediate&_pragma=busy_timeout("+strconv.Itoa(busyMillis)+")")
+	db, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_pragma=busy_timeout("+busyMillis+")")
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +160,6 @@ func Open(dataRoot string) (*DB, error) {
 	// wait its turn instead of failing.
 	db.SetMaxOpenConns(1)
 	for _, pragma := range []string{
-		busyTimeout,
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL", // WAL keeps this crash-safe without a per-statement fsync
 		"PRAGMA foreign_keys=ON",
@@ -203,16 +201,27 @@ func lockInit(path string) (func(), error) {
 // connection (SQLITE_BUSY_RECOVERY), return busy without the busy handler.
 const initRetries = 20
 
-// execRetrying runs stmt, retrying contention with growing pauses up to
-// initRetries times. Any other error is returned at once.
-func execRetrying(db *sql.DB, stmt string) error {
+// retryPause is the first pause between contended tries; each later one is
+// longer by the same step.
+const retryPause = 25 * time.Millisecond
+
+// retryContended runs op, retrying contention with growing pauses up to
+// initRetries times. Any other error, or the last try's result, is returned.
+func retryContended[T any](op func() (T, error)) (T, error) {
+	var v T
 	var err error
 	for try := 0; try <= initRetries; try++ {
-		if _, err = db.Exec(stmt); err == nil || !contended(err) {
-			return err
+		if v, err = op(); err == nil || !contended(err) {
+			return v, err
 		}
-		time.Sleep(time.Duration(try+1) * 25 * time.Millisecond)
+		time.Sleep(time.Duration(try+1) * retryPause)
 	}
+	return v, err
+}
+
+// execRetrying runs stmt with retryContended.
+func execRetrying(db *sql.DB, stmt string) error {
+	_, err := retryContended(func() (sql.Result, error) { return db.Exec(stmt) })
 	return err
 }
 
