@@ -24,6 +24,12 @@ func Git(t testing.TB, dir string, args ...string) string {
 func Init(t testing.TB, dir string) {
 	t.Helper()
 	Git(t, dir, "init", "-q", "-b", "main")
+	Identity(t, dir)
+}
+
+// Identity configures local commit identity and disables commit signing.
+func Identity(t testing.TB, dir string) {
+	t.Helper()
 	Git(t, dir, "config", "user.name", "T")
 	Git(t, dir, "config", "user.email", "t@example.com")
 	Git(t, dir, "config", "commit.gpgsign", "false")

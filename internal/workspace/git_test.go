@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tyrelh/lathe/internal/gittest"
 )
 
 // FetchBranch brings origin's branch into the remote-tracking ref and names
@@ -13,6 +15,7 @@ func TestFetchBranch(t *testing.T) {
 	repo, origin, sha := shipped(t)
 	other := t.TempDir()
 	gitTest(t, other, "clone", "-q", origin, ".")
+	gittest.Identity(t, other)
 	gitTest(t, other, "checkout", "-q", "feat/x")
 	os.WriteFile(filepath.Join(other, "a.txt"), []byte("theirs\n"), 0o644)
 	gitTest(t, other, "commit", "-qam", "theirs")
