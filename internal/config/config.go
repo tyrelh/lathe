@@ -5,6 +5,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -146,15 +147,16 @@ func CheckTiers(name string, tiers []TierConfig) error {
 	return nil
 }
 
-// Overrides are the per-run flags. Empty fields change nothing.
+// Overrides are the per-run flags. Empty fields change nothing; any set field
+// turns routing off.
 type Overrides struct {
 	Provider string
 	Model    string
 	Thinking string
 }
 
-// defaultFloor is the routing confidence floor.
-const defaultFloor = 0.5
+// confidenceFloor is the fixed routing confidence floor (ADR 0007).
+const confidenceFloor = 0.5
 
 // Resolved is one agent with flags already applied and its prompts already
 // read. Nothing downstream touches the filesystem again.
@@ -171,25 +173,19 @@ type Resolved struct {
 // Resolve returns the named agent with ov applied over its configuration, or
 // an error naming every agent that does exist.
 func (c Config) Resolve(name string, ov Overrides) (Resolved, error) {
-	var a Agent
-	var found bool
-	for _, candidate := range c.Agents {
-		if candidate.Name == name {
-			a, found = candidate, true
-			break
-		}
-	}
-	if !found {
+	i := slices.IndexFunc(c.Agents, func(a Agent) bool { return a.Name == name })
+	if i < 0 {
 		names := make([]string, len(c.Agents))
 		for i, candidate := range c.Agents {
 			names[i] = candidate.Name
 		}
 		return Resolved{}, fmt.Errorf("unknown agent %q (have: %s)", name, strings.Join(names, ", "))
 	}
+	a := c.Agents[i]
 	r := Resolved{Agent: a}
-	r.Provider = pick(ov.Provider, a.Provider)
-	r.Model = pick(ov.Model, a.Model)
-	r.Thinking = pick(ov.Thinking, a.Thinking)
+	r.Provider = cmp.Or(ov.Provider, a.Provider)
+	r.Model = cmp.Or(ov.Model, a.Model)
+	r.Thinking = cmp.Or(ov.Thinking, a.Thinking)
 	var err error
 	if a.Timeout != "" {
 		if r.Deadline, err = time.ParseDuration(a.Timeout); err != nil {
@@ -325,15 +321,6 @@ func TargetRoot(dir string) (string, error) {
 	return filepath.Abs(strings.TrimSpace(string(out)))
 }
 
-func pick(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 // Snapshot is the effective roster captured at submission: every agent the
 // workflow will spawn, already resolved against its configuration and the
 // run's flags. It is what a worker executes from, so editing a file cannot
@@ -412,7 +399,7 @@ func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 		if len(tiers) == 0 {
 			continue
 		}
-		if ov.Provider != "" || ov.Model != "" || ov.Thinking != "" {
+		if ov != (Overrides{}) {
 			s.RoutingOff = true
 			continue
 		}
@@ -429,7 +416,7 @@ func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 		}
 		if s.Routing == nil {
 			s.Routing = map[string]Routing{}
-			s.ConfidenceFloor = defaultFloor
+			s.ConfidenceFloor = confidenceFloor
 		}
 		s.Routing[name] = rt
 	}
