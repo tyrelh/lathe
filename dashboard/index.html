@@ -602,6 +602,8 @@ const count = n => (n || 0).toLocaleString('en-US');
 const pct = n => (100 * (n || 0)).toFixed(1) + '%';
 const projectHref = repo => '#/projects/detail?repo=' + encodeURIComponent(repo).replace(/'/g, '%27');
 const agentHref = name => '#/agents/' + encodeURIComponent(name).replace(/'/g, '%27');
+// Run IDs are URL-safe, and route() does not decode them.
+const runHref = id => '#/runs/' + id;
 // bucket is the list stored under key, created empty on first use.
 const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
 
@@ -947,7 +949,7 @@ async function loadOverview(current) {
   const runRow = (r, i) => `
     <tr class="run" data-row="${esc(r.run_id)}" onclick="location.hash='/runs/${esc(r.run_id)}'">
       <td class="dim">${i + 1}</td>
-      <td><a data-focus="${esc('run-' + r.run_id)}" href="#/runs/${esc(r.run_id)}">${esc(r.workflow)}</a></td>
+      <td><a data-focus="${esc('run-' + r.run_id)}" href="${esc(runHref(r.run_id))}">${esc(r.workflow)}</a></td>
       <td class="dim lo">${esc(base(r.repo))}</td>
       <td class="${cls(r.status)}">${esc(r.status)}</td>
       <td class="num cost">${money(r.cost)}</td>
@@ -1289,7 +1291,7 @@ const projectQuery = repo => 'repo=' + encodeURIComponent(repo);
 const runListRow = r => `<tr class="run" data-row="${esc(r.run_id)}" onclick="location.hash='/runs/${esc(r.run_id)}'">
   <td class="dim timestamp">${esc((r.submitted_at || '').replace('T', ' ').replace('Z', ''))}</td>
   <td class="${cls(r.status)}">${esc(r.status)}</td>
-  <td><a data-focus="${esc('run-' + r.run_id)}" href="#/runs/${esc(r.run_id)}">${esc(r.workflow)}</a>${r.iteration ? `<span class="dim"> · rev ${esc(r.iteration)}</span>` : ''}</td>
+  <td><a data-focus="${esc('run-' + r.run_id)}" href="${esc(runHref(r.run_id))}">${esc(r.workflow)}</a>${r.iteration ? `<span class="dim"> · rev ${esc(r.iteration)}</span>` : ''}</td>
   <td class="num dim lo">${esc(took(r))}</td>
   <td class="num dim">${count(r.tokens)} tok</td>
   <td class="num cost">${money(r.cost)}</td>
@@ -1348,7 +1350,7 @@ async function send(url, payload, method = 'POST') {
   try { body = JSON.parse(text); } catch {}
   return {ok: r.ok, status: r.status, body, error: body.error || text || 'HTTP ' + r.status};
 }
-const runLink = id => `<a href="#/runs/${esc(id)}">${esc(id)}</a>`;
+const runLink = id => `<a href="${esc(runHref(id))}">${esc(id)}</a>`;
 
 function runStatus(html, error = false) {
   $('run-status').className = error ? 'fail' : '';
