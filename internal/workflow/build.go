@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/permit"
@@ -128,13 +131,34 @@ func (p *PROutput) Artifacts() []string {
 	return *p.Wrote
 }
 
-// prResult is pr.json: the agent's report, the pull request URL, and whether it
-// was opened as a draft of unaccepted work and why.
+// prResult is pr.json: the agent's report and the pull request's record.
 type prResult struct {
 	*PROutput
+	PRRecord
+}
+
+// PRRecord is what pr.json records of the pull request: its URL, whether it
+// was opened as a draft, and the validation outcome that decided it.
+type PRRecord struct {
 	URL        string `json:"url"`
 	Draft      bool   `json:"draft"`
 	Validation string `json:"validation"`
+}
+
+// LatheDraft reports whether the pull request is lathe's own draft of
+// unaccepted work. A record without a validation outcome is not.
+func (p PRRecord) LatheDraft() bool {
+	return p.Draft && p.Validation != "" && p.Validation != outcomeAccepted
+}
+
+// ReadPRRecord reads dir's pr.json. ok is false when it is unreadable,
+// malformed or records no URL.
+func ReadPRRecord(dir string) (pr PRRecord, ok bool) {
+	b, err := os.ReadFile(filepath.Join(dir, run.PRFile))
+	if err != nil || json.Unmarshal(b, &pr) != nil || pr.URL == "" {
+		return PRRecord{}, false
+	}
+	return pr, true
 }
 
 // branchRequest is what the brancher is given. The plan is everything that has
@@ -311,7 +335,7 @@ func openPR(e *run.Entry, r *run.Run, c *code, branch, message string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return url, writeResult(r.Dir, run.PRFile, prResult{PROutput: &out, URL: url, Draft: draft, Validation: c.v.Outcome})
+	return url, writeResult(r.Dir, run.PRFile, prResult{&out, PRRecord{URL: url, Draft: draft, Validation: c.v.Outcome}})
 }
 
 // commit has the committer write the message for paths and lathe make the

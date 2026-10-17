@@ -192,16 +192,9 @@ func unrestored(n int, patch string) string {
 // lathe's own for unaccepted work.
 func prRecord(dataRoot string, row trace.Row) (url string, draft, lathe bool) {
 	for i := row.Iteration; i >= 0; i-- {
-		var pr struct {
-			URL        string `json:"url"`
-			Draft      bool   `json:"draft"`
-			Validation string `json:"validation"`
+		if pr, ok := workflow.ReadPRRecord(ReportDir(dataRoot, row.ID, i)); ok {
+			return pr.URL, pr.Draft, pr.LatheDraft()
 		}
-		b, err := os.ReadFile(filepath.Join(ReportDir(dataRoot, row.ID, i), run.PRFile))
-		if err != nil || json.Unmarshal(b, &pr) != nil || pr.URL == "" {
-			continue
-		}
-		return pr.URL, pr.Draft, pr.Draft && pr.Validation != "" && pr.Validation != "accepted"
 	}
 	return "", false, false
 }

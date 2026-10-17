@@ -279,6 +279,24 @@ func (c *code) dispose(e *run.Entry, r *run.Run, name string, request int) (Disp
 	return d, nil
 }
 
+// Spent reports whether the request used one of the run's scope send-backs.
+func (s ScopeRequest) Spent() bool {
+	return s.Outcome != scopeRejected && s.Outcome != scopeExhausted
+}
+
+// ReadScopeRequests reads dir's scope requests in file-name order, skipping
+// unreadable ones. found counts every scope request file, readable or not.
+func ReadScopeRequests(dir string) (reqs []ScopeRequest, found int) {
+	paths, _ := filepath.Glob(filepath.Join(dir, run.ScopeGlob))
+	for _, path := range paths {
+		var req ScopeRequest
+		if b, err := os.ReadFile(path); err == nil && json.Unmarshal(b, &req) == nil {
+			reqs = append(reqs, req)
+		}
+	}
+	return reqs, len(paths)
+}
+
 // saveScope writes req to scope-<n>.json.
 func saveScope(r *run.Run, req *ScopeRequest) error {
 	return writeResult(r.Dir, run.ScopeFile(req.N), req)

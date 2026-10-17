@@ -1,19 +1,17 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/manager"
-	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
+	"github.com/tyrelh/lathe/internal/workflow"
 )
 
 // submitRecovery is the one recovery submission; the CLI and the dashboard
@@ -86,22 +84,15 @@ func recoveryLines(db *trace.DB, row trace.Row, its []trace.Iteration, dataRoot 
 		}
 	}
 	dir := worker.ReportDir(dataRoot, row.ID, n)
-	scopes, _ := filepath.Glob(filepath.Join(dir, run.ScopeGlob))
+	reqs, found := workflow.ReadScopeRequests(dir)
 	spent := 0
-	for _, path := range scopes {
-		var req struct {
-			N       int      `json:"request"`
-			Outcome string   `json:"outcome"`
-			Needed  []string `json:"needed"`
-		}
-		if b, err := os.ReadFile(path); err == nil && json.Unmarshal(b, &req) == nil {
-			lines = append(lines, fmt.Sprintf("scope request %d (%s): needed %s", req.N, req.Outcome, strings.Join(req.Needed, ", ")))
-			if req.Outcome != "rejected" && req.Outcome != "exhausted" {
-				spent++
-			}
+	for _, req := range reqs {
+		lines = append(lines, fmt.Sprintf("scope request %d (%s): needed %s", req.N, req.Outcome, strings.Join(req.Needed, ", ")))
+		if req.Spent() {
+			spent++
 		}
 	}
-	if len(scopes) > 0 {
+	if found > 0 {
 		lines = append(lines, fmt.Sprintf("scope send-backs spent: %d", spent))
 	}
 	if trace.Terminal(row.Status) {
