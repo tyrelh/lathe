@@ -103,12 +103,11 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 	// stops its children, keeps what it has produced, and records cancelled.
 	signals(ctx, stop)
 
-	var code int
-	var status, reason string
+	var res result
 	if mode == trace.ModeWorktree {
-		code, status, reason, err = inWorktree(ctx, db, dataRoot, row, attemptID, spec, out)
+		res, err = inWorktree(ctx, db, dataRoot, row, attemptID, spec, out)
 	} else {
-		code, status, reason, err = inCheckout(ctx, db, dataRoot, row, attemptID, spec, out)
+		res, err = inCheckout(ctx, db, dataRoot, row, attemptID, spec, out)
 	}
 	if err != nil {
 		return 0, err
@@ -116,76 +115,76 @@ func execute(db *trace.DB, dataRoot string, row trace.Row, attemptID, token stri
 	stop()
 	<-beats
 
-	if err := db.Complete(row.ID, attemptID, token, status, reason); err != nil {
+	if err := db.Complete(row.ID, attemptID, token, res.status, res.reason); err != nil {
 		// A terminal state that is already recorded is not an error here: the
 		// race with cancellation is settled by whichever committed first.
 		if !errors.Is(err, trace.ErrClaimLost) {
-			return code, err
+			return res.code, err
 		}
 	}
-	return code, nil
+	return res.code, nil
 }
 
 // inCheckout runs a read-only workflow in the source checkout, which it
 // reserves and locks for the length of the run.
-func inCheckout(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, out io.Writer) (int, string, string, error) {
+func inCheckout(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, out io.Writer) (result, error) {
 	// The reservation is the database's record of who owns the checkout; the
 	// lock is what actually keeps a second lathe process out of it. Both,
 	// because either alone is a lie: the row survives a crash and the lock
 	// does not.
 	if err := db.ReserveCheckout(spec.Workspace.Path, spec.Workspace.Host, row.ID); err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	defer release(db, row.ID, out)
 	lock, err := workspace.Acquire(dataRoot, spec.Workspace.Path)
 	if err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	defer lock.Release()
 
 	if err := revalidate(spec, row); err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	// A checkout with no commits yet has none to record, which is not a
 	// reason to refuse to read it.
 	commit, _ := workspace.Head(spec.Workspace.Path)
 	if err := db.SetCommit(row.ID, attemptID, commit); err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	var recovery *run.Recovery
 	if spec.Recovery != nil {
 		if recovery, err = recoveryOf(db, dataRoot, row, spec.Recovery); err != nil {
-			return 0, "", "", err
+			return result{}, err
 		}
 	}
-	r, err := open(ctx, db, dataRoot, row, attemptID, spec, spec.Workspace.Path, "", nil, recovery, nil, out)
+	o := options(ctx, db, dataRoot, row, attemptID, spec, out)
+	o.Repo, o.Recovery = spec.Workspace.Path, recovery
+	r, err := run.Open(o)
 	if err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
-	code := workflow.Graphs[spec.Workflow](r)
-	code, status, reason := outcome(db, row.ID, r, code)
-	return code, status, reason, nil
+	return outcome(db, row.ID, r, workflow.Graphs[spec.Workflow](r)), nil
 }
 
 // inWorktree runs a writing workflow in a worktree of its own at the
 // specification's base commit. Every subprocess it starts is supervised. The
 // worktree's result is preserved and the worktree removed before it returns,
 // after every supervised writer has stopped.
-func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, out io.Writer) (int, string, string, error) {
+func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, out io.Writer) (result, error) {
 	path := workspace.WorktreePath(dataRoot, row.ID, row.Iteration)
 	if err := db.ReserveCheckout(path, spec.Workspace.Host, row.ID); err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	defer release(db, row.ID, out)
 	lock, err := workspace.Acquire(dataRoot, path)
 	if err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	defer lock.Release()
 
 	runner, err := supervisor(db, row.ID, attemptID)
 	if err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	restore := process.Install(runner)
 	defer restore()
@@ -193,20 +192,20 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	base := spec.Base
 	if spec.Recovery != nil {
 		if err := db.SourceStopped(row.ID, spec.Recovery.Source, attemptID, path); err != nil {
-			return 0, "", "", err
+			return result{}, err
 		}
 	}
 	if spec.Recovery != nil && spec.Recovery.Publication != nil {
 		// The queued recovery's view of origin and the pull request, again.
 		pub := spec.Recovery.Publication
 		if err := recheck(spec.Workspace.Path, pub); err != nil {
-			return 0, "", "", err
+			return result{}, err
 		}
 		// A revision delivered despite a lost acknowledgement: the run's
 		// shipped commit catches up with what origin verifiably holds.
 		if spec.Workflow == workflow.NameRevise && row.Commit != pub.Head {
 			if err := db.SetShipped(row.ID, attemptID, pub.Branch, pub.Head); err != nil {
-				return 0, "", "", err
+				return result{}, err
 			}
 			row.Commit = pub.Head
 		}
@@ -216,12 +215,12 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 		// Rechecked under the claim, against origin: the pull request had
 		// people around it the whole time the request waited.
 		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path); err != nil {
-			return 0, "", "", err
+			return result{}, err
 		}
 		// Saved work applies only at the head it was made on; a moved head
 		// is refused rather than rebased onto.
 		if spec.Recovery != nil && spec.Base != "" && spec.Base != revision.Head {
-			return 0, "", "", fmt.Errorf("the recovery was submitted at %s, but the pull request's head is now %s; nothing was changed",
+			return result{}, fmt.Errorf("the recovery was submitted at %s, but the pull request's head is now %s; nothing was changed",
 				workspace.Short(spec.Base), workspace.Short(revision.Head))
 		}
 		base = revision.Head
@@ -229,78 +228,83 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	var recovery *run.Recovery
 	if spec.Recovery != nil {
 		if recovery, err = recoveryOf(db, dataRoot, row, spec.Recovery); err != nil {
-			return 0, "", "", err
+			return result{}, err
 		}
 	}
 	if base == "" {
-		return 0, "", "", fmt.Errorf("run %s records no commit to start from; nothing was changed", row.ID)
+		return result{}, fmt.Errorf("run %s records no commit to start from; nothing was changed", row.ID)
 	}
 
 	// Ownership and base in one write, before the worktree exists: a crash
 	// anywhere after this leaves cleanup enough to export what is there.
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeCreating); err != nil {
-		return 0, "", "", err
+		return result{}, err
 	}
 	wt := trace.Worktree{RunID: row.ID, Iteration: row.Iteration, Repo: spec.Workspace.Path, Path: path, Base: base, Spec: row.Spec,
 		State: trace.WorktreeCreating}
+	// abandon settles wt as it stands when the run stops early; keep says
+	// whether its work is preserved.
+	abandon := func(err error, keep bool) error { return errors.Join(err, Settle(db, dataRoot, wt, keep)) }
 	if _, err := workspace.CreateWorktree(dataRoot, spec.Workspace.Path, row.ID, row.Iteration, base); err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+		return result{}, abandon(err, true)
 	}
 	if err := db.SetWorktree(row.ID, attemptID, path, base, trace.WorktreeActive); err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+		return result{}, abandon(err, true)
 	}
 	wt.State = trace.WorktreeActive
 	if err := db.SetCommit(row.ID, attemptID, base); err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+		return result{}, abandon(err, true)
 	}
 	// Restored into the fresh worktree, which Restore verifies clean and at
 	// base, before any agent runs.
 	if recovery != nil && spec.Recovery.Patch != "" {
 		restored, err := workspace.Restore(path, base, spec.Recovery.Patch, spec.Recovery.Digest, spec.Roster.Protected)
 		if err != nil {
-			return 0, "", "", errors.Join(fmt.Errorf("restoring iteration %d's work: %w%s",
-				spec.Recovery.Source, err, restartHint(row.ID)), Settle(db, dataRoot, wt, false))
+			err = fmt.Errorf("restoring iteration %d's work: %w%s", spec.Recovery.Source, err, restartHint(row.ID))
+			return result{}, abandon(err, false)
 		}
 		recovery.Restored = restored
 		// Until this lands, a later recovery restores the same evidence again.
 		if err := db.SetRestored(row.ID, attemptID); err != nil {
-			return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+			return result{}, abandon(err, true)
 		}
 	}
-	r, err := open(ctx, db, dataRoot, row, attemptID, spec, path, base, revision, recovery, runner, out)
+	o := options(ctx, db, dataRoot, row, attemptID, spec, out)
+	o.Repo, o.Base, o.Revision, o.Recovery, o.Runner = path, base, revision, recovery, runner
+	r, err := run.Open(o)
 	if err != nil {
-		return 0, "", "", errors.Join(err, Settle(db, dataRoot, wt, true))
+		return result{}, abandon(err, true)
 	}
 	if recovery != nil {
 		r.Retain(recovery.Restored)
 	}
 	// Every supervised writer has drained by the time the graph returns.
-	code := workflow.Graphs[spec.Workflow](r)
-	code, status, reason := outcome(db, row.ID, r, code)
+	res := outcome(db, row.ID, r, workflow.Graphs[spec.Workflow](r))
 
-	keep := spec.Workflow == workflow.NameImplement || status != trace.StatusOK
+	keep := spec.Workflow == workflow.NameImplement || res.status != trace.StatusOK
 	if err := Settle(db, dataRoot, wt, keep); err != nil {
 		// Not a success: the result is not preserved or the worktree is not
 		// gone. The worktree stays, recorded pending, and the manager retries.
 		fmt.Fprintln(out, "lathe worker: cleaning up the worktree:", err)
-		if status == trace.StatusOK {
-			status, code = trace.StatusFail, 1
+		if res.status == trace.StatusOK {
+			res.status, res.code = trace.StatusFail, 1
 		}
-		reason = join(reason, "worktree cleanup pending ("+path+"): "+err.Error())
+		res.reason = join(res.reason, "worktree cleanup pending ("+path+"): "+err.Error())
 	}
 	if its, err := db.Iterations(row.ID); err == nil && row.Iteration < len(its) {
-		PrintResult(out, its[row.Iteration], status == trace.StatusOK)
+		PrintResult(out, its[row.Iteration], res.status == trace.StatusOK)
 	}
-	return code, status, reason, nil
+	return res, nil
 }
 
-func open(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, repo, base string, revision *run.Revision, recovery *run.Recovery, runner *process.Runner, out io.Writer) (*run.Run, error) {
-	return run.Open(run.Options{
+// options is the run options every execution shares; the caller sets where
+// it runs and what it continues.
+func options(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, attemptID string, spec Spec, out io.Writer) run.Options {
+	return run.Options{
 		ID:       row.ID,
 		Workflow: spec.Workflow,
 		Request:  spec.Request,
 		Issue:    spec.Issue,
-		Repo:     repo,
 		Dir:      ReportDir(dataRoot, row.ID, row.Iteration),
 		Work:     AttemptDir(dataRoot, row.ID, attemptID),
 		Snapshot: spec.Roster,
@@ -310,24 +314,27 @@ func open(ctx context.Context, db *trace.DB, dataRoot string, row trace.Row, att
 
 		Iteration: row.Iteration,
 		Attempt:   attemptID,
-		Revision:  revision,
-		Recovery:  recovery,
-		Runner:    runner,
-		Base:      base,
-	})
+	}
 }
 
-// outcome is the run's status and reason, with a recorded cancellation
+// result is how an execution ended: its exit code, and the status and reason
+// recorded for it.
+type result struct {
+	code           int
+	status, reason string
+}
+
+// outcome is the run's result for exit code, with a recorded cancellation
 // taking precedence over the workflow's own result.
-func outcome(db *trace.DB, runID string, r *run.Run, code int) (int, string, string) {
-	status, reason := r.Status(), r.Reason()
+func outcome(db *trace.DB, runID string, r *run.Run, code int) result {
+	res := result{code: code, status: r.Status(), reason: r.Reason()}
 	if cancelled, err := db.Cancelled(runID); err == nil && cancelled {
-		status, code = trace.StatusCancelled, trace.ExitCancelled
-		if reason == "" {
-			reason = "cancelled"
+		res.status, res.code = trace.StatusCancelled, trace.ExitCancelled
+		if res.reason == "" {
+			res.reason = "cancelled"
 		}
 	}
-	return code, status, reason
+	return res
 }
 
 func join(a, b string) string {
