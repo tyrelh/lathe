@@ -177,6 +177,10 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		writeJSON(w, project, err)
 	})
+	mux.HandleFunc("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		views, err := taskViews(db, sources.PRURL, r.URL.Query().Get("repo"))
+		writeJSON(w, views, err)
+	})
 	mux.HandleFunc("GET /api/projects/runs", projectRuns(db))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -203,6 +207,75 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+type taskIssueView struct {
+	Tracker *string `json:"tracker"`
+	Ref *string `json:"ref"`
+	URL *string `json:"url"`
+	Title *string `json:"title"`
+	Body *string `json:"body"`
+}
+
+type taskRunView struct {
+	ID string `json:"run_id"`
+	Iteration int `json:"iteration"`
+	Status string `json:"status"`
+	PRURL string `json:"pr_url"`
+	PRState *string `json:"pr_state"`
+}
+
+type taskView struct {
+	ID string `json:"id"`
+	Repo string `json:"repo"`
+	Text string `json:"text"`
+	Lane string `json:"lane"`
+	Activity string `json:"activity_at"`
+	Issue *taskIssueView `json:"issue"`
+	CurrentRun *taskRunView `json:"current_run"`
+	Runs []string `json:"runs"`
+}
+
+func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string) ([]taskView, error) {
+	tasks, err := db.Tasks(repo)
+	if err != nil {
+		return nil, err
+	}
+	views := []taskView{}
+	for _, t := range tasks {
+		if t.ArchivedAt != nil {
+			continue
+		}
+		v := taskView{ID: t.ID, Repo: t.Repo, Text: t.Text, Lane: trace.LaneBacklog, Activity: t.UpdatedAt, Runs: []string{}}
+		if t.IssueRef != nil {
+			v.Issue = &taskIssueView{t.Tracker, t.IssueRef, t.IssueURL, t.IssueTitle, t.IssueBody}
+		}
+		runs, err := db.TaskRuns(t.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(runs) > 0 {
+			r := runs[0]
+			url := ""
+			if prURL != nil {
+				url = prURL(r)
+			}
+			v.CurrentRun = &taskRunView{r.ID, r.Iteration, r.Status, url, r.PRState}
+			v.Activity = r.Activity
+			v.Lane = trace.TaskLane(&r.Status, r.PRState, url != "")
+			for _, earlier := range runs[1:] {
+				v.Runs = append(v.Runs, earlier.ID)
+			}
+		}
+		views = append(views, v)
+	}
+	slices.SortFunc(views, func(a, b taskView) int {
+		if n := strings.Compare(b.Activity, a.Activity); n != 0 {
+			return n
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
+	return views, nil
 }
 
 // agentView is one agent or routing phase as the Agents page shows it.

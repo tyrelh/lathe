@@ -10,6 +10,39 @@ import (
 	"strings"
 )
 
+const (
+	LaneBacklog = "Backlog"
+	LaneInProgress = "In progress"
+	LaneBlocked = "Blocked"
+	LaneReadyForReview = "Ready for review"
+	LaneDone = "Done"
+)
+
+// TaskLane derives a lane from the current run, or nil status for no run.
+func TaskLane(status, prState *string, hasPR bool) string {
+	if status == nil {
+		return LaneBacklog
+	}
+	state := ""
+	if prState != nil {
+		state = *prState
+	}
+	if state == "merged" {
+		return LaneDone
+	}
+	switch *status {
+	case StatusQueued, StatusStarting, StatusRunning:
+		return LaneInProgress
+	}
+	if state == "closed" {
+		return LaneBlocked
+	}
+	if *status == StatusOK && hasPR {
+		return LaneReadyForReview
+	}
+	return LaneBlocked
+}
+
 // Task is a tracked change in one repository, optionally linked to an issue.
 type Task struct {
 	ID         string  `json:"id"`
