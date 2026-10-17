@@ -311,13 +311,10 @@ func loadRosterWarn(warn io.Writer) (config.Config, error) {
 	return cfg, nil
 }
 
-// submitRevision is the one revision submission; the CLI and the dashboard
-// both call it. It checks everything a revision needs before recording it —
-// the run's state, the evidence its records hold, the checkout, the pull
-// request and origin — and then Revise checks the run's state again inside
-// the transaction that appends the iteration, so whatever changed between the
-// two is refused rather than queued. A refusal changes nothing. The
-// configuration is resolved now and recorded with the iteration.
+// submitRevision validates that runID can take a revision (run state, recorded
+// evidence, checkout, pull request, origin), then appends a revision iteration
+// with the configuration resolved now. It returns the new iteration number. A
+// refusal changes nothing; see ADR 0005 for the race between the two checks.
 func submitRevision(db *trace.DB, dataRoot, runID, request string, ov config.Overrides, warn io.Writer) (int, error) {
 	request = strings.TrimSpace(request)
 	if request == "" {
@@ -398,11 +395,9 @@ func reviseCmd(args []string) int {
 	return block(db, dataRoot, id, n, false)
 }
 
-// prepareAndSubmit is the dashboard's submission: exactly one of prompt and
-// issue, no overrides, and repo must still be the checkout it names. A path
-// that now resolves somewhere else is refused rather than queued against a
-// repository the page does not show. The dashboard validates the shape of the
-// request; this checks everything that needs the filesystem.
+// prepareAndSubmit submits a run from exactly one of prompt or issue, with no
+// overrides, refusing if repo no longer resolves to the checkout it names. It
+// returns the run ID.
 func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 	request, issueRef := prompt, ""
 	if issue != "" {
@@ -520,11 +515,8 @@ func outcome(status string) int {
 }
 
 // reportFiles are the structured results a workflow leaves in its run
-// directory, in the order they are produced. build.json is what the builder's
-// report was called before the rename, kept so lathe show still reads runs from
-// before it.
-// test.json is what the tester's report was called before validation ran in
-// parallel; validation.json now holds every round's reports and how it ended.
+// directory, in the order they are produced. build.json and test.json are
+// legacy names kept so lathe show still reads older runs.
 var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "validation.json", "pr.json"}
 
 // iterationView is one iteration as show and wait --json print it, with the
@@ -643,6 +635,8 @@ func managerCmd() int {
 	// that calls os.Exit cannot be reused by a second command.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The dashboard validates each request's shape; these check everything
+	// that needs the filesystem.
 	actions := dashboard.Actions{
 		Submit: prepareAndSubmit, Revise: dashboardRevise, Resume: dashboardResume, Cancel: dashboardCancel,
 		SavePrompt: func(key, body, baseHash string) error {
@@ -691,10 +685,8 @@ func workerCmd(args []string) int {
 	return worker.Execute(*dataRoot, *runID, *attempt, os.Stdout)
 }
 
-// runs lists what is in the one global database, queued and active runs
-// included. Repos show as basenames, which is what makes a cross-project list
-// readable. Queue time and execution time are separate columns: a run that sat
-// waiting is not a run that took a long time.
+// runs lists runs from the global database, queued and active included. Repos
+// show as basenames, and queue time and execution time are separate columns.
 func runs(args []string) int {
 	fs := flag.NewFlagSet("runs", flag.ExitOnError)
 	n := fs.Int("n", 20, "how many runs to show")
