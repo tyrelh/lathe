@@ -50,7 +50,9 @@ type Job struct {
 
 // Launcher starts, inspects and stops workers. It is the one seam built for
 // the future: an EC2 launcher replaces it without the scheduler changing.
-// Handles are opaque strings the manager persists and hands back.
+// The manager stores a handle as-is and records it as a local PID too. A
+// claimed attempt whose handle was never recorded gets a local handle rebuilt
+// from the worker's claimed PID, which only makes sense on the worker's host.
 type Launcher interface {
 	// Launch returns the handle for the started worker.
 	Launch(Job) (handle string, err error)
@@ -222,7 +224,7 @@ func (m *manager) launch(row trace.Row, mode string) error {
 		return m.db.MarkLost(row.ID, "launching the worker failed: "+err.Error())
 	}
 	fmt.Fprintf(m.out, "lathe manager: %s %s -> %s (%s)\n", row.Workflow, row.ID, handle, logPath)
-	return m.db.SetHandle(attemptID, handle, pid(handle))
+	return m.db.SetHandle(attemptID, handle, localPID(handle))
 }
 
 // reconcile settles what the last manager left behind, before anything new
@@ -252,7 +254,7 @@ func (m *manager) reconcile() error {
 				m.uncertain[row.ID] = true
 				continue
 			}
-			handle = strconv.Itoa(attempt.PID)
+			handle = localHandle(attempt.PID)
 		}
 		if handle == "" {
 			// No worker claimed it, and marking it lost revokes the attempt:
@@ -497,9 +499,4 @@ func age(stamp string) string {
 		return "unknown"
 	}
 	return time.Since(t).Truncate(time.Second).String() + " ago"
-}
-
-func pid(handle string) int {
-	n, _ := strconv.Atoi(handle)
-	return n
 }

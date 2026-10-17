@@ -11,9 +11,8 @@ import (
 	"github.com/tyrelh/lathe/internal/process"
 )
 
-// Local launches workers as processes on this machine. Everything about a
-// local process handle stays inside this file: the scheduler only ever sees
-// the opaque string Launch returns.
+// Local launches workers as processes on this machine. Its handle is the
+// worker's PID, encoded by localHandle and decoded by localPID.
 type Local struct {
 	// Bin overrides the executable to launch. Empty resolves this binary,
 	// which is what makes a worker independent of how lathe was invoked.
@@ -52,7 +51,7 @@ func (l Local) Launch(j Job) (string, error) {
 	// Nothing waits on the child: the database is how its outcome comes back,
 	// and reaping it would tie the manager's lifetime to the worker's.
 	go func() { _ = cmd.Process.Release() }()
-	return strconv.Itoa(pid), nil
+	return localHandle(pid), nil
 }
 
 // Alive asks the OS whether that process is still there.
@@ -107,6 +106,15 @@ func Start(dataRoot string) error {
 }
 
 func logPath(dataRoot string) string { return filepath.Join(dataRoot, logFile) }
+
+// localHandle is the Local handle for pid.
+func localHandle(pid int) string { return strconv.Itoa(pid) }
+
+// localPID is the PID in a Local handle, or 0 for any other handle.
+func localPID(handle string) int {
+	n, _ := strconv.Atoi(handle)
+	return n
+}
 
 var (
 	_ Launcher    = Local{}
