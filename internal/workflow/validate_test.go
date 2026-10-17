@@ -756,7 +756,7 @@ func TestCodeReviewOutputValidate(t *testing.T) {
 		t.Fatalf("violations: %v", v)
 	}
 	summary, none := "s", []string{}
-	findings := []Finding{{Location: "", Evidence: "e", Explanation: "x", Outcome: ""}}
+	findings := []Finding{{Location: "", Evidence: "e", Explanation: "x", Requested: ""}}
 	if v := (&CodeReviewOutput{Summary: &summary, Findings: &findings, Wrote: &none}).Validate(); len(v) != 1 || !strings.Contains(v[0], `"outcome"`) {
 		t.Fatalf("violations: %v", v)
 	}

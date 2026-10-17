@@ -27,7 +27,7 @@ type Finding struct {
 	Location    string `json:"location"`
 	Evidence    string `json:"evidence"`
 	Explanation string `json:"explanation"`
-	Outcome     string `json:"outcome"`
+	Requested   string `json:"outcome"`
 	// From is the iteration that raised a finding a recovery carried in;
 	// nil for one this iteration raised. Refs repeat across iterations.
 	From *int `json:"from_iteration,omitempty"`
@@ -50,7 +50,7 @@ func (c *CodeReviewOutput) Validate() []string {
 		v = append(v, `"findings" is missing; use [] to approve`)
 	} else {
 		for i, f := range *c.Findings {
-			for _, field := range [][2]string{{"evidence", f.Evidence}, {"explanation", f.Explanation}, {"outcome", f.Outcome}} {
+			for _, field := range [][2]string{{"evidence", f.Evidence}, {"explanation", f.Explanation}, {"outcome", f.Requested}} {
 				if strings.TrimSpace(field[1]) == "" {
 					v = append(v, fmt.Sprintf(`finding %d has no %q`, i+1, field[0]))
 				}
@@ -382,9 +382,9 @@ func previousDecision(w io.Writer, c *code) {
 	fmt.Fprintf(w, "\nThe implementer's response to it is the implementation summary above.\n")
 }
 
-// dismissedFindings renders in full every finding the last adjudication
+// adjudicatorDismissals renders in full every finding the last adjudication
 // dismissed, so a reviewer can argue one again whoever raised it.
-func dismissedFindings(w io.Writer, c *code) {
+func adjudicatorDismissals(w io.Writer, c *code) {
 	prev := c.v.previous()
 	if prev == nil || prev.Adjudication == nil {
 		return
@@ -398,8 +398,8 @@ func reviewRequest(c *code) string {
 	b.WriteString(c.handoff)
 	evidence(&b, c)
 	previousDecision(&b, c)
-	dismissedFindings(&b, c)
-	section(&b, "\n### Findings a revised plan dismissed", dismissalLines(c.v.Dismissals))
+	adjudicatorDismissals(&b, c)
+	section(&b, "\n### Findings a revised plan dismissed", planDismissalLines(c.v.Dismissals))
 	b.WriteString("\nInspect the code as it is now. Anything you concluded in an earlier round may be stale.\n")
 	return b.String()
 }
@@ -454,12 +454,12 @@ func adjudicationRequest(c *code, request string, left int) string {
 			section(&b, "### Decisions", decisionLines(*a.Decisions))
 		}
 	}
-	section(&b, "\n## Findings a revised plan dismissed (raise them again if they still apply)", dismissalLines(c.v.Dismissals))
+	section(&b, "\n## Findings a revised plan dismissed (raise them again if they still apply)", planDismissalLines(c.v.Dismissals))
 	return b.String()
 }
 
-// dismissalLines renders planner dismissals one per line.
-func dismissalLines(dismissals []Dismissal) []string {
+// planDismissalLines renders planner dismissals one per line.
+func planDismissalLines(dismissals []Dismissal) []string {
 	var lines []string
 	for _, d := range dismissals {
 		by := fmt.Sprintf("the plan revised for scope request %d", d.Request)
@@ -485,7 +485,7 @@ func writeFinding(w io.Writer, f Finding) {
 	if f.Location != "" {
 		fmt.Fprintf(w, " at %s", f.Location)
 	}
-	fmt.Fprintf(w, "\n  Evidence: %s\n  Explanation: %s\n  Requested: %s\n", f.Evidence, f.Explanation, f.Outcome)
+	fmt.Fprintf(w, "\n  Evidence: %s\n  Explanation: %s\n  Requested: %s\n", f.Evidence, f.Explanation, f.Requested)
 }
 
 // repairRequest is the one set of changes the implementer is sent back with.
@@ -560,7 +560,7 @@ func validationReport(v *Validation) string {
 			}
 		}
 	}
-	dismissed = append(dismissed, dismissalLines(v.Dismissals)...)
+	dismissed = append(dismissed, planDismissalLines(v.Dismissals)...)
 	section(&b, "\n### Dismissed findings", dismissed)
 	var scope, amendments []string
 	for _, s := range v.Scope {
