@@ -284,6 +284,7 @@
   .cost-list .pager button { padding: 0 4px; }
   .paged { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
   .paged-body { flex: 1; overflow: hidden; }
+  /* fitPages' PAGER_HEIGHT matches this height. */
   .pager { height: 30px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
   .pager button { padding: 1px 6px; }
   .history-row { height: 88px; padding: 5px 0; border-bottom: 1px solid var(--line); overflow: hidden; }
@@ -392,6 +393,8 @@
 const $ = id => document.getElementById(id);
 const app = $('app'), bar = $('status'), note = $('note');
 const followBox = $('follow-box'), followLabel = $('follow-label');
+// How long a tooltip waits before it settles, in ms.
+const TOOLTIP_DELAY = 120;
 // One shared tooltip outside scrolling panels. Delegation survives chart polling.
 const tooltip = {
   target: null, timer: null, at: null, next: null, dismissed: null, quiet: false, size: null,
@@ -434,7 +437,7 @@ const tooltip = {
   leave(next) {
     if (next && (this.target?.contains(next) || $('tooltip').contains(next))) return;
     this.cancel();
-    this.timer = setTimeout(() => this.settle(), 120);
+    this.timer = setTimeout(() => this.settle(), TOOLTIP_DELAY);
   },
   // settle applies the pending switch, or hides when none is pending.
   settle() {
@@ -470,7 +473,7 @@ const tooltip = {
       if (this.at) { this.at = at; this.place(); }
     } else if (this.target && !this.at && target.dataset.tooltipAt === 'pointer') {
       this.next = {target, at};
-      if (!this.timer) this.timer = setTimeout(() => this.settle(), 120);
+      if (!this.timer) this.timer = setTimeout(() => this.settle(), TOOLTIP_DELAY);
     } else {
       this.show(target, at);
     }
@@ -744,6 +747,7 @@ function renderSide() {
 }
 // Rows have bounded previews. Measure their rendered height and the space
 // after headings/forms; reserve the pager only if the whole list won't fit.
+const PAGER_HEIGHT = 30; // matches .pager height in CSS
 function fitPages() {
   for (let pass = 0; pass < 2; pass++) {
     let changed = false;
@@ -758,7 +762,7 @@ function fitPages() {
       // Cost controls share the heading, so paging never takes row space.
       const below = key === 'iterations';
       const available = body.clientHeight + (below && !pager.hidden ? pager.getBoundingClientRect().height : 0);
-      const capacity = Math.max(1, Math.floor((available - (below && state.total * height > available ? 30 : 0)) / height));
+      const capacity = Math.max(1, Math.floor((available - (below && state.total * height > available ? PAGER_HEIGHT : 0)) / height));
       if (capacity !== state.capacity) { state.capacity = capacity; changed = true; }
     }
     if (!changed) break;
@@ -2049,6 +2053,7 @@ function block(p, t, g) {
 // first, then to the left when the next block or track edge prevents that.
 // If neither side has room, the tooltip and accessible name still give its
 // status. Keep every block on the same line, including minimum-width rounds.
+// GAP also matches .block .piece's right inset in CSS.
 const GAP = 3;
 function arrange(blocks, width) {
   const out = blocks.map(() => ({hidden: true}));
