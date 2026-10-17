@@ -116,7 +116,7 @@ func publish(e *run.Entry, r *run.Run, rev *run.Revision, sha string) error {
 	if err != nil {
 		return fmt.Errorf("%w; nothing was pushed, and %s", err, local)
 	}
-	if pr.State != "OPEN" {
+	if !pr.Open() {
 		return fmt.Errorf("pull request %s is %s; nothing was pushed, and %s", rev.PR, strings.ToLower(pr.State), local)
 	}
 	remote, err := workspace.RemoteHead(r.Repo, rev.Branch)
@@ -167,7 +167,7 @@ func publish(e *run.Entry, r *run.Run, rev *run.Revision, sha string) error {
 	if pr, err = workspace.ViewPR(r.Repo, rev.PR); err != nil {
 		return fmt.Errorf("pushed %s to %s, but the pull request could not be read afterwards: %w", short(sha), rev.Branch, err)
 	}
-	if pr.State != "OPEN" {
+	if !pr.Open() {
 		return fmt.Errorf("pushed %s to %s, but pull request %s is now %s", short(sha), rev.Branch, rev.PR, strings.ToLower(pr.State))
 	}
 	return nil

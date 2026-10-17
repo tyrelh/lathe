@@ -56,7 +56,7 @@ func continuePR(e *run.Entry, r *run.Run, c *code, pub *run.Publication, sha, me
 	}
 	// GitHub may not have caught up with the push yet, so only the state is
 	// rechecked here; ownership was checked immediately before.
-	if pr.State != "OPEN" {
+	if !pr.Open() {
 		return "", fmt.Errorf("published %s to %s, but pull request %s is now %s", short(sha), pub.Branch, pub.PR, strings.ToLower(pr.State))
 	}
 	draft := pub.Draft
