@@ -430,10 +430,10 @@ func checkBase(path, baseHash string) (string, error) {
 	return string(b), nil
 }
 
-// SaveFile writes body to home/key atomically under the home's lock. It
-// writes nothing and returns an error wrapping config.ErrConflict when
-// baseHash is not the current file's hash.
-func SaveFile(home, key, body, baseHash string) error {
+// editLocked holds home's lock while it checks that home/key's hash is
+// baseHash and calls fn with the file's path and current body. It returns
+// fn's error, or an error wrapping config.ErrConflict without calling fn.
+func editLocked(home, key, baseHash string, fn func(path, cur string) error) error {
 	path, err := filePath(home, key)
 	if err != nil {
 		return err
@@ -443,10 +443,20 @@ func SaveFile(home, key, body, baseHash string) error {
 		return err
 	}
 	defer unlock()
-	if _, err := checkBase(path, baseHash); err != nil {
+	cur, err := checkBase(path, baseHash)
+	if err != nil {
 		return err
 	}
-	return config.WriteAtomic(path, body)
+	return fn(path, cur)
+}
+
+// SaveFile writes body to home/key atomically under the home's lock. It
+// writes nothing and returns an error wrapping config.ErrConflict when
+// baseHash is not the current file's hash.
+func SaveFile(home, key, body, baseHash string) error {
+	return editLocked(home, key, baseHash, func(path, _ string) error {
+		return config.WriteAtomic(path, body)
+	})
 }
 
 // ResetFile restores home/key to its seed in fsys and records that seed in
@@ -454,31 +464,21 @@ func SaveFile(home, key, body, baseHash string) error {
 // returns an error wrapping config.ErrConflict when baseHash is not the
 // current file's hash.
 func ResetFile(home string, fsys fs.FS, version, key, baseHash string) error {
-	path, err := filePath(home, key)
-	if err != nil {
-		return err
-	}
-	unlock, err := lock(home)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if _, err := checkBase(path, baseHash); err != nil {
-		return err
-	}
-	b, err := fs.ReadFile(fsys, key)
-	if err != nil {
-		return fmt.Errorf("%s has no seed: %w", key, err)
-	}
-	m, err := readManifest(home)
-	if err != nil {
-		return err
-	}
-	if err := config.WriteAtomic(path, string(b)); err != nil {
-		return err
-	}
-	m.Files[key] = entry{config.Hash(string(b)), version}
-	return writeManifest(home, m)
+	return editLocked(home, key, baseHash, func(path, _ string) error {
+		b, err := fs.ReadFile(fsys, key)
+		if err != nil {
+			return fmt.Errorf("%s has no seed: %w", key, err)
+		}
+		m, err := readManifest(home)
+		if err != nil {
+			return err
+		}
+		if err := config.WriteAtomic(path, string(b)); err != nil {
+			return err
+		}
+		m.Files[key] = entry{config.Hash(string(b)), version}
+		return writeManifest(home, m)
+	})
 }
 
 // Settings are the config.yaml fields the dashboard edits.
@@ -494,43 +494,32 @@ type Settings struct {
 // not the current file's hash, or wrapping config.ErrInvalid when the result
 // does not validate. It holds the home's lock from the check to the write.
 func SaveSettings(home, agent string, s Settings, baseHash string) error {
-	path, err := filePath(home, config.AgentFile(agent, "config.yaml"))
-	if err != nil {
-		return err
-	}
-	unlock, err := lock(home)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	cur, err := checkBase(path, baseHash)
-	if err != nil {
-		return err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(cur), &doc); err != nil {
-		return invalidf(path, "%v", err)
-	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
-		return invalidf(path, "not a mapping")
-	}
-	m := doc.Content[0]
-	setScalar(m, "provider", s.Provider)
-	setScalar(m, "model", s.Model)
-	setScalar(m, "thinking", s.Thinking)
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return err
-	}
-	if err := enc.Close(); err != nil {
-		return err
-	}
-	if _, err := parseConfig(agent, path, buf.Bytes()); err != nil {
-		return err
-	}
-	return config.WriteAtomic(path, buf.String())
+	return editLocked(home, config.AgentFile(agent, "config.yaml"), baseHash, func(path, cur string) error {
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(cur), &doc); err != nil {
+			return invalidf(path, "%v", err)
+		}
+		if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+			return invalidf(path, "not a mapping")
+		}
+		m := doc.Content[0]
+		setScalar(m, "provider", s.Provider)
+		setScalar(m, "model", s.Model)
+		setScalar(m, "thinking", s.Thinking)
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(&doc); err != nil {
+			return err
+		}
+		if err := enc.Close(); err != nil {
+			return err
+		}
+		if _, err := parseConfig(agent, path, buf.Bytes()); err != nil {
+			return err
+		}
+		return config.WriteAtomic(path, buf.String())
+	})
 }
 
 // setScalar sets key's value in mapping m to the string value, keeping the
