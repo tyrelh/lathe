@@ -134,6 +134,19 @@ func promptConflict(w http.ResponseWriter, roster func() (config.Config, error),
 	})
 }
 
+// configConflict answers a stale configuration write with the agent's current
+// configuration.
+func configConflict(w http.ResponseWriter, roster func() (config.Config, error), name string) {
+	a, err := findAgent(roster, name, true)
+	if err != nil {
+		submitError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeStatus(w, http.StatusConflict, map[string]any{
+		"error": "this configuration changed since you loaded it", "config": a.Config,
+	})
+}
+
 // saveConfig sets an agent's provider, model and thinking in its config.yaml.
 // A stale base hash is a conflict that answers with the current file and
 // writes nothing; a value that does not validate is refused.
@@ -173,14 +186,7 @@ func saveConfig(mu *sync.Mutex, roster func() (config.Config, error), save func(
 		}
 		err = save(name, strings.TrimSpace(body.Provider), strings.TrimSpace(body.Model), body.Thinking, body.BaseHash)
 		if errors.Is(err, config.ErrConflict) {
-			a, err := findAgent(roster, name, true)
-			if err != nil {
-				submitError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			writeStatus(w, http.StatusConflict, map[string]any{
-				"error": "this configuration changed since you loaded it", "config": a.Config,
-			})
+			configConflict(w, roster, name)
 			return
 		}
 		if errors.Is(err, config.ErrInvalid) {
