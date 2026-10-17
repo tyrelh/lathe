@@ -120,6 +120,21 @@ type scopeLoop struct {
 	requests int
 }
 
+// pendingScope is the scope request being replanned, or nil outside a scope
+// cycle and for a plan-only run's nil c.
+func (c *code) pendingScope() *ScopeRequest {
+	if c == nil {
+		return nil
+	}
+	return c.scope.pending
+}
+
+// awaitingDisposition reports whether r is a recovery whose reviewed plan has
+// not yet been applied to the restored work. A nil c never is.
+func (c *code) awaitingDisposition(r *run.Run) bool {
+	return c != nil && r.Recovery != nil && !c.disposed
+}
+
 // blocked handles a builder's scope request: it saves the report and the
 // request, then sends planning back to the planner, or ends the iteration on
 // a malformed request or once maxScopeSendBacks are spent.
