@@ -1,10 +1,8 @@
 // read.ts — the web_read tool: one public https URL, fetched and returned as
 // markdown for an agent to read.
 //
-// It knows nothing about lathe. No env var, no permit file, no roster: which
-// agents may call it is decided by the --tools list they are spawned with, and
-// what they may read on disk is the guard's business. That is what lets it be
-// lifted out into its own package unchanged.
+// It reads no lathe config: which agents may call it is set by the --tools list
+// they are spawned with, and file access is the guard's business.
 //
 // The address rules keep an agent off this machine and its networks, not off
 // the open web. They are checked at connect time, by the lookup the socket
