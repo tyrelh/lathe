@@ -10,11 +10,10 @@ import (
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
-// The three envelopes below share a division of labour: the agent judges the
-// text, lathe performs the git. Nothing an agent returns here is a claim about
-// work it did, so there is nothing to gate after the fact — lathe ran the
-// action, and no report can lie about having run it. The only checks left are
-// on the proposed text, before it is used.
+// The three envelopes below propose text; lathe runs the git and gh commands
+// itself, so no report can claim the action was done (ADR 0003). Their
+// artifacts are gated like any envelope's, and BranchUsable checks the
+// proposed name before it is used.
 
 // BranchOutput is the name the change lands on.
 type BranchOutput struct {
@@ -128,13 +127,8 @@ func (p *PROutput) Artifacts() []string {
 	return *p.Wrote
 }
 
-// prResult is pr.json: the agent's report plus the URL lathe got back. There is
-// no branch.json or commit.json because the branch name and the commit sha are
-// both recoverable from git and already in the trace; the URL is the one thing
-// here the tree cannot reproduce, which is what earns it a file.
-//
-// Draft and Validation keep an unaccepted change's pull request from reading as
-// an accepted one in anything that reads the file rather than the banner.
+// prResult is pr.json: the agent's report, the pull request URL, and whether it
+// was opened as a draft of unaccepted work and why.
 type prResult struct {
 	*PROutput
 	URL        string `json:"url"`
