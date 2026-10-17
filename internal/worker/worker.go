@@ -6,14 +6,11 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -24,73 +21,6 @@ import (
 	"github.com/tyrelh/lathe/internal/workflow"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
-
-// SpecVersion is stamped into every recorded specification. A worker that
-// does not recognise the version fails the run rather than guessing at it.
-// Version 4 added Base: a writing run executes in a worktree at that commit.
-const SpecVersion = 4
-
-// legacyVersion is the last version whose writing runs executed in the
-// source checkout. Its read-only runs still execute; its writing runs are
-// refused, since nothing recorded which commit they should start from.
-const legacyVersion = 3
-
-// RecoveryVersion is stamped into a recovery's specification. It is a v4
-// specification plus Recovery, which this lathe requires at that version.
-const RecoveryVersion = 5
-
-// Spec is everything about a run that configuration could otherwise change
-// while it waits in the queue: the workflow, the request, where it executes
-// and the effective roster. Repository contents are not in it — a worker reads
-// files when it starts — and neither are the worker's secrets.
-type Spec struct {
-	Version   int              `json:"version"`
-	Workflow  string           `json:"workflow"`
-	Request   string           `json:"request"`
-	Issue     string           `json:"issue,omitempty"`
-	Workspace workspace.Desc   `json:"workspace"`
-	Roster    config.Snapshot  `json:"roster"`
-	Overrides config.Overrides `json:"overrides"`
-	// Base is the commit a writing run's worktree starts from: HEAD at
-	// submission, or the shipped commit a revision extends.
-	Base string `json:"base,omitempty"`
-	// Recovery is set, at RecoveryVersion only, on an engineer's recovery
-	// of a failed, cancelled or lost iteration.
-	Recovery *RecoverySpec `json:"recovery,omitempty"`
-}
-
-// Mode is the execution mode a recorded specification dispatches with:
-// trace.ModeWorktree for a current writing run, trace.ModeCheckout for a
-// read-only one, and trace.ModeReject for a writing run this lathe refuses.
-// A specification it cannot read is trace.ModeCheckout.
-func Mode(spec []byte) string {
-	var s Spec
-	if json.Unmarshal(spec, &s) != nil {
-		return trace.ModeCheckout
-	}
-	mode, _ := s.mode("")
-	if mode == trace.ModeReject && !workflow.Writes[s.Workflow] {
-		return trace.ModeCheckout
-	}
-	return mode
-}
-
-// mode is Mode with the refusal for runID.
-func (s Spec) mode(runID string) (string, error) {
-	writes := workflow.Writes[s.Workflow]
-	current := s.Version == SpecVersion || (s.Version == RecoveryVersion && s.Recovery != nil)
-	switch {
-	case current && writes:
-		return trace.ModeWorktree, nil
-	case (current || s.Version == legacyVersion) && !writes:
-		return trace.ModeCheckout, nil
-	case s.Version == legacyVersion:
-		return trace.ModeReject, fmt.Errorf("run %s was queued by an older lathe (spec v%d) that ran %s in your checkout; "+
-			"this lathe runs it in a worktree of its own and will not guess which commit to start from. "+
-			"Nothing was changed; submit it again", runID, s.Version, s.Workflow)
-	}
-	return trace.ModeReject, fmt.Errorf("run %s was recorded by an incompatible lathe (spec v%d)", runID, s.Version)
-}
 
 // Timings are chosen together: the lease must outlast a heartbeat outage long
 // enough for a worker to notice, stop its subprocesses and exit before the
@@ -285,7 +215,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	if spec.Workflow == workflow.NameRevise {
 		// Rechecked under the claim, against origin: the pull request had
 		// people around it the whole time the request waited.
-		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path, out); err != nil {
+		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path); err != nil {
 			return 0, "", "", err
 		}
 		// Saved work applies only at the head it was made on; a moved head
@@ -457,78 +387,6 @@ func (l launches) Register(id string, reg process.Registration) error {
 
 func (l launches) Drained(id string) error { return l.db.DrainLaunch(id) }
 
-// Settle preserves what an iteration's worktree holds and removes it. With
-// keepPatch, everything beyond the base is saved as result.patch in the
-// iteration's report directory; commits nothing else reaches are kept under
-// the iteration's recovery ref either way. It records the cleanup state:
-// removed on success, pending with the error otherwise, in which case the
-// worktree is left in place. The worktree's writers must have stopped.
-func Settle(db *trace.DB, dataRoot string, w trace.Worktree, keepPatch bool) error {
-	if err := db.SetWorktreeState(w.RunID, w.Iteration, trace.WorktreeCleaning, ""); err != nil {
-		return err
-	}
-	if err := settle(db, dataRoot, w, protectedPaths(w.Spec), keepPatch); err != nil {
-		if serr := db.SetWorktreeState(w.RunID, w.Iteration, trace.WorktreePending, err.Error()); serr != nil {
-			return errors.Join(err, serr)
-		}
-		return err
-	}
-	return db.SetWorktreeState(w.RunID, w.Iteration, trace.WorktreeRemoved, "")
-}
-
-func settle(db *trace.DB, dataRoot string, w trace.Worktree, protected []string, keepPatch bool) error {
-	if want := workspace.WorktreePath(dataRoot, w.RunID, w.Iteration); w.Path != want {
-		return fmt.Errorf("the recorded worktree %s is not where lathe creates %s's iteration %d; it was left alone", w.Path, w.RunID, w.Iteration)
-	}
-	fi, err := os.Lstat(w.Path)
-	if err == nil && w.Base == "" {
-		return fmt.Errorf("%s exists but its base commit was never recorded, so its work cannot be exported; it was left alone", w.Path)
-	}
-	switch {
-	case err == nil && fi.IsDir():
-		outcome := trace.PreservedSkipped
-		if keepPatch {
-			dest := filepath.Join(ReportDir(dataRoot, w.RunID, w.Iteration), run.PatchFile)
-			wrote, err := workspace.SavePatch(w.Path, w.Base, dest, protected)
-			if err != nil {
-				return fmt.Errorf("saving the result patch: %w; the worktree is kept at %s", err, w.Path)
-			}
-			outcome = trace.PreservedPatch
-			if !wrote {
-				dest, outcome = "", trace.PreservedEmpty
-			}
-			if err := db.SetPatch(w.RunID, w.Iteration, dest); err != nil {
-				return err
-			}
-		}
-		// Recorded before the worktree is removed, so removal never stands
-		// in for evidence of what it held.
-		if err := db.SetPreservation(w.RunID, w.Iteration, outcome); err != nil {
-			return err
-		}
-		ref, err := workspace.PreserveHead(w.Path, w.Base, workspace.RecoveryRef(w.RunID, w.Iteration))
-		if err != nil {
-			return fmt.Errorf("keeping the worktree's commits: %w; the worktree is kept at %s", err, w.Path)
-		}
-		if ref != "" {
-			if err := db.SetRecoveryRef(w.RunID, w.Iteration, ref); err != nil {
-				return err
-			}
-		}
-	case errors.Is(err, fs.ErrNotExist):
-		// Nothing to export. A worktree still being created held no work; one
-		// that existed and is gone lost whatever it held.
-		outcome := trace.PreservedMissing
-		if w.State == trace.WorktreeCreating {
-			outcome = trace.PreservedUnstarted
-		}
-		if err := db.SetPreservation(w.RunID, w.Iteration, outcome); err != nil {
-			return err
-		}
-	}
-	return workspace.RemoveWorktree(dataRoot, w.Repo, w.RunID, w.Iteration)
-}
-
 // revalidate refuses a run whose source checkout is no longer on the branch
 // row was submitted against.
 func revalidate(spec Spec, row trace.Row) error {
@@ -588,56 +446,6 @@ func beat(ctx context.Context, db *trace.DB, attemptID, token string, stop conte
 	return done
 }
 
-// Models is the provider and model a recorded specification assigned each
-// agent, which is the part of an iteration's configuration a reader compares.
-// An unreadable specification has none.
-func Models(spec []byte) map[string]string {
-	var s Spec
-	if json.Unmarshal(spec, &s) != nil {
-		return nil
-	}
-	models := map[string]string{}
-	for name, a := range s.Roster.Agents {
-		models[name] = a.Provider + "/" + a.Model
-	}
-	return models
-}
-
-// IterationView is one iteration with the models its recorded configuration
-// assigned each agent.
-type IterationView struct {
-	trace.Iteration
-	Models map[string]string `json:"models"`
-}
-
-// IterationViews returns its as IterationViews, never nil.
-func IterationViews(its []trace.Iteration) []IterationView {
-	views := make([]IterationView, len(its))
-	for i, it := range its {
-		views[i] = IterationView{it, Models(it.Spec)}
-	}
-	return views
-}
-
-// protectedPaths is the protected-path list a recorded specification carries.
-func protectedPaths(spec []byte) []string {
-	var s Spec
-	if json.Unmarshal(spec, &s) != nil {
-		return nil
-	}
-	return s.Roster.Protected
-}
-
-// Marshal is how the submitter records a specification.
-func (s Spec) Marshal() ([]byte, error) { return json.Marshal(s) }
-
-func unmarshalSpec(b []byte, s *Spec) error {
-	if len(b) == 0 {
-		return errors.New("this run has no recorded execution specification")
-	}
-	return json.Unmarshal(b, s)
-}
-
 // signals turns SIGINT and SIGTERM into a cancellation. It reuses the
 // cancellation path the design already needs rather than adding a second
 // shutdown route, and it keeps a killed worker from leaving a lost run that
@@ -655,18 +463,6 @@ func signals(ctx context.Context, stop context.CancelFunc) {
 	}()
 }
 
-// ReportDir is where one iteration's reports live. The first iteration's are
-// the run directory itself, which is where readers have always looked; each
-// revision gets its own beside it, so a new plan or validation report never
-// overwrites an earlier one.
-func ReportDir(dataRoot, runID string, iteration int) string {
-	dir := filepath.Join(dataRoot, "runs", runID)
-	if iteration > 0 {
-		dir = filepath.Join(dir, fmt.Sprintf("iteration-%d", iteration))
-	}
-	return dir
-}
-
 // priors returns the run's iterations before row.Iteration as run.Prior.
 func priors(db *trace.DB, dataRoot string, row trace.Row) ([]run.Prior, error) {
 	its, err := db.Iterations(row.ID)
@@ -680,72 +476,4 @@ func priors(db *trace.DB, dataRoot string, row trace.Row) ([]run.Prior, error) {
 		}
 	}
 	return out, nil
-}
-
-// Evidence is what a run's records establish about the pull request it
-// opened: its URL from pr.json, and the branch and commit the run row says it
-// shipped. A run from before revisions qualifies when its records have all
-// three. Nothing is inferred from the pull request as it is now: a URL alone
-// does not say the branch is still what lathe left there.
-func Evidence(dataRoot string, row trace.Row) (workspace.Evidence, error) {
-	if row.Workflow != workflow.NameBuild {
-		return workspace.Evidence{}, fmt.Errorf("%s is a %s run; only a build opens a pull request to revise", row.ID, row.Workflow)
-	}
-	// The iteration that opened the pull request owns it: the first, or a
-	// recovery of it that published.
-	url, _, _ := prRecord(dataRoot, row)
-	if url == "" {
-		return workspace.Evidence{}, fmt.Errorf("%s has no recorded pull request (pr.json in %s or an iteration of it): it never opened one, or its record is gone",
-			row.ID, ReportDir(dataRoot, row.ID, 0))
-	}
-	ev := workspace.Evidence{PR: url, Branch: row.Branch, Commit: row.Commit}
-	if ev.Branch == "" || ev.Commit == "" {
-		return ev, fmt.Errorf("%s does not record the branch and commit it shipped to %s, so lathe cannot tell whether that branch is still as it left it", row.ID, url)
-	}
-	return ev, nil
-}
-
-// revisionOf establishes, under the worker's claim, everything a revision
-// inherits: the pull request and origin checks the submitter ran, again; the
-// shipped commit, fetched and verified; the pull request's base, fetched for
-// its diff; and the earlier iterations. git and gh run in repo, whose own
-// state is not checked.
-func revisionOf(db *trace.DB, dataRoot string, row trace.Row, repo string, out io.Writer) (*run.Revision, error) {
-	ev, err := Evidence(dataRoot, row)
-	if err != nil {
-		return nil, err
-	}
-	pr, err := workspace.CheckRevisable(repo, ev)
-	if err != nil {
-		return nil, fmt.Errorf("%w; nothing was changed", err)
-	}
-	fetched, err := workspace.FetchBranch(repo, ev.Branch)
-	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w; nothing was changed", ev.Branch, err)
-	}
-	if fetched != ev.Commit {
-		return nil, fmt.Errorf("%w; nothing was changed", workspace.BranchChanged(ev.Branch, fetched, ev.Commit))
-	}
-	// The planner's branch diff is taken against origin's base; a stale or
-	// missing one would describe the wrong change.
-	if _, err := workspace.FetchBranch(repo, pr.Base); err != nil {
-		return nil, fmt.Errorf("fetching %s, the pull request's base: %w; nothing was changed", pr.Base, err)
-	}
-	prior, err := priors(db, dataRoot, row)
-	if err != nil {
-		return nil, err
-	}
-	return &run.Revision{PR: ev.PR, Branch: ev.Branch, Base: pr.Base, Head: ev.Commit, Prior: prior}, nil
-}
-
-// AttemptDir is where one attempt's raw stream, guard, scope and Pi session
-// live. Reports stay in the iteration's report directory, which is where
-// readers look for them.
-func AttemptDir(dataRoot, runID, attemptID string) string {
-	return filepath.Join(dataRoot, "runs", runID, attemptID)
-}
-
-// LogPath is the per-attempt worker log the manager redirects output to.
-func LogPath(dataRoot, runID, attemptID string) string {
-	return filepath.Join(AttemptDir(dataRoot, runID, attemptID), "worker.log")
 }
