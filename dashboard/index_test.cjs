@@ -917,8 +917,7 @@ const costs = () => nodes.get('costs').innerHTML;
   assert.equal(spent().find(m => m.model === 'b/c')?.cost, 0.35);
   assert.equal(spent().find(m => m.model === 'shared')?.cost, 0.25, 'shared spending is aggregated across providers');
   assert.equal(spent().find(m => m.model === 'unknown')?.cost, 0.05, 'unknown models are aggregated across providers');
-  assert.deepEqual(spent().map(m => m.model), [...spent()].sort((a,b) => b.cost - a.cost ||
-    (a.model < b.model ? -1 : a.model > b.model ? 1 : 0)).map(m => m.model));
+  assert.deepEqual(spent().map(m => m.model), ['b/c', 'c', 'shared', 'unknown', '<m>', 'free']);
 
   const finalCosts = costs();
   assert(!finalCosts.includes('Loading usage…') && !finalCosts.includes('No usage recorded.'), finalCosts);
