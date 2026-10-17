@@ -426,6 +426,37 @@ func (r *Run) enforce(h *Handle) ([]string, error) {
 	return r.sweep(h)
 }
 
+// freeze stops enforce from touching the tree until the returned thaw is
+// called.
+func (r *Run) freeze() (thaw func()) {
+	r.mu.Lock()
+	r.frozen = true
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		r.frozen = false
+		r.mu.Unlock()
+	}
+}
+
+// settle returns the paths changed since the before fingerprint, logging them
+// on h, then sweeps h's scope. Evidence comes first, cleanup second: the sweep
+// reverts a changed file that nobody accepted, and after it the change would
+// be gone. mutated is nil when the fingerprint comparison fails.
+func (r *Run) settle(h *Handle, before map[string]string) (mutated []string, err error) {
+	mutated, err = permit.Mutations(r.Repo, before)
+	if err != nil {
+		return nil, err
+	}
+	if len(mutated) > 0 {
+		_ = h.Log("mutated", strings.Join(mutated, "\n"))
+	}
+	r.mu.Lock()
+	_, err = r.sweep(h)
+	r.mu.Unlock()
+	return mutated, err
+}
+
 // sweep reverts whatever neither h's scope nor an earlier phase accepted, and
 // reports what it reverted. The caller holds mu.
 func (r *Run) sweep(h *Handle) ([]string, error) {
