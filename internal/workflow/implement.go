@@ -98,11 +98,9 @@ func ChangesMatchClaim(e run.Envelope, r *run.Run) []string {
 	return v
 }
 
-// implementRequest is the handoff: the request, plus the plan the builder is
-// held to, with any amendments the adjudicator has made to it since. It renders
-// through the same section helper printPlan uses, so what the builder is told
-// and what the engineer was shown cannot drift apart. Every list is non-nil
-// because the plan phase's Validate has already accepted it.
+// implementRequest renders the builder's handoff: the request, the accepted
+// plan's summary, steps, allowed files and risks, and any amendments. Every
+// plan list must be non-nil.
 func implementRequest(request string, plan *PlanOutput, amendments []Amendment) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Request\n\n%s\n\n## Accepted plan\n\n%s\n", request, *plan.Summary)
