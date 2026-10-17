@@ -43,9 +43,9 @@ func TestSubmitRecoveryRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, tc := range map[string]struct {
-		id, guidance string
-		o            worker.ResumeOptions
-		recoverable  bool
+		id, guidance   string
+		o              worker.ResumeOptions
+		notRecoverable bool
 	}{
 		"no guidance": {ok, "  ", worker.ResumeOptions{}, false},
 		"active":      {active, "go on", worker.ResumeOptions{}, true},
@@ -54,7 +54,7 @@ func TestSubmitRecoveryRefusals(t *testing.T) {
 		"unknown run": {"build_nope", "go on", worker.ResumeOptions{}, false},
 	} {
 		_, err := submitRecovery(db, dataRoot, tc.id, tc.guidance, tc.o, io.Discard)
-		if err == nil || errors.Is(err, trace.ErrNotRecoverable) != tc.recoverable {
+		if err == nil || errors.Is(err, trace.ErrNotRecoverable) != tc.notRecoverable {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

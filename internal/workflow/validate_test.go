@@ -732,7 +732,7 @@ func TestAdjudicationOutputValidate(t *testing.T) {
 	if v := (&AdjudicationOutput{}).Validate(); len(v) != 8 {
 		t.Fatalf("violations: %v", v)
 	}
-	summary, empty := "s", ""
+	summary := "s"
 	decisions := []Decision{{"general-1.1", "fix", "r"}}
 	none, noScope, noAmend := []string{}, []ScopeAddition{}, []Amendment{}
 	for _, tc := range []struct {
@@ -749,7 +749,6 @@ func TestAdjudicationOutputValidate(t *testing.T) {
 			t.Fatalf("%s %q: %v", tc.verdict, tc.changes, v)
 		}
 	}
-	_ = empty
 }
 
 func TestCodeReviewOutputValidate(t *testing.T) {

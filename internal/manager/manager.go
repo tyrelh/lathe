@@ -25,9 +25,10 @@ import (
 // invisible next to an agent turn, and polling costs one indexed query.
 const poll = time.Second
 
-// LogFile is the manager's own log, beside the per-attempt worker logs,
-// because "why is nothing running" has to be answerable.
-const LogFile = "manager.log"
+// logFile is the manager's own log, at the top of the data root above the
+// per-attempt worker logs, because "why is nothing running" has to be
+// answerable.
+const logFile = "manager.log"
 
 // Capacity is how many runs may execute at once, from LATHE_CAPACITY.
 func Capacity() int {

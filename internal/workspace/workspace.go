@@ -98,7 +98,7 @@ func Acquire(dataRoot, repo string) (*Lock, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, Key(repo)+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, lockName(repo)+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -120,9 +120,8 @@ func (l *Lock) Release() error {
 	return f.Close()
 }
 
-// Key is the filesystem-safe name a path locks under, and the same function
-// the manager log and attempt directories use to name a checkout.
-func Key(path string) string {
+// lockName is the filesystem-safe lock file name for path.
+func lockName(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	return filepath.Base(path) + "-" + hex.EncodeToString(sum[:4])
 }

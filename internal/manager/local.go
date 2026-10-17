@@ -106,7 +106,7 @@ func Start(dataRoot string) error {
 	return cmd.Process.Release()
 }
 
-func logPath(dataRoot string) string { return filepath.Join(dataRoot, LogFile) }
+func logPath(dataRoot string) string { return filepath.Join(dataRoot, logFile) }
 
 var (
 	_ Launcher    = Local{}

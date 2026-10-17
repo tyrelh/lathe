@@ -16,8 +16,7 @@ func open(t *testing.T) *DB {
 	return db
 }
 
-// submit records a run the way the CLI does, including the exclusivity the
-// workflow package would have set for a writing workflow.
+// submit records a run the way the CLI does.
 func submit(t *testing.T, db *DB, workflow, repo string) string {
 	t.Helper()
 	id, err := db.Submit(Request{
@@ -28,10 +27,6 @@ func submit(t *testing.T, db *DB, workflow, repo string) string {
 	}
 	return id
 }
-
-// writes stands in for workflow.Writes, which trace cannot import and is not
-// supposed to know about.
-func writes(workflow string) bool { return workflow == "build" || workflow == "implement" }
 
 // dispatch takes a queued run to running the way the manager and a worker do.
 func dispatch(t *testing.T, db *DB, runID string) (attempt, token string) {
