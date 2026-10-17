@@ -842,10 +842,10 @@ function navigate() {
   history.replaceState({at: viewAt}, '');
   generation++;
   resetPageState();
-  // A project page is built once, as three parts: polling redraws the summary
-  // and the runs around the form, so a draft and its focus survive.
   $('follow-home').appendChild(followLabel);
   if ($('reader').open) $('reader').close();
+  // Rebuilt even for the same page type: another run or project must not
+  // keep the last one's markup.
   app.dataset.page = view.page;
   app.innerHTML = pageShell(view.page);
   bar.textContent = '';
@@ -991,14 +991,10 @@ async function loadOverview(current) {
   stamp();
 }
 
-// attribution says what the model ranking cannot account for. Shares are of
-// total recorded spend, so ten rows are not expected to reach 100%.
+// attribution is the escaped note under the model ranking: shares are of
+// total recorded spend, counted per phase.
 function attribution(o) {
-  // Counted per phase, not per run: a phase runs on one model, while a run
-  // moves between agents and spends on several.
-  const parts = [`Share is of ${money(o.cost)} total recorded spend, counted per
-    phase — one run's phases can each name a different model.`];
-  return esc(parts.join(' ').replace(/\s+/g, ' '));
+  return esc(`Share is of ${money(o.cost)} total recorded spend, counted per phase — one run's phases can each name a different model.`);
 }
 
 async function loadProjects(current) {
@@ -1322,6 +1318,9 @@ async function loadProject(current) {
   renderProject();
 }
 
+// projectShell is a project page's markup, built once as three parts: polling
+// redraws the summary and the runs around the form, so a draft and its focus
+// survive.
 function projectShell(repo) {
   return `<div class="page"><div id="project-head" class="card page-summary project-summary"></div>
     <div class="workspace project-workspace">${panel('project-runs', 'runs')}<form id="new-run" class="card" onsubmit="submitRun(event)">
