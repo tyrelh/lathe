@@ -385,11 +385,10 @@ func TestDismissalArtifacts(t *testing.T) {
 	later := t.TempDir()
 	writeResult(later, "dismissals.json", []Dismissal{d})
 	writeResult(later, "disposition.json", &Disposition{Dismissed: []Dismissal{d}})
-	var c code
-	got := recoveryContext(&run.Run{Recovery: &run.Recovery{Guidance: "g", Source: 1, Failure: "fail",
-		Prior: []run.Prior{{Iteration: 0, Dir: first}, {Iteration: 1, Dir: later}}}}, &c)
-	if n := strings.Count(got, "ONCE-REASON"); n != 1 || len(c.outstanding) != 0 {
-		t.Fatalf("dismissal rendered %d times, outstanding %+v:\n%s", n, c.outstanding, got)
+	got, outstanding := recoveryContext(&run.Run{Recovery: &run.Recovery{Guidance: "g", Source: 1, Failure: "fail",
+		Prior: []run.Prior{{Iteration: 0, Dir: first}, {Iteration: 1, Dir: later}}}}, true)
+	if n := strings.Count(got, "ONCE-REASON"); n != 1 || len(outstanding) != 0 {
+		t.Fatalf("dismissal rendered %d times, outstanding %+v:\n%s", n, outstanding, got)
 	}
 }
 
@@ -472,17 +471,16 @@ func TestRecoveryContext(t *testing.T) {
 
 	r := &run.Run{Recovery: &run.Recovery{Guidance: "USE-THE-FEEDBACK", Source: 0, Failure: "fail: scope",
 		Restored: []string{"hello.txt"}, Prior: []run.Prior{{Iteration: 0, Dir: dir}}}}
-	var c code
-	got := recoveryContext(r, &c)
+	got, outstanding := recoveryContext(r, true)
 	for _, want := range []string{"USE-THE-FEEDBACK", "fail: scope", "Prior plan", "PRIOR-PLAN", "BLOCKED-FOR-SCOPE", "extra.txt", "STILL-LOUD", "hello.txt", "are prior"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("context missing %q:\n%s", want, got)
 		}
 	}
-	if len(c.outstanding) != 1 || c.outstanding[0].Ref != "general-1.1" {
-		t.Fatalf("outstanding = %+v", c.outstanding)
+	if len(outstanding) != 1 || outstanding[0].Ref != "general-1.1" {
+		t.Fatalf("outstanding = %+v", outstanding)
 	}
-	if recoveryContext(&run.Run{}, nil) != "" {
+	if got, _ := recoveryContext(&run.Run{}, false); got != "" {
 		t.Fatal("context for an ordinary iteration")
 	}
 }

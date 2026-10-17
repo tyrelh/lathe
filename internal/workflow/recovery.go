@@ -84,12 +84,15 @@ func continuePR(e *run.Entry, r *run.Run, c *code, pub *run.Publication, sha, me
 
 // recoveryContext is what the first planner or scout turn of a recovery is
 // told beyond the original request: the guidance, how the source iteration
-// ended, its prior reports, and the work restored into the tree. It is "" for
-// any other iteration.
-func recoveryContext(r *run.Run, c *code) string {
+// ended, its prior reports, and the work restored into the tree. With
+// withOutstanding it also renders and returns the prior validation's findings
+// still outstanding, each stamped with the iteration that raised it;
+// outstanding is nil when there is no usable prior validation. context is ""
+// for any other iteration.
+func recoveryContext(r *run.Run, withOutstanding bool) (context string, outstanding []Finding) {
 	rec := r.Recovery
 	if rec == nil {
-		return ""
+		return "", nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n\n## Recovery of iteration %d\n\nAn engineer resumed this run after iteration %d ended (%s). "+
@@ -147,15 +150,15 @@ func recoveryContext(r *run.Run, c *code) string {
 		}
 		dismissed := dismissalsOf(rec.Prior, &v, source)
 		section(&b, "Findings a revised plan dismissed", planDismissalLines(dismissed))
-		if c != nil {
-			c.outstanding = outstandingOf(&v, dismissed)
-			for i := range c.outstanding {
-				c.outstanding[i].From = &source
+		if withOutstanding {
+			outstanding = outstandingOf(&v, dismissed)
+			for i := range outstanding {
+				outstanding[i].From = &source
 			}
 		}
 	}
-	if c != nil && len(c.outstanding) > 0 {
-		findingSection(&b, "### Outstanding findings from prior validation", c.outstanding)
+	if len(outstanding) > 0 {
+		findingSection(&b, "### Outstanding findings from prior validation", outstanding)
 		b.WriteString("\nCarry these forward, or dismiss in `dismissals` any the new approach makes moot.\n")
 	}
 	section(&b, "### Work restored into the tree from the prior iteration", rec.Restored)
@@ -165,7 +168,7 @@ func recoveryContext(r *run.Run, c *code) string {
 	if len(rec.Restored) > 0 {
 		b.WriteString("\nEvery restored path must stay in `files` or be abandoned in `reversals`.\n")
 	}
-	return b.String()
+	return b.String(), outstanding
 }
 
 // priorIteration is the iteration whose reports are in dir.

@@ -55,7 +55,8 @@ func Scout(r *run.Run) int {
 		func(e *run.Entry) (string, error) { return "", e.Log("request", r.Request) })
 	g.Add(run.Node{Name: "scout", Owner: "scout"}, func(e *run.Entry) (string, error) {
 		// A recovery rescouts read-only, with the prior evidence and guidance.
-		if err := e.Call(&out, r.Request+recoveryContext(r, nil), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
+		carried, _ := recoveryContext(r, false)
+		if err := e.Call(&out, r.Request+carried, run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 			return "", err
 		}
 		return "", writeResult(r.Dir, run.ResultFile, &out)
