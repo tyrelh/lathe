@@ -165,6 +165,31 @@ func Newer(version, recorded string) bool {
 	return false
 }
 
+// fileState is how a seeded file on disk relates to its seed and to the seed
+// recorded for it.
+type fileState int
+
+const (
+	matchesSeed fileState = iota // the file is the current seed
+	untouched                    // the file is the recorded seed, which the current seed replaces
+	edited                       // the file was edited since the current seed was recorded
+	drifted                      // the file was edited and its seed changed since
+)
+
+// classify returns the state of a file whose hash is cur, given the current
+// seed's hash and the manifest entry recorded for it, if any.
+func classify(cur, seed string, rec entry, recorded bool) fileState {
+	switch {
+	case cur == seed:
+		return matchesSeed
+	case recorded && cur == rec.Hash:
+		return untouched
+	case recorded && seed == rec.Hash:
+		return edited
+	}
+	return drifted
+}
+
 // Seed writes every file in fsys missing from home, replaces each file that
 // still matches its recorded seed when fsys carries a different seed and
 // version is newer than the recorded one, and leaves every other file alone.
@@ -196,43 +221,48 @@ func Seed(home string, fsys fs.FS, version string) (Report, error) {
 		path := filepath.Join(home, filepath.FromSlash(rel))
 		cur, err := os.ReadFile(path)
 		rec, recorded := m.Files[rel]
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
+		record := func() { m.Files[rel], changed = entry{seedHash, version}, true }
+		if errors.Is(err, fs.ErrNotExist) {
 			if err := config.WriteAtomic(path, seed); err != nil {
 				return r, err
 			}
-			m.Files[rel], changed = entry{seedHash, version}, true
+			record()
 			r.Written = append(r.Written, rel)
-		case err != nil:
+			continue
+		}
+		if err != nil {
 			return r, err
-		default:
-			curHash := config.Hash(string(cur))
-			switch {
-			case curHash == seedHash:
-				if !recorded || rec.Hash != seedHash {
-					m.Files[rel], changed = entry{seedHash, version}, true
-				}
-			case recorded && curHash == rec.Hash:
-				if !Newer(version, rec.Version) {
-					break
-				}
-				// An editor that does not take the lock may have written since
-				// the first read; an edit is never replaced.
-				if again, err := os.ReadFile(path); err != nil || config.Hash(string(again)) != rec.Hash {
-					if err != nil && !errors.Is(err, fs.ErrNotExist) {
-						return r, err
-					}
-					r.Drift = append(r.Drift, rel)
-					break
-				}
-				if err := config.WriteAtomic(path, seed); err != nil {
-					return r, err
-				}
-				m.Files[rel], changed = entry{seedHash, version}, true
-				r.Replaced = append(r.Replaced, rel)
-			case !recorded || seedHash != rec.Hash:
-				r.Drift = append(r.Drift, rel)
+		}
+		switch classify(config.Hash(string(cur)), seedHash, rec, recorded) {
+		case matchesSeed:
+			if !recorded || rec.Hash != seedHash {
+				record()
 			}
+		case untouched:
+			if !Newer(version, rec.Version) {
+				break
+			}
+			// An editor that does not take the lock may have written since
+			// the first read; an edit is never replaced, and a deletion counts
+			// as an edit.
+			again, err := os.ReadFile(path)
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				r.Drift = append(r.Drift, rel)
+				continue
+			case err != nil:
+				return r, err
+			case config.Hash(string(again)) != rec.Hash:
+				r.Drift = append(r.Drift, rel)
+				continue
+			}
+			if err := config.WriteAtomic(path, seed); err != nil {
+				return r, err
+			}
+			record()
+			r.Replaced = append(r.Replaced, rel)
+		case drifted:
+			r.Drift = append(r.Drift, rel)
 		}
 	}
 	if changed {
@@ -388,10 +418,10 @@ func Open(home string, fsys fs.FS, version string) (config.Config, error) {
 			continue
 		}
 		f.Seed = string(b)
-		cur, seed := config.Hash(f.Body), config.Hash(f.Seed)
-		f.Edited = cur != seed
 		rec, ok := m.Files[key]
-		f.Drift = f.Edited && (!ok || (cur != rec.Hash && seed != rec.Hash))
+		st := classify(config.Hash(f.Body), config.Hash(f.Seed), rec, ok)
+		f.Edited = st != matchesSeed
+		f.Drift = st == drifted
 		c.Files[key] = f
 	}
 	return c, nil
