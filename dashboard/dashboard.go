@@ -43,6 +43,20 @@ var hosts = map[string]bool{Addr: true, "localhost:4700": true}
 // configuration, checkout and issue handling out of this package.
 type Submit func(workflow, repo, prompt, issue string) (string, error)
 
+// SavePrompt writes the configuration file at key unless baseHash is stale.
+type SavePrompt func(key, body, baseHash string) error
+
+// ResetPrompt restores the configuration file at key to its seed unless
+// baseHash is stale.
+type ResetPrompt func(key, baseHash string) error
+
+// SaveConfig sets an agent's provider, model and thinking unless baseHash is
+// stale.
+type SaveConfig func(agent, provider, model, thinking, baseHash string) error
+
+// Roster loads the agent roster and its prompts.
+type Roster func() (config.Config, error)
+
 // Actions are the dashboard's writes, each the CLI's own path handed in by the
 // manager: Submit queues a run, Revise appends an iteration to one and returns
 // its number, Cancel asks one to stop and returns its status. SavePrompt writes
@@ -55,16 +69,16 @@ type Actions struct {
 	Revise      func(runID, request string) (int, error)
 	Resume      func(runID, guidance string) (int, error)
 	Cancel      func(runID string) (string, error)
-	SavePrompt  func(key, body, baseHash string) error
-	ResetPrompt func(key, baseHash string) error
-	SaveConfig  func(agent, provider, model, thinking, baseHash string) error
+	SavePrompt  SavePrompt
+	ResetPrompt ResetPrompt
+	SaveConfig  SaveConfig
 }
 
 // Sources are the dashboard's reads from outside the trace database, each
 // called per request: Roster loads the agent roster and its prompts. A nil
 // source registers no route.
 type Sources struct {
-	Roster func() (config.Config, error)
+	Roster Roster
 }
 
 // eventPage is the per-poll event cap; index.html's PAGE must match.
@@ -211,7 +225,7 @@ func (a agentView) prompt(role string) (config.Prompt, bool) {
 
 // agentViews loads the roster and returns its agents and routing phases in
 // Prompts order, with bodies when bodies is set.
-func agentViews(roster func() (config.Config, error), bodies bool) ([]agentView, error) {
+func agentViews(roster Roster, bodies bool) ([]agentView, error) {
 	c, err := roster()
 	if err != nil {
 		return nil, err
@@ -241,7 +255,7 @@ var errNoAgent = errors.New("no such agent")
 
 // findAgent loads the roster and returns the named agent or routing phase,
 // with bodies when bodies is set.
-func findAgent(roster func() (config.Config, error), name string, bodies bool) (agentView, error) {
+func findAgent(roster Roster, name string, bodies bool) (agentView, error) {
 	agents, err := agentViews(roster, bodies)
 	if err != nil {
 		return agentView{}, err
