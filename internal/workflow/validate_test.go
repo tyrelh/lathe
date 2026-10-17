@@ -646,23 +646,8 @@ func TestCancelDuringValidationPublishesNothing(t *testing.T) {
 	stub := codeStub(t)
 	write(t, filepath.Join(stub, "code-review-slop.sh"), "touch "+filepath.Join(stub, "reviewing")+"; sleep 30\n")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := cancelOnFile(t, filepath.Join(stub, "reviewing"), 10*time.Second, nil)
 	defer cancel()
-	go func() {
-		deadline := time.After(10 * time.Second)
-		for {
-			select {
-			case <-deadline:
-				cancel()
-				return
-			case <-time.After(10 * time.Millisecond):
-				if _, err := os.Stat(filepath.Join(stub, "reviewing")); err == nil {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
 	start := time.Now()
 	if code := executeWith(t, cfg, "build", repo, "greet the world", ctx, &strings.Builder{}); code != 1 {
 		t.Fatalf("code = %d", code)

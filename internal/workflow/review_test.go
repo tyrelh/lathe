@@ -233,35 +233,12 @@ else
   sleep 30
 fi
 `, dir))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := cancelOnFile(t, filepath.Join(dir, "reviewing"), 5*time.Second, nil)
 	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		deadline := time.NewTimer(5 * time.Second)
-		defer deadline.Stop()
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-deadline.C:
-				cancel()
-				return
-			case <-ticker.C:
-				if _, err := os.Stat(filepath.Join(dir, "reviewing")); err == nil {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
 	var output strings.Builder
 	if code := executeWith(t, cfg, "plan", repo, "retry", ctx, &output); code != 1 {
 		t.Fatalf("exit %d: %s", code, &output)
 	}
-	<-done
 	if !strings.Contains(output.String(), "context canceled") {
 		t.Fatalf("lost cancellation: %s", &output)
 	}
