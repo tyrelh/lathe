@@ -190,6 +190,9 @@ func TestScoutFailsOnGateViolation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(latestRunDir(t), "result.json")); err == nil {
 		t.Fatal("result.json was written for a failed run")
 	}
+	if row := latestRun(t); row.Status != trace.StatusFail || !strings.Contains(row.Reason, "invented.md") {
+		t.Fatalf("run = %s %q; want fail naming the gate violation", row.Status, row.Reason)
+	}
 }
 
 func latestRunDir(t *testing.T) string {
