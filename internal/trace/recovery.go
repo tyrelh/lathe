@@ -41,7 +41,7 @@ func Recoverable(row Row) error {
 type Recovery struct {
 	Source   int    // the iteration inspected and continued
 	Kind     string // KindRecovery or KindRestart
-	Request  string // the original resolved task
+	Resolved string // the run's resolved task
 	Guidance string
 	Spec     []byte
 }
@@ -79,7 +79,7 @@ func (d *DB) Recover(runID string, rec Recovery) (int, error) {
 	if _, err := tx.Exec(
 		`INSERT INTO iterations (run_id, iteration, request, spec, status, submitted_at, kind, source_iteration, guidance, resolved_request)
 		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
-		runID, next, rec.Guidance, string(rec.Spec), at, rec.Kind, rec.Source, rec.Guidance, nullIfEmpty(rec.Request)); err != nil {
+		runID, next, rec.Guidance, string(rec.Spec), at, rec.Kind, rec.Source, rec.Guidance, nullIfEmpty(rec.Resolved)); err != nil {
 		return 0, err
 	}
 	res, err := tx.Exec(
