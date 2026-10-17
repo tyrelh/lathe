@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -99,31 +98,8 @@ func TestCaptureReadsDotLathe(t *testing.T) {
 // database property and is tested as one — this is here to prove the launcher
 // is not lying about any of it.
 func TestEndToEnd(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a manager and a worker")
-	}
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("no go toolchain to build the binary with")
-	}
-
 	home := t.TempDir()
-	bin := filepath.Join(home, "lathe")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("building lathe: %v\n%s", err, out)
-	}
-	// The manager and its workers outlive the submitter by design, so the test
-	// is what has to stop them, and wait for them before the temp dir they
-	// write to is removed. The binary path is unique to this test, which is
-	// what makes this safe to match on.
-	t.Cleanup(func() {
-		exec.Command("pkill", "-f", bin+" ").Run()
-		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			if exec.Command("pgrep", "-f", bin+" ").Run() != nil {
-				return
-			}
-		}
-		t.Errorf("lathe processes still running after cleanup")
-	})
+	bin := buildLathe(t)
 
 	repo := gitRepo(t, "")
 	// Submissions run from a repository with a lathe.toml of its own, which
@@ -144,28 +120,10 @@ func TestEndToEnd(t *testing.T) {
 		"HOME=" + home,
 		"XDG_DATA_HOME=" + filepath.Join(home, "data"),
 	}
-	lathe := func(t *testing.T, args ...string) (string, int) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, bin, args...)
-		cmd.Dir = invokedFrom
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		code := 0
-		var exit *exec.ExitError
-		if err != nil {
-			if !asExit(err, &exit) {
-				t.Fatalf("lathe %v: %v\n%s", args, err, out)
-			}
-			code = exit.ExitCode()
-		}
-		return string(out), code
-	}
 
 	// The submitter blocks: no manager is running, so it starts one, and the
 	// run comes back finished.
-	out, code := lathe(t, "scout", "--repo", repo, "what is here")
+	out, code := latheIn(t, bin, invokedFrom, env, 90*time.Second, "scout", "--repo", repo, "what is here")
 	if code != 0 {
 		t.Fatalf("lathe scout exited %d:\n%s\n%s", code, out, managerLog(home))
 	}
@@ -176,25 +134,24 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("a repository with no lathe.toml was not silent about it:\n%s", out)
 	}
 
-	if list, _ := lathe(t, "runs"); !strings.Contains(list, "scout") || !strings.Contains(list, "ok") {
+	if list, _ := latheIn(t, bin, invokedFrom, env, 90*time.Second, "runs"); !strings.Contains(list, "scout") || !strings.Contains(list, "ok") {
 		t.Fatalf("lathe runs:\n%s", list)
 	}
 
 	// --detach returns immediately with the ID, and wait picks the same run up
 	// and reports its outcome.
-	out, code = lathe(t, "scout", "--detach", "--repo", repo, "what else is here")
+	out, code = latheIn(t, bin, invokedFrom, env, 90*time.Second, "scout", "--detach", "--repo", repo, "what else is here")
 	if code != 0 {
 		t.Fatalf("detached submission exited %d:\n%s", code, out)
 	}
-	fields := strings.Fields(out)
-	id := fields[1]
-	if !strings.HasSuffix(fields[2], "queued") {
+	id := queuedID(out)
+	if id == "" {
 		t.Fatalf("detached output: %q", out)
 	}
-	if waited, code := lathe(t, "wait", id); code != 0 || !strings.Contains(waited, ": ok") {
+	if waited, code := latheIn(t, bin, invokedFrom, env, 90*time.Second, "wait", id); code != 0 || !strings.Contains(waited, ": ok") {
 		t.Fatalf("lathe wait %s exited %d:\n%s\n%s", id, code, waited, managerLog(home))
 	}
-	if shown, code := lathe(t, "show", "--json", id); code != 0 || !strings.Contains(shown, `"status": "ok"`) {
+	if shown, code := latheIn(t, bin, invokedFrom, env, 90*time.Second, "show", "--json", id); code != 0 || !strings.Contains(shown, `"status": "ok"`) {
 		t.Fatalf("lathe show exited %d:\n%s", code, shown)
 	}
 
@@ -204,7 +161,7 @@ func TestEndToEnd(t *testing.T) {
 		{"plan", "--issue", ""}, {"plan", "--issue", "--web"},
 		{"plan", "--issue", "41", "also a prompt"}, {"scout", "--issue", "41"},
 	} {
-		if out, code := lathe(t, args...); code != 2 {
+		if out, code := latheIn(t, bin, invokedFrom, env, 90*time.Second, args...); code != 2 {
 			t.Fatalf("%v: %d %s", args, code, out)
 		}
 	}
@@ -222,7 +179,7 @@ func TestEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stub, "pi"), []byte(piScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, code = lathe(t, "plan", "--repo", repo, "--issue", "41")
+	out, code = latheIn(t, bin, invokedFrom, env, 90*time.Second, "plan", "--repo", repo, "--issue", "41")
 	if code != 0 {
 		t.Fatalf("issue plan: %d %s", code, out)
 	}
@@ -239,7 +196,7 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issueRunID := strings.Fields(out)[1]
+	issueRunID := queuedID(out)
 	phases, err := db.Phases(issueRunID)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +214,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, workflow := range []string{"plan", "implement", "build"} {
-		out, code = lathe(t, workflow, "--repo", repo, "--issue", "41")
+		out, code = latheIn(t, bin, invokedFrom, env, 90*time.Second, workflow, "--repo", repo, "--issue", "41")
 		if code != 1 || !strings.Contains(out, "issue not found") {
 			t.Fatalf("%s lookup failure: %d %s", workflow, code, out)
 		}
@@ -269,7 +226,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// A repository's lathe.toml has no effect; a flag still applies.
 	configured := gitRepo(t, "provider = \"anthropic\"\n[agents.scout]\nmodel = \"claude-sonnet-5\"\n")
-	out, code = lathe(t, "scout", "--detach", "--repo", configured, "--thinking", "high", "what is configured")
+	out, code = latheIn(t, bin, invokedFrom, env, 90*time.Second, "scout", "--detach", "--repo", configured, "--thinking", "high", "what is configured")
 	if code != 0 || strings.Contains(out, "lathe.toml") {
 		t.Fatalf("configured submission exited %d:\n%s", code, out)
 	}
@@ -288,7 +245,7 @@ func TestEndToEnd(t *testing.T) {
 	if err := os.WriteFile(edited, []byte("You scout by edit.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, code = lathe(t, "scout", "--detach", "--repo", repo, "what is edited")
+	out, code = latheIn(t, bin, invokedFrom, env, 90*time.Second, "scout", "--detach", "--repo", repo, "what is edited")
 	if code != 0 {
 		t.Fatalf("edited submission exited %d:\n%s", code, out)
 	}
@@ -327,12 +284,7 @@ func gitRepo(t *testing.T, project string) string {
 // specification, from the run ID in the submission's output.
 func capturedScout(t *testing.T, home, out string) config.Resolved {
 	t.Helper()
-	var id string
-	for _, line := range strings.Split(out, "\n") {
-		if f := strings.Fields(line); len(f) == 3 && f[2] == "queued" {
-			id = f[1]
-		}
-	}
+	id := queuedID(out)
 	db, err := trace.Open(filepath.Join(home, "data", "lathe"))
 	if err != nil {
 		t.Fatal(err)
@@ -347,14 +299,6 @@ func capturedScout(t *testing.T, home, out string) config.Resolved {
 		t.Fatal(err)
 	}
 	return spec.Roster.Agents["scout"]
-}
-
-func asExit(err error, out **exec.ExitError) bool {
-	e, ok := err.(*exec.ExitError)
-	if ok {
-		*out = e
-	}
-	return ok
 }
 
 // managerLog is what makes a failure here diagnosable: the submitter's own
