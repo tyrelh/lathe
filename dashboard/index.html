@@ -508,13 +508,13 @@ const PAGE = 500;   // the server's per-poll event cap, dashboard.go's eventPage
 // does not. Agents load once, then set done; until then they retry. A run has
 // no shell: its first poll builds the scaffold.
 const PAGES = {
-  overview: {poll: 5000, nav: 'overview', load: overview, shell: () => overviewShell()},
-  projects: {poll: 5000, nav: 'projects', load: projects, shell: () => listShell('projects by spend')},
-  project: {poll: 5000, nav: 'projects', load: project, shell: () => projectShell(view.repo)},
-  runs: {poll: 2000, nav: 'runs', load: list, shell: () => listShell('latest runs')},
-  run: {poll: 500, nav: 'runs', load: detail},
-  agents: {poll: 5000, nav: 'agents', load: agents, shell: () => listShell('agents and routing phases')},
-  agent: {poll: 5000, nav: 'agents', load: agent, shell: () => agentShell()},
+  overview: {poll: 5000, nav: 'overview', load: loadOverview, shell: () => overviewShell()},
+  projects: {poll: 5000, nav: 'projects', load: loadProjects, shell: () => listShell('projects by spend')},
+  project: {poll: 5000, nav: 'projects', load: loadProject, shell: () => projectShell(view.repo)},
+  runs: {poll: 2000, nav: 'runs', load: loadRuns, shell: () => listShell('latest runs')},
+  run: {poll: 500, nav: 'runs', load: loadRun},
+  agents: {poll: 5000, nav: 'agents', load: loadAgents, shell: () => listShell('agents and routing phases')},
+  agent: {poll: 5000, nav: 'agents', load: loadAgent, shell: () => agentShell()},
   missing: {poll: 0, load: () => missing()},
 };
 
@@ -731,15 +731,15 @@ function turnPage(key, direction) {
   renderSide();
 }
 function renderCosts(r) {
-  const list = (rows, key, maxRows) => {
+  const costList = (rows, key, maxRows) => {
     const visible = pageRows(key, rows, row => row.name);
     return rows.length ? `<div class="cost-list" data-cost-list="${key}"${maxRows ? ` style="--rows:${Math.min(maxRows, rows.length)}"` : ''}><div class="cost-list-heading"><h3 class="dim">${key}</h3>${pageControls(key)}</div><div class="paged-body" data-page-body="${key}"><ul class="model-costs">${visible.map(m => `<li style="--model-color:${m.colour}" title="${esc(m.name)}">
       <span class="model-dot" aria-hidden="true"></span><span class="model-name">${esc(m.name)}</span><span class="model-amount cost">${money(m.cost)}</span></li>`).join('')}</ul></div></div>` : '';
   };
   const providers = providerCosts(), models = modelSpend();
   return `<div class="cost-lists">`
-    + list(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers', 4)
-    + list(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models') + '</div>'
+    + costList(providers.map(p => ({name: p.provider, cost: p.cost, colour: providerColour(p.provider)})), 'providers', 4)
+    + costList(models.map(m => ({name: m.model, cost: m.cost, colour: modelColour(m.model)})), 'models') + '</div>'
     + (draining ? '<p class="dim">Loading usage…</p>' : !providers.length && !models.length
       ? `<p class="dim">${live(r.status) ? 'No usage recorded yet.' : 'No usage recorded.'}</p>` : '');
 }
@@ -948,7 +948,7 @@ const projectRow = (p, i, full) => {
   </tr>`;
 };
 
-async function overview(current) {
+async function loadOverview(current) {
   const {body: o} = await get('/api/overview');
   if (current !== generation) return;
 
@@ -1007,7 +1007,7 @@ function attribution(o) {
   return esc(parts.join(' ').replace(/\s+/g, ' '));
 }
 
-async function projects(current) {
+async function loadProjects(current) {
   const {body: rows} = await get('/api/projects');
   if (current !== generation) return;
   const total = rows.reduce((n, p) => n + p.cost, 0);
@@ -1036,7 +1036,7 @@ const agentRow = a => {
   </tr>`;
 };
 
-async function agents(current) {
+async function loadAgents(current) {
   const {body: rows} = await get('/api/agents');
   if (current !== generation) return;
   const routing = rows.filter(a => a.kind === 'routing').length;
@@ -1102,10 +1102,10 @@ function fileInfo(f) {
   return `<p class="dim"><code>${esc(f.path || f.key)}</code>${state}</p>${diff}`;
 }
 // seedDiff fills an opened panel once with its changes from the seed.
-function seedDiff(panel) {
-  if (!panel.open) return;
-  panel.querySelector('pre').textContent = lineDiff(panel.dataset.seed, panel.dataset.body);
-  panel.ontoggle = null;
+function seedDiff(el) {
+  if (!el.open) return;
+  el.querySelector('pre').textContent = lineDiff(el.dataset.seed, el.dataset.body);
+  el.ontoggle = null;
 }
 // promptInfo renders where prompt p lives, its drift and, for a user prompt,
 // what is added to it at run time.
@@ -1270,7 +1270,7 @@ function loadCurrent(role) {
   drawBox(role);
 }
 
-async function agent(current) {
+async function loadAgent(current) {
   let a;
   try {
     ({body: a} = await get('/api/agents/' + encodeURIComponent(view.name)));
@@ -1311,7 +1311,7 @@ function mergeProjectRows(rows) {
     (b.activity_at || '').localeCompare(a.activity_at || '') || b.run_id.localeCompare(a.run_id));
 }
 
-async function project(current) {
+async function loadProject(current) {
   const query = projectQuery(view.repo);
   const [{body: summary}, {body: page}] = await Promise.all([
     get('/api/projects/detail?' + query), get('/api/projects/runs?' + query + '&n=50'),
@@ -1439,7 +1439,7 @@ async function moreProjectRuns() {
   }
 }
 
-async function list(current) {
+async function loadRuns(current) {
   const {body: runs, total} = await get('/api/runs?n=50');
   if (current !== generation) return;
   const repos = new Map();
@@ -1457,8 +1457,8 @@ async function list(current) {
 
   // Explicitly "displayed", because these are the 50 most recent and the
   // database holds more.
-  const shown = total ? `${count(runs.length)} of ${count(total)} runs` : `${count(runs.length)} runs`;
-  bar.innerHTML = `Runs · showing ${shown}`
+  const countLabel = total ? `${count(runs.length)} of ${count(total)} runs` : `${count(runs.length)} runs`;
+  bar.innerHTML = `Runs · showing ${countLabel}`
     + `<span class="lo"> · displayed: ${count(tokens)} tok · <span class="cost">${money(cost)}</span></span>`;
   stamp();
 }
@@ -1565,7 +1565,7 @@ function buildRunScaffold() {
   resized.observe($('costs'));
 }
 
-async function detail(current) {
+async function loadRun(current) {
   const {body: d} = await get('/api/runs/' + encodeURIComponent(view.id) + '?after=' + after);
   if (current !== generation) return;
   const r = d.run;
@@ -1643,8 +1643,8 @@ function renderRunSummary(r) {
 function renderWorktreeBar(r) {
   const latest = newestFirst(r.iterations)[0] || {};
   const tree = latest.worktree, state = latest.worktree_state !== 'active' && latest.worktree_state;
-  const note = state ? ` <span class="dim">(${esc(state)})</span>` : '';
-  bar.innerHTML = tree ? `<span title="${esc(tree)}">worktree ${esc(tree)}${note}</span>` : '';
+  const stateNote = state ? ` <span class="dim">(${esc(state)})</span>` : '';
+  bar.innerHTML = tree ? `<span title="${esc(tree)}">worktree ${esc(tree)}${stateNote}</span>` : '';
 }
 
 // appendLog adds a row per event to the run log and advances the after cursor.
@@ -1818,7 +1818,7 @@ function draw() {
   if (!shown || !chart) return;
   const {run: r, phases} = shown, now = Date.now();
   swap(chart, gantt(r, phases, now));
-  swap($('phase'), details(phases.find(p => p.phase_id === selected), r, now));
+  swap($('phase'), phaseCard(phases.find(p => p.phase_id === selected), r, now));
   renderSide();
   layout();
   if (observed !== chart) { resized.observe(chart); observed = chart; }
@@ -1932,9 +1932,9 @@ function timeline(ax, iterations, now) {
     }
     return x;
   };
-  const span = ax.span - breaks.reduce((a, g) => a + g.to - g.from - width, 0);
-  const pct = (from, to) => `left:${(at(from) / span * 100).toFixed(3)}%;width:${((at(to) - at(from)) / span * 100).toFixed(3)}%`;
-  return {at, span, spans, breaks, pct};
+  const total = ax.span - breaks.reduce((a, g) => a + g.to - g.from - width, 0);
+  const place = (from, to) => `left:${(at(from) / total * 100).toFixed(3)}%;width:${((at(to) - at(from)) / total * 100).toFixed(3)}%`;
+  return {at, span: total, spans, breaks, pct: place};
 }
 
 // gantt draws one row per graph node, in the order each was first entered. A
@@ -2167,7 +2167,7 @@ function prettyJSON(s) {
   try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
 }
 
-function details(p, r, now) {
+function phaseCard(p, r, now) {
   if (!p) return '<h2>phase</h2><p class="dim">Select a phase.</p>';
   const id = p.phase_id, t = phaseTiming(p, r, now), s = spend.get(id);
   // Rows can arrive before their events: say so until the backlog is drained,
@@ -2182,12 +2182,12 @@ function details(p, r, now) {
 
   const valid = t.start >= 0 && t.end >= t.start;
   const owner = t.by === 'iteration' ? r.iterations.find(i => i.iteration === (p.iteration ?? 0)) : r;
-  const took = !valid ? 'Unavailable'
+  const duration = !valid ? 'Unavailable'
     : dur(t.end - t.start) + (t.status === 'running' ? ' so far' : t.bound ? ` · bounded by ${t.by === 'iteration' ? 'its iteration' : 'the run'}’s end` : '');
   const facts = `<table class="facts">
       <tr><th>Started</th><td>${esc(p.started_at || 'Not recorded')}</td></tr>
       <tr><th>Ended</th><td>${esc(p.ended_at || 'Not recorded')}${t.bound && owner?.ended_at ? ` <span class="dim">· ${t.by === 'iteration' ? 'iteration' : 'run'} ended ${esc(owner.ended_at)}</span>` : ''}</td></tr>
-      <tr><th>Duration</th><td>${took}</td></tr>${thinking.get(id) ? `
+      <tr><th>Duration</th><td>${duration}</td></tr>${thinking.get(id) ? `
       <tr><th>Thinking</th><td>${esc(thinking.get(id))}</td></tr>` : ''}
     </table>`;
 
