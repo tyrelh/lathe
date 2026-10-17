@@ -58,17 +58,17 @@ type SaveConfig func(agent, provider, model, thinking, baseHash string) error
 type Roster func() (config.Config, error)
 
 // Actions are the dashboard's writes, each the CLI's own path handed in by the
-// manager: Submit queues a run, Revise appends an iteration to one and returns
-// its number, Cancel asks one to stop and returns its status. SavePrompt writes
-// the configuration file at key unless baseHash is stale, ResetPrompt restores
-// it to its seed unless baseHash is stale, and SaveConfig sets an agent's provider, model and thinking
-// unless baseHash is stale. A nil action registers no route, which is what
-// keeps a read-only dashboard read-only.
+// manager. A nil action registers no route, which is what keeps a read-only
+// dashboard read-only.
 type Actions struct {
-	Submit      Submit
-	Revise      func(runID, request string) (int, error)
-	Resume      func(runID, guidance string) (int, error)
-	Cancel      func(runID string) (string, error)
+	Submit Submit
+	// Revise appends an iteration to a run and returns its number.
+	Revise func(runID, request string) (int, error)
+	// Resume appends a recovery iteration to a run and returns its number.
+	Resume func(runID, guidance string) (int, error)
+	// Cancel asks a run to stop and returns its status.
+	Cancel func(runID string) (string, error)
+
 	SavePrompt  SavePrompt
 	ResetPrompt ResetPrompt
 	SaveConfig  SaveConfig
@@ -88,13 +88,9 @@ const eventPage = 500
 // typed.
 const maxWriteBody = 64 << 10
 
-// Handler is the dashboard as something to mount: the manager serves it
-// alongside the scheduler, so there is no second process and no second
-// listener. The database is opened read-only — a UI bug cannot write — and
-// created first if it is not there yet, so a fresh install serves an empty
-// dashboard rather than an error telling you to go start a run. Submissions go
-// through actions, never through this handle; sources serve what the database
-// does not hold.
+// Handler serves the dashboard from dataRoot's trace database, initialising it
+// if absent and opening it read-only; a setup failure yields a handler that
+// answers 500.
 func Handler(dataRoot, version string, actions Actions, sources Sources) http.Handler {
 	if err := trace.Init(dataRoot); err != nil {
 		return failed(err)
@@ -112,8 +108,7 @@ func failed(err error) http.Handler {
 	})
 }
 
-// handler is the whole server minus the listener, which is what lets a test
-// exercise the routes without binding a port.
+// handler builds the routes over db; a nil action or source registers no route.
 func handler(db *trace.DB, version string, actions Actions, sources Sources) http.Handler {
 	// Read routes answer failures as plain text, write routes as JSON.
 	mux := http.NewServeMux()
@@ -371,9 +366,8 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 	}
 }
 
-// reviseRun appends a revision to a run, with the same protections as New
-// run. A refusal is the run's state, not the request's shape, so it is a
-// conflict; the page stays on the run and shows its queued state on success.
+// reviseRun answers 201 with the run ID and new iteration, 409 when the run is
+// not revisable, 400 for an empty request or other failure.
 func reviseRun(revise func(runID, request string) (int, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
