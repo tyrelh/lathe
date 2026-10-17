@@ -6,12 +6,8 @@ import "strings"
 // pointers distinguish acceptance from a reviewer that omitted the decision
 // entirely.
 //
-// Blocking is the objections that mean the plan cannot succeed as written: a
-// file it needs and does not list, a step it concedes it cannot perform. They
-// go back to the planner like any feedback, but unlike feedback they are never
-// forwarded to the builder as risks: a plan still blocked at the review limit
-// fails the run, because building it spends a builder turn on work that says
-// it will not land.
+// Blocking lists objections that block the plan; see ADR 0001 for how they are
+// handled at the review limit.
 type ReviewOutput struct {
 	Summary  *string   `json:"summary"`
 	Feedback *[]string `json:"feedback"`
