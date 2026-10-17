@@ -671,31 +671,21 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		}
 		// Rejected replies explain corrections. Validated replies are recorded
 		// below as phase outputs, after the mechanical gates pass.
-		envelope := map[string]any{"attempt": attempt, "violations": violations}
-		if len(violations) > 0 {
-			envelope["text"] = res.Text
-		}
-		r.db.Event(r.ID, h.phase.ID, "envelope", agent.Name, envelope)
-
+		h.recordCheck("envelope", agent.Name, attempt, violations, res.Text)
 		if len(violations) == 0 {
-			var gateViolations []string
+			violations = nil
 			for _, g := range gates {
-				gateViolations = append(gateViolations, g(out, r)...)
+				violations = append(violations, g(out, r)...)
 			}
-			gate := map[string]any{"attempt": attempt, "violations": gateViolations}
-			if len(gateViolations) > 0 {
-				gate["text"] = res.Text
-			}
-			r.db.Event(r.ID, h.phase.ID, "gate", agent.Name, gate)
-			if len(gateViolations) == 0 {
-				// Keep the report and exact response together so the dashboard can
-				// show each phase's result, including plans later revised. A final
-				// plan.json alone cannot reconstruct that history.
-				return r.db.Event(r.ID, h.phase.ID, "output", agent.Name, map[string]any{
-					"attempt": attempt, "report": out, "text": res.Text,
-				})
-			}
-			violations = gateViolations
+			h.recordCheck("gate", agent.Name, attempt, violations, res.Text)
+		}
+		if len(violations) == 0 {
+			// Keep the report and exact response together so the dashboard can
+			// show each phase's result, including plans later revised. A final
+			// plan.json alone cannot reconstruct that history.
+			return r.db.Event(r.ID, h.phase.ID, "output", agent.Name, map[string]any{
+				"attempt": attempt, "report": out, "text": res.Text,
+			})
 		}
 
 		if *left <= 0 {
@@ -705,6 +695,16 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		*left--
 		prompt = correction(violations)
 	}
+}
+
+// recordCheck writes a typ event holding attempt and violations, plus text
+// when violations is non-empty. Write errors are ignored.
+func (h *Handle) recordCheck(typ, agent string, attempt int, violations []string, text string) {
+	payload := map[string]any{"attempt": attempt, "violations": violations}
+	if len(violations) > 0 {
+		payload["text"] = text
+	}
+	h.run.db.Event(h.run.ID, h.phase.ID, typ, agent, payload)
 }
 
 // maxRepoInstructions keeps the prompt argument under Linux's 128 KiB MAX_ARG_STRLEN.
