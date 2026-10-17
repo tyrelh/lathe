@@ -585,17 +585,7 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 			return err
 		}
 	}
-	providers := make([]string, 0, len(r.cfg.Agents))
-	for _, agent := range r.cfg.Agents {
-		providers = append(providers, agent.Provider)
-	}
-	for _, rt := range r.cfg.Routing {
-		for _, t := range rt.Tiers {
-			providers = append(providers, t.Resolved.Provider)
-		}
-	}
-	slices.Sort(providers)
-	providers = slices.Compact(providers)
+	providers := capturedProviders(r.cfg)
 	for _, provider := range providers {
 		if strings.ContainsFunc(provider, unicode.IsControl) {
 			return errors.New("auth preflight: provider identifiers must not contain control characters; correct the provider configuration and resubmit")
@@ -617,10 +607,31 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 			return logErr
 		}
 		if err != nil {
-			failures = append(failures, fmt.Errorf("provider %q auth preflight: %w; configure credentials in the worker environment (workers inherit the manager environment; restart the manager after changing it), or log in with Pi as the worker user; rerun in that environment: pi auth check --provider %s --json", provider, err, "'"+strings.ReplaceAll(provider, "'", "'\\''")+"'"))
+			failures = append(failures, fmt.Errorf("provider %q auth preflight: %w; configure credentials in the worker environment (workers inherit the manager environment; restart the manager after changing it), or log in with Pi as the worker user; rerun in that environment: pi auth check --provider %s --json", provider, err, shellQuote(provider)))
 		}
 	}
 	return errors.Join(append(failures, ctx.Err())...)
+}
+
+// capturedProviders returns the sorted, deduplicated providers of cfg's agents
+// and every routing tier.
+func capturedProviders(cfg config.Snapshot) []string {
+	providers := make([]string, 0, len(cfg.Agents))
+	for _, agent := range cfg.Agents {
+		providers = append(providers, agent.Provider)
+	}
+	for _, rt := range cfg.Routing {
+		for _, t := range rt.Tiers {
+			providers = append(providers, t.Resolved.Provider)
+		}
+	}
+	slices.Sort(providers)
+	return slices.Compact(providers)
+}
+
+// shellQuote returns s as one POSIX single-quoted shell word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Call runs the phase's agent, decodes its envelope into out, and checks it
