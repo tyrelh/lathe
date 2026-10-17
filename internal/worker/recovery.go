@@ -378,7 +378,7 @@ func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOpt
 	if o.Restart {
 		kind = trace.KindRestart
 	}
-	return trace.Recovery{Source: n, Kind: kind, Request: request, Guidance: guidance, Spec: b}, nil
+	return trace.Recovery{Source: n, Kind: kind, Resolved: request, Guidance: guidance, Spec: b}, nil
 }
 
 // restorable settles what the source iteration left to restore: a saved

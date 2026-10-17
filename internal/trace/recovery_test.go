@@ -24,7 +24,7 @@ func failed(t *testing.T, db *DB, status string) string {
 }
 
 func recovery(source int) Recovery {
-	return Recovery{Source: source, Kind: KindRecovery, Request: "greet", Guidance: "try again", Spec: []byte(`{"workflow":"implement"}`)}
+	return Recovery{Source: source, Kind: KindRecovery, Resolved: "greet", Guidance: "try again", Spec: []byte(`{"workflow":"implement"}`)}
 }
 
 // Failed, cancelled and lost iterations may be resumed; the run keeps its ID
