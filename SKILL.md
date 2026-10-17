@@ -27,7 +27,7 @@ automatically if none is running.
 
 Configure credentials for every provider in the captured agent roster, including those used only by later agents. Workers inherit the manager's environment: export provider keys before starting it (for example `MOONSHOT_API_KEY`), or log in with Pi as the worker user. Restart the manager after changing its environment. From the repository in that same environment, rerun readiness with `pi auth check --provider <provider> --json`.
 
-`plan`, `implement`, `build` and `revise` trace an engineer-owned `auth` phase immediately after `request`, before optional issue lookup or any agent turn. Each distinct captured provider is checked once, with safe status/reason logging, under the command timeout and run cancellation. Missing credentials, unsupported Pi or malformed readiness output stop the run before planning. Auth is not repeated on planning send-backs; scout is unchanged. Readiness means credential availability, not a live API-key validity guarantee. Pi may refresh expired OAuth credentials and update its credential store.
+`plan`, `implement`, `build` and `revise` trace an engineer-owned `auth` phase immediately after `request`, before optional issue lookup or any agent turn. Each distinct captured provider is checked once, with safe status/reason logging, under the command timeout and run cancellation. Missing credentials, unsupported Pi or malformed readiness output stop the run before planning. Readiness means credential availability, not a live API-key validity guarantee. Pi may refresh expired OAuth credentials and update its credential store.
 
 ## Workflows
 
@@ -59,7 +59,7 @@ build:     → branch → [route-build] → implement → validate → adjudicat
 revise:    → [route-build] → implement → validate → adjudicate → [...] → commit → publish (accepted only)
 ```
 
-`validate` runs `test`, `code-review-general`, `code-review-security`, `code-review-slop` and `code-review-adversarial` at once, each traced as its own phase. An ordinary worker failure is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete. Reported test exits 126/127 are the exception: they produce terminal `environment_failed`, with one tester attempt, no adjudication or repairs, and no commit, push or PR, including drafts. Already-running reviewers finish before cleanup. The tester report, with its command, exit code and output, remains in `validation.json`. Install the required executable, check the worker's `PATH` and executable permissions, then rerun. This policy applies even if the suite uses those statuses for another purpose. Other nonzero test results remain red suites for adjudication, not worker failures. `environment_failed` is not retryable and must not be treated as publishable `incomplete` validation.
+`validate` runs `test`, `code-review-general`, `code-review-security`, `code-review-slop` and `code-review-adversarial` at once, each traced as its own phase. An ordinary worker failure is retried up to twice against the same code without spending a repair; one that still fails leaves validation incomplete. A test exit of 126 or 127 ends the run as `environment_failed`, without repairs or publication, including a draft. The tester's command, exit code and output remain in `validation.json`; fix the executable or `PATH`, then rerun or resume. Other nonzero test exits are red suites for adjudication.
 
 The reviewer checks the plan against the repository, including the builder's file list. Empty feedback accepts it. The ninth review ends the loop; remaining objections or a failed final review become risks in the saved plan and builder handoff. An objection the reviewer marks blocking, because the plan cannot succeed as written, is the exception: if it survives the last review the run fails before the builder starts, with the plan saved for diagnosis. Failed reviews consume a send-back and remain visible as failed phases
 even when the run succeeds. Planner failures and cancellation stop the run.
@@ -87,9 +87,7 @@ Before the request, not after:
 - agent configuration lives in `~/.lathe/agents/<name>/{config.yaml,system.md,user.md}` and `~/.lathe/routing/`; it is the only source, a missing or invalid file refuses the submission with the file named, and a target repository's `lathe.toml` is ignored
 
 `implement`, `build` and `revise` run in their own worktrees under
-`~/.local/share/lathe/worktrees` and never change the checkout, which may be
-dirty or on another branch; several may run at once for one repository, up to
-`LATHE_CAPACITY`. Worktrees are removed when a run stops, after its result is
+`~/.local/share/lathe/worktrees` and several may run at once for one repository, up to `LATHE_CAPACITY`. Worktrees are removed when a run stops, after its result is
 saved; commits nothing else reaches are kept under
 `refs/lathe/runs/<id>/iteration-<n>`. A fresh worktree has the shared Go caches
 but not `node_modules` or other ignored files. It is not a sandbox.
@@ -105,8 +103,7 @@ a failed build produced nothing.
 The run prints its status, spend and directory. `<dir>/result.json` is a scout's
 structured report and `<dir>/plan.json` is a planner's, which `lathe plan` also
 prints; `<dir>/implement.json` is the builder's report (also saved when it
-reports needed files); `<dir>/validation.json` holds every validation round — the tester's report and exit code, each reviewer's findings, the adjudicator's decisions, any scope or plan amendments — and how validation ended (`accepted`, `unresolved`, `incomplete`, `invalidated` or `environment_failed`); `<dir>/pr.json` holds the pull request a build opened, including its URL and whether it is a draft of unaccepted work. Runs from before parallel validation have `test.json` instead. Runs from before the rename have `build.json` where `implement.json`
-now is. There is no `branch.json` or `commit.json`: the branch name and the
+reports needed files); `<dir>/validation.json` holds every validation round — the tester's report and exit code, each reviewer's findings, the adjudicator's decisions, any scope or plan amendments — and how validation ended (`accepted`, `unresolved`, `incomplete`, `invalidated` or `environment_failed`); `<dir>/pr.json` holds the pull request a build opened, including its URL and whether it is a draft of unaccepted work. Older runs may have `test.json` or `build.json` in place of `validation.json` or `implement.json`. There is no `branch.json` or `commit.json`: the branch name and the
 commit sha are both in git and in the trace. `<dir>/<attempt>/raw.jsonl` is the
 full event stream. `lathe runs` lists recent runs from every repo, queued and
 running ones included.
