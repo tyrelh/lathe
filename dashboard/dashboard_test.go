@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,9 @@ import (
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
 )
+
+// repo is the checkout path the seeded runs record.
+const repo = "/repos/alpha"
 
 // seededRoster returns a fresh home seeded from the shipped seed, the seed, and
 // a roster that loads the home the way the manager does.
@@ -43,6 +47,51 @@ func local(method, path string, body io.Reader) *http.Request {
 	r := httptest.NewRequest(method, path, body)
 	r.Host = Addr
 	return r
+}
+
+// browserWrite serves a method request to path with the given Host, Origin,
+// Content-Type and body; an empty origin sends no Origin header.
+func browserWrite(h http.Handler, method, path, host, origin, contentType, body string) *httptest.ResponseRecorder {
+	r := local(method, path, strings.NewReader(body))
+	r.Host = host
+	if origin != "" {
+		r.Header.Set("Origin", origin)
+	}
+	r.Header.Set("Content-Type", contentType)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+// assertNoWriteRoute fails unless h answers a valid browser write of method to
+// path with 404 or 405.
+func assertNoWriteRoute(t *testing.T, h http.Handler, method, path string) {
+	t.Helper()
+	w := browserWrite(h, method, path, Addr, "http://"+Addr, "application/json", `{}`)
+	if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
+		t.Errorf("%s %s without its action: %d", method, path, w.Code)
+	}
+}
+
+// readOnly returns a read-only handle, closed at cleanup, on a fresh trace
+// database at root after seed, when non-nil, has written to it.
+func readOnly(t *testing.T, seed func(db *trace.DB, root string)) *trace.DB {
+	t.Helper()
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seed != nil {
+		seed(db, root)
+	}
+	db.Close()
+	ro, err := trace.OpenRO(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ro.Close() })
+	return ro
 }
 
 func TestFavicon(t *testing.T) {
@@ -117,28 +166,19 @@ func claimed(t *testing.T, db *trace.DB, workflow, repo, request string) (id, at
 // read-only handles, and that ?after= returns only what the caller has not
 // seen.
 func TestRoutes(t *testing.T) {
-	root := t.TempDir()
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runID, _, _ := claimed(t, db, "scout", "/Users/tyrel/Projects/lathe", "where is the parser")
-	p := trace.NewPhase(runID, 1, "scout", "scout")
-	if err := db.PhaseUpsert(p); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"read", "grep"} {
-		if err := db.Event(runID, p.ID, "tool_call", name, map[string]string{"path": "main.go"}); err != nil {
+	var runID string
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		runID, _, _ = claimed(t, db, "scout", repo, "where is the parser")
+		p := trace.NewPhase(runID, 1, "scout", "scout")
+		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
 		}
-	}
-	db.Close()
-
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+		for _, name := range []string{"read", "grep"} {
+			if err := db.Event(runID, p.ID, "tool_call", name, map[string]string{"path": "main.go"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 	h := handler(ro, "v0.2.0-test", Actions{}, Sources{})
 
 	get := func(path string) string {
@@ -223,39 +263,24 @@ func TestClient(t *testing.T) {
 // status bar needs — plus the initialization step that lets the dashboard open
 // a database it has never seen, or none at all.
 func TestOverviewAndMeta(t *testing.T) {
-	root := t.TempDir()
-	// No database yet: Init is what makes this a first-use empty dashboard
-	// rather than "run something first".
-	if err := trace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 3; i++ {
-		// Finished each time round: a second outstanding build for one
-		// checkout is rejected at submission, which is the point of the rule.
-		id, attempt, token := claimed(t, db, "build", "/Users/tyrel/Projects/lathe", "add retries")
-		p := trace.NewPhase(id, 1, "build", "builder")
-		if err := db.PhaseUpsert(p); err != nil {
-			t.Fatal(err)
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		for i := 0; i < 3; i++ {
+			// Finished each time round: a second outstanding build for one
+			// checkout is rejected at submission, which is the point of the rule.
+			id, attempt, token := claimed(t, db, "build", repo, "add retries")
+			p := trace.NewPhase(id, 1, "build", "builder")
+			if err := db.PhaseUpsert(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.RecordUsage(trace.Usage{RunID: id, PhaseID: p.ID, Agent: "builder",
+				Seq: 1, Provider: "moonshotai", Model: "kimi", Tokens: 100, Cost: 0.01}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if err := db.RecordUsage(trace.Usage{RunID: id, PhaseID: p.ID, Agent: "builder",
-			Seq: 1, Provider: "moonshotai", Model: "kimi", Tokens: 100, Cost: 0.01}); err != nil {
-			t.Fatal(err)
-		}
-		if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
-	db.Close()
-
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	})
 	h := handler(ro, "v0.2.0", Actions{}, Sources{})
 
 	do := func(path string) *httptest.ResponseRecorder {
@@ -293,7 +318,7 @@ func TestOverviewAndMeta(t *testing.T) {
 	if o.TopModels[0].Model != "kimi" || o.TopModels[0].Phases != 3 {
 		t.Fatalf("models = %+v", o.TopModels)
 	}
-	if o.TopProjects[0].Repo != "/Users/tyrel/Projects/lathe" || o.TopProjects[0].Runs != 3 {
+	if o.TopProjects[0].Repo != repo || o.TopProjects[0].Runs != 3 {
 		t.Fatalf("projects = %+v", o.TopProjects)
 	}
 	var projects []trace.ProjectSpend
@@ -304,7 +329,7 @@ func TestOverviewAndMeta(t *testing.T) {
 		t.Fatalf("all projects = %+v", projects)
 	}
 	var project trace.ProjectSpend
-	if err := json.Unmarshal(do("/api/projects/detail?repo=%2FUsers%2Ftyrel%2FProjects%2Flathe").Body.Bytes(), &project); err != nil {
+	if err := json.Unmarshal(do("/api/projects/detail?repo="+url.QueryEscape(repo)).Body.Bytes(), &project); err != nil {
 		t.Fatal(err)
 	}
 	if project.Runs != 3 || project.Cost != o.Cost || project.Tokens != o.Tokens {
@@ -314,13 +339,13 @@ func TestOverviewAndMeta(t *testing.T) {
 		Runs []trace.Row `json:"runs"`
 		More bool        `json:"more"`
 	}
-	if err := json.Unmarshal(do("/api/projects/runs?repo=%2FUsers%2Ftyrel%2FProjects%2Flathe&n=2").Body.Bytes(), &page); err != nil {
+	if err := json.Unmarshal(do("/api/projects/runs?repo="+url.QueryEscape(repo)+"&n=2").Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Runs) != 2 || !page.More {
 		t.Fatalf("first project runs page = %+v", page)
 	}
-	next := "/api/projects/runs?repo=%2FUsers%2Ftyrel%2FProjects%2Flathe&n=2&before_at=" +
+	next := "/api/projects/runs?repo=" + url.QueryEscape(repo) + "&n=2&before_at=" +
 		page.Runs[1].Submitted + "&before_id=" + page.Runs[1].ID
 	if err := json.Unmarshal(do(next).Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
@@ -341,17 +366,8 @@ func TestOverviewAndMeta(t *testing.T) {
 	}
 	// A dashboard opened on nothing at all: Init creates the database, and the
 	// empty rankings marshal as [] so the client can map over them.
-	blank := t.TempDir()
-	if err := trace.Init(blank); err != nil {
-		t.Fatal(err)
-	}
-	fresh, err := trace.OpenRO(blank)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fresh.Close()
 	w := httptest.NewRecorder()
-	handler(fresh, "dev", Actions{}, Sources{}).ServeHTTP(w, local("GET", "/api/overview", nil))
+	handler(readOnly(t, nil), "dev", Actions{}, Sources{}).ServeHTTP(w, local("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
 		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_providers":[]`) ||
 		!strings.Contains(body, `"top_projects":[]`) ||
@@ -364,20 +380,11 @@ func TestOverviewAndMeta(t *testing.T) {
 // outcomes map to status codes. The stub stands in for the CLI's submission
 // path, so nothing here touches a checkout.
 func TestSubmitRun(t *testing.T) {
-	root := t.TempDir()
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Submit(trace.Request{Workflow: "scout", Repo: "/repos/alpha", Request: "look", Branch: "main"}); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		if _, err := db.Submit(trace.Request{Workflow: "scout", Repo: "/repos/alpha", Request: "look", Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	var calls [][4]string
 	var result error
@@ -389,14 +396,7 @@ func TestSubmitRun(t *testing.T) {
 		return "20260923T120000Z_build_1", nil
 	}}, Sources{})
 	post := func(h http.Handler, host, origin, contentType, body string) (int, map[string]string) {
-		r := local("POST", "/api/projects/runs", strings.NewReader(body))
-		r.Host = host
-		if origin != "" {
-			r.Header.Set("Origin", origin)
-		}
-		r.Header.Set("Content-Type", contentType)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		w := browserWrite(h, "POST", "/api/projects/runs", host, origin, contentType, body)
 		var out map[string]string
 		json.Unmarshal(w.Body.Bytes(), &out)
 		return w.Code, out
@@ -472,21 +472,14 @@ func TestSubmitRun(t *testing.T) {
 // The recovery route keeps the browser protections, requires guidance,
 // passes it to the shared submission and maps refusals to a conflict.
 func TestResumeRoute(t *testing.T) {
-	root := t.TempDir()
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, attempt, token := claimed(t, db, "build", "/repos/alpha", "greet")
-	if err := db.Complete(id, attempt, token, trace.StatusFail, "push failed"); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	var id string
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		var attempt, token string
+		id, attempt, token = claimed(t, db, "build", "/repos/alpha", "greet")
+		if err := db.Complete(id, attempt, token, trace.StatusFail, "push failed"); err != nil {
+			t.Fatal(err)
+		}
+	})
 	var resumed []string
 	var resumeErr error
 	h := handler(ro, "dev", Actions{Resume: func(runID, guidance string) (int, error) {
@@ -494,13 +487,7 @@ func TestResumeRoute(t *testing.T) {
 		return 1, resumeErr
 	}}, Sources{})
 	post := func(origin, body string) (int, string) {
-		r := local("POST", "/api/runs/"+id+"/recoveries", strings.NewReader(body))
-		if origin != "" {
-			r.Header.Set("Origin", origin)
-		}
-		r.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		w := browserWrite(h, "POST", "/api/runs/"+id+"/recoveries", Addr, origin, "application/json", body)
 		return w.Code, w.Body.String()
 	}
 	if code, _ := post("", `{"guidance":"x"}`); code != http.StatusForbidden {
@@ -519,13 +506,7 @@ func TestResumeRoute(t *testing.T) {
 	if code, _ := post("http://"+Addr, `{"guidance":"again"}`); code != http.StatusConflict {
 		t.Errorf("refusal: %d", code)
 	}
-	r := local("POST", "/api/runs/"+id+"/recoveries", strings.NewReader(`{}`))
-	r.Header.Set("Origin", "http://"+Addr)
-	w := httptest.NewRecorder()
-	handler(ro, "dev", Actions{}, Sources{}).ServeHTTP(w, r)
-	if w.Code == http.StatusCreated {
-		t.Error("the route exists without the action")
-	}
+	assertNoWriteRoute(t, handler(ro, "dev", Actions{}, Sources{}), "POST", "/api/runs/"+id+"/recoveries")
 }
 
 // The run page's two writes: revise and cancel. They carry New run's
@@ -533,25 +514,18 @@ func TestResumeRoute(t *testing.T) {
 // statuses the page can explain. The run payload carries the iterations and
 // the models each ran with.
 func TestReviseAndCancelRoutes(t *testing.T) {
-	root := t.TempDir()
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, attempt, token := claimed(t, db, "build", "/repos/alpha", "greet")
-	if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Revise(id, 0, "greet louder",
-		[]byte(`{"roster":{"agents":{"planner":{"provider":"moonshotai","model":"kimi-k3"}}}}`)); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	var id string
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		var attempt, token string
+		id, attempt, token = claimed(t, db, "build", "/repos/alpha", "greet")
+		if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Revise(id, 0, "greet louder",
+			[]byte(`{"roster":{"agents":{"planner":{"provider":"moonshotai","model":"kimi-k3"}}}}`)); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	var revised, cancelled []string
 	var reviseErr, cancelErr error
@@ -566,13 +540,7 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 		},
 	}, Sources{})
 	post := func(path, origin, contentType, body string) (int, map[string]any) {
-		r := local("POST", path, strings.NewReader(body))
-		if origin != "" {
-			r.Header.Set("Origin", origin)
-		}
-		r.Header.Set("Content-Type", contentType)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		w := browserWrite(h, "POST", path, Addr, origin, contentType, body)
 		var out map[string]any
 		json.Unmarshal(w.Body.Bytes(), &out)
 		return w.Code, out
@@ -645,14 +613,7 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 	// Without the actions, neither route exists.
 	bare := handler(ro, "dev", Actions{}, Sources{})
 	for _, path := range []string{revise, cancel} {
-		r := local("POST", path, strings.NewReader(`{}`))
-		r.Header.Set("Origin", "http://"+Addr)
-		r.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		bare.ServeHTTP(w, r)
-		if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
-			t.Errorf("%s on a read-only dashboard: %d", path, w.Code)
-		}
+		assertNoWriteRoute(t, bare, "POST", path)
 	}
 }
 
@@ -660,36 +621,29 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 // kept, and the run still counts toward its original repository rather than
 // the worktree it ran in.
 func TestWorktreeReporting(t *testing.T) {
-	root := t.TempDir()
-	db, err := trace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, attempt, token := claimed(t, db, "build", "/repos/alpha", "greet")
-	tree := filepath.Join(root, "worktrees", id, "iteration-0")
-	if err := db.SetWorktree(id, attempt, tree, "0123456789abcdef", "active"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Complete(id, attempt, token, trace.StatusFail, "validation unresolved"); err != nil {
-		t.Fatal(err)
-	}
-	patch := filepath.Join(root, "runs", id, "result.patch")
-	ref := "refs/lathe/runs/" + id + "/iteration-0"
-	if err := db.SetPatch(id, 0, patch); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.SetRecoveryRef(id, 0, ref); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.SetWorktreeState(id, 0, "pending", "removing the worktree: busy"); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	var id, tree, patch, ref string
+	ro := readOnly(t, func(db *trace.DB, root string) {
+		var attempt, token string
+		id, attempt, token = claimed(t, db, "build", "/repos/alpha", "greet")
+		tree = filepath.Join(root, "worktrees", id, "iteration-0")
+		if err := db.SetWorktree(id, attempt, tree, "0123456789abcdef", "active"); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Complete(id, attempt, token, trace.StatusFail, "validation unresolved"); err != nil {
+			t.Fatal(err)
+		}
+		patch = filepath.Join(root, "runs", id, "result.patch")
+		ref = "refs/lathe/runs/" + id + "/iteration-0"
+		if err := db.SetPatch(id, 0, patch); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetRecoveryRef(id, 0, ref); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetWorktreeState(id, 0, "pending", "removing the worktree: busy"); err != nil {
+			t.Fatal(err)
+		}
+	})
 	h := handler(ro, "dev", Actions{}, Sources{})
 	get := func(path string, v any) {
 		t.Helper()
@@ -725,15 +679,7 @@ func TestWorktreeReporting(t *testing.T) {
 // the list is every agent then every routing phase with no bodies, and an
 // agent's page carries the bodies as they are in the home.
 func TestAgentRoutes(t *testing.T) {
-	root := t.TempDir()
-	if err := trace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	ro := readOnly(t, nil)
 	home, _, roster := seededRoster(t)
 	h := handler(ro, "dev", Actions{}, Sources{Roster: roster})
 
@@ -793,7 +739,7 @@ func TestAgentRoutes(t *testing.T) {
 	for _, a := range list {
 		got = append(got, a.Name)
 	}
-	if len(list) != 15 || !reflect.DeepEqual(got, names) {
+	if !reflect.DeepEqual(got, names) {
 		t.Fatalf("agents = %v; want %v", got, names)
 	}
 	for _, field := range []string{`"body"`, `"seed"`, `"hash"`, `shared_with`} {
