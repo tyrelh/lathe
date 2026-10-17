@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -205,16 +204,16 @@ func revisionBrief(request string, rev *run.Revision, repo string) string {
 	b.WriteString(request)
 
 	var plan PlanOutput
-	if dir := latest(rev.Prior, "plan.json", &plan); dir != "" && plan.Printable() {
+	if latest(rev.Prior, "plan.json", &plan) != "" && plan.Printable() {
 		b.WriteString("\n### Previous plan\n")
 		printPlan(&b, &plan)
 	}
 	var impl ImplementOutput
-	if dir := latest(rev.Prior, "implement.json", &impl); dir != "" && impl.Summary != nil {
+	if latest(rev.Prior, "implement.json", &impl) != "" && impl.Summary != nil {
 		fmt.Fprintf(&b, "\n### Previous implementation\n\n%s\n", *impl.Summary)
 	}
 	var v Validation
-	if dir := latest(rev.Prior, "validation.json", &v); dir != "" && v.Summary != "" {
+	if latest(rev.Prior, "validation.json", &v) != "" && v.Summary != "" {
 		fmt.Fprintf(&b, "\n### Previous validation\n\n%s\n", v.Summary)
 	}
 
@@ -236,13 +235,15 @@ func revisionBrief(request string, rev *run.Revision, repo string) string {
 // returns that iteration's directory, or "" if none does.
 func latest(prior []run.Prior, name string, out any) string {
 	for _, p := range slices.Backward(prior) {
-		b, err := os.ReadFile(filepath.Join(p.Dir, name))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err == nil && json.Unmarshal(b, out) == nil {
+		if readReport(p.Dir, name, out) {
 			return p.Dir
 		}
 	}
 	return ""
+}
+
+// readReport decodes dir/name into out and reports whether it could.
+func readReport(dir, name string, out any) bool {
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	return err == nil && json.Unmarshal(b, out) == nil
 }

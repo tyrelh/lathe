@@ -117,7 +117,7 @@ func recoveryContext(r *run.Run, c *code) string {
 		dir := rec.Prior[n-1].Dir
 		for i := maxScopeSendBacks + 1; i >= 1; i-- {
 			var req ScopeRequest
-			if latest([]run.Prior{{Dir: dir}}, fmt.Sprintf("scope-%d.json", i), &req) != "" {
+			if readReport(dir, fmt.Sprintf("scope-%d.json", i), &req) {
 				fmt.Fprintf(&b, "\n### Prior scope request %d (%s)\n", req.N, req.Outcome)
 				section(&b, "Needed", req.Needed)
 				if req.Explanation != "" {
@@ -210,16 +210,16 @@ func dismissalsOf(prior []run.Prior, v *Validation, source int) []Dismissal {
 // iterations, those in its validation.json and disposition.json.
 func dismissalsIn(p run.Prior) []Dismissal {
 	all := []Dismissal{}
-	if latest([]run.Prior{p}, "dismissals.json", &all) != "" {
+	if readReport(p.Dir, "dismissals.json", &all) {
 		return all
 	}
 	var out []Dismissal
 	var v Validation
-	if latest([]run.Prior{p}, "validation.json", &v) != "" {
+	if readReport(p.Dir, "validation.json", &v) {
 		out = append(out, v.Dismissals...)
 	}
 	var d Disposition
-	if latest([]run.Prior{p}, "disposition.json", &d) != "" {
+	if readReport(p.Dir, "disposition.json", &d) {
 		for _, dm := range d.Dismissed {
 			if !slices.ContainsFunc(out, func(x Dismissal) bool { return sameDismissal(x, dm) }) {
 				out = append(out, dm)
