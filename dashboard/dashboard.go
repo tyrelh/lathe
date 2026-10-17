@@ -79,6 +79,8 @@ type Actions struct {
 // source registers no route.
 type Sources struct {
 	Roster Roster
+	// PRURL is a run's recorded pull request URL, or "".
+	PRURL func(trace.Row) string
 }
 
 // eventPage is the per-poll event cap; index.html's PAGE must match.
@@ -99,6 +101,7 @@ func Handler(dataRoot, version string, actions Actions, sources Sources) http.Ha
 	if err != nil {
 		return failed(err)
 	}
+	sources.PRURL = func(r trace.Row) string { return worker.RecordedPRURL(dataRoot, r) }
 	return handler(db, version, actions, sources)
 }
 
@@ -192,7 +195,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		}
 		writeJSON(w, rows, err)
 	})
-	mux.HandleFunc("GET /api/runs/{id}", runDetail(db))
+	mux.HandleFunc("GET /api/runs/{id}", runDetail(db, sources.PRURL))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hosts[r.Host] {
 			http.Error(w, "forbidden host", http.StatusForbidden)
@@ -288,7 +291,7 @@ func projectRuns(db *trace.DB) http.HandlerFunc {
 
 // runDetail answers a run with its phases, iterations, the events after the
 // after cursor, and whether the run page may offer revise and resume.
-func runDetail(db *trace.DB) http.HandlerFunc {
+func runDetail(db *trace.DB, prURL func(trace.Row) string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		run, err := db.Get(id)
@@ -318,8 +321,14 @@ func runDetail(db *trace.DB) http.HandlerFunc {
 		// index.html knows this number: a full page is how it tells that a
 		// settled run still has events to fetch before it stops polling.
 		events, err := db.Events(id, int64(intParam(r, "after", 0)), eventPage)
+		url := ""
+		if prURL != nil {
+			url = prURL(run)
+		}
 		writeJSON(w, map[string]any{
 			"run": run, "phases": phases, "events": events, "iterations": views,
+			"pr_url":      url,
+			"pr_pending":  url != "" && (run.PRState == nil || *run.PRState == "open"),
 			"revisable":   run.Workflow == workflow.NameBuild && trace.Revisable(run) == nil,
 			"recoverable": trace.Recoverable(run) == nil,
 		}, err)

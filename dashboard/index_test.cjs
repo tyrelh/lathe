@@ -86,7 +86,7 @@ let response, resolveFetch, failNext = null, frames = [];
 let routeResponses = null;
 const observers = [];
 const listeners = new Map();
-const intervals = [];
+const intervals = [], slow = [];
 // confirms records every confirm() the page asks; confirmAnswer is the reply.
 const confirms = [];
 let confirmAnswer = true;
@@ -98,7 +98,9 @@ const context = vm.createContext({
   confirm: message => { confirms.push(message); return confirmAnswer; },
   // went records the last history.go().
   history: {state: null, replaceState(state, title, url) { this.state = state; if (url !== undefined) context.location.hash = url; }, go(n) { this.went = n; }},
-  location: {hash: '#run'}, addEventListener(type, handler) { listeners.set(type, handler); }, setInterval(f) { intervals.push(f); }, setTimeout, clearTimeout, Date, URLSearchParams,
+  location: {hash: '#run'}, addEventListener(type, handler) { listeners.set(type, handler); }, setInterval(f) { intervals.push(f); },
+  // slow holds timers too long for a test to wait out.
+  setTimeout: (f, ms) => ms > 1000 ? slow.push(f) : setTimeout(f, ms), clearTimeout, Date, URLSearchParams,
   innerWidth: 800, innerHeight: 600, scrollY: 0, scrollTo() { throw Error('must not scroll a reader away'); },
   ResizeObserver: class {
     constructor(callback) { this.callback = callback; this.watching = []; observers.push(this); }
@@ -835,6 +837,27 @@ let area = 'run page';
     'a non-agent phase does not show context');
   assert(!call('block', {...reportPhases.find(p => p.phase_id === 'old'), owner:'engineer'}, {status:'success', start:0, end:1}).includes('Context (estimated)'),
     'a non-agent block tooltip agrees with its details');
+
+  // Settled runs recheck a recorded PR slowly until its state is final.
+  for (const state of [null, 'open', 'merged', 'closed']) {
+    evaluate('done = false'); slow.length = 0;
+    serve([], phases, {...run, pr_state:state}, {pr_url:'https://github.com/o/r/pull/1?x="<&', pr_pending:state === null || state === 'open'});
+    await evaluate('tick()');
+    assert.equal(evaluate('done'), true);
+    assert.equal(slow.length, state === null || state === 'open' ? 1 : 0);
+    const summary = nodes.get('summary').innerHTML;
+    assert(summary.includes(state || 'not checked'));
+    assert(summary.includes('href="https://github.com/o/r/pull/1?x=&quot;&lt;&amp;"'));
+  }
+  evaluate('done = false');
+  serve([], phases, run, {pr_url:'javascript:alert(1)'});
+  await evaluate('tick()');
+  assert(!nodes.get('summary').innerHTML.includes('javascript:'));
+  evaluate('done = false');
+  serve([], phases, run);
+  await evaluate('tick()');
+  assert.equal(evaluate('done'), true);
+  assert(!nodes.get('summary').innerHTML.includes('pull request'));
 
   // Navigation while a request is in flight cannot contaminate the next run.
   evaluate('done = false'); response = null;

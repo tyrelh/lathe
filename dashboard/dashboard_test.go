@@ -24,7 +24,59 @@ import (
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/worker"
 )
+
+func TestRunPRObservation(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(trace.Request{Workflow: "build", Repo: repo, Request: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := worker.ReportDir(root, id, 0)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pr.json"), []byte(`{"url":"https://github.com/o/r/pull/1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := handler(db, "test", Actions{}, Sources{PRURL: func(r trace.Row) string { return worker.RecordedPRURL(root, r) }})
+	for _, state := range []string{"", "open", "merged"} {
+		if state != "" {
+			if err := db.ObservePR(id, state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, local("GET", "/api/runs/"+id, nil))
+		var got struct {
+			Run     trace.Row `json:"run"`
+			URL     string    `json:"pr_url"`
+			Pending bool      `json:"pr_pending"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.URL != "https://github.com/o/r/pull/1" {
+			t.Fatalf("PR URL = %q", got.URL)
+		}
+		if got.Pending != (state != "merged") {
+			t.Fatalf("%q pending = %v", state, got.Pending)
+		}
+		if state == "" {
+			if got.Run.PRState != nil {
+				t.Fatal("unchecked state is not null")
+			}
+		} else if got.Run.PRState == nil || *got.Run.PRState != state {
+			t.Fatalf("state = %+v", got.Run.PRState)
+		}
+	}
+}
 
 // repo is the checkout path the seeded runs record.
 const repo = "/repos/alpha"

@@ -22,8 +22,8 @@ func TestConcurrentUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Back to the schema before the last migration.
-		for _, column := range []string{"kind", "source_iteration", "guidance", "resolved_request", "restored", "preservation"} {
-			if _, err := db.sql.Exec("ALTER TABLE iterations DROP COLUMN " + column); err != nil {
+		for _, column := range []string{"pr_state", "pr_state_at"} {
+			if _, err := db.sql.Exec("ALTER TABLE runs DROP COLUMN " + column); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -75,7 +75,7 @@ func TestConcurrentUpgrade(t *testing.T) {
 		if err := db.sql.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != len(migrations) {
 			t.Fatalf("user_version = %d, %v; want %d", version, err, len(migrations))
 		}
-		rows, err := db.sql.Query(`SELECT kind, source_iteration, guidance, resolved_request, restored, preservation FROM iterations LIMIT 1`)
+		rows, err := db.sql.Query(`SELECT pr_state, pr_state_at FROM runs LIMIT 1`)
 		if err != nil {
 			t.Fatalf("upgraded schema: %v", err)
 		}
