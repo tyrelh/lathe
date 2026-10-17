@@ -388,6 +388,12 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c 
 	})
 }
 
+// Printable reports whether Summary, Steps, Files and Risks are all set, the
+// fields printPlan and BuildRouteState dereference.
+func (p *PlanOutput) Printable() bool {
+	return p.Summary != nil && p.Steps != nil && p.Files != nil && p.Risks != nil
+}
+
 // printPlan renders an envelope Validate has already accepted, so every list is
 // non-nil by the time it gets here.
 func printPlan(w io.Writer, p *PlanOutput) {
