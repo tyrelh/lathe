@@ -77,8 +77,7 @@ const prFields = "url,state,headRefName,baseRefName,isDraft,headRefOid,isCrossRe
 
 // CheckPublication establishes, fail-closed, that origin's branch is at head
 // (absent when head is "") and, with url, that the pull request is open,
-// comes from branch in origin's own repository, and points at head. It is
-// what a recovery checks before every delivery and at submission.
+// comes from branch in origin's own repository, and points at head.
 func CheckPublication(repo, branch, head, url string) (PR, error) {
 	remote, err := RemoteHead(repo, branch)
 	if err != nil {
@@ -160,9 +159,7 @@ func ReadyPR(repo, url string) error {
 	return nil
 }
 
-// ViewPR reads a pull request's state now. Publication calls it on both sides
-// of a push, because pushing and closing a pull request are separate
-// operations and someone else may do the second in between.
+// ViewPR reads url's current state from gh.
 func ViewPR(repo, url string) (PR, error) {
 	cmd := exec.Command("gh", "pr", "view", url, "--json", prFields)
 	cmd.Dir = repo
