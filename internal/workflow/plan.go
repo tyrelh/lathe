@@ -100,15 +100,21 @@ type revisionPlan PlanOutput
 func (p *revisionPlan) Validate() []string  { return (*PlanOutput)(p).validate(true) }
 func (p *revisionPlan) Artifacts() []string { return (*PlanOutput)(p).Artifacts() }
 
+// planOf is the PlanOutput inside a plan or revision plan envelope.
+func planOf(e run.Envelope) (*PlanOutput, bool) {
+	if rp, ok := e.(*revisionPlan); ok {
+		return (*PlanOutput)(rp), true
+	}
+	p, ok := e.(*PlanOutput)
+	return p, ok
+}
+
 // FilesPermitted rejects a plan that would hand a builder a path it must never
 // have. The check belongs here rather than at the first blocked write: a plan
 // naming .env costs one planner turn to reject and a whole run to discover.
 func FilesPermitted(protected []string) run.Gate {
 	return func(e run.Envelope, _ *run.Run) []string {
-		p, ok := e.(*PlanOutput)
-		if rp, revision := e.(*revisionPlan); revision {
-			p, ok = (*PlanOutput)(rp), true
-		}
+		p, ok := planOf(e)
 		if !ok || p.Files == nil {
 			return nil
 		}
@@ -199,15 +205,19 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			return "", r.Resolve(request)
 		})
 	}
+	// plannerRequest reads r.Request on each call because the issue node may
+	// rewrite it.
+	plannerRequest := func() string {
+		if brief != "" {
+			return brief
+		}
+		return r.Request
+	}
 	// After issue, which rewrites r.Request. Nothing sends back here, so the
 	// planner's tier holds for the whole iteration.
 	if r.Routes("planner") {
 		g.Add(run.Node{Name: "route-plan", Owner: "engineer"}, func(e *run.Entry) (string, error) {
-			request := r.Request
-			if brief != "" {
-				request = brief
-			}
-			return "", e.Route("planner", PlanRouteState(request))
+			return "", e.Route("planner", PlanRouteState(plannerRequest()))
 		})
 	}
 	// The reviewer's objections, which of them block the plan outright, and
@@ -230,10 +240,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 		plan = (*revisionPlan)(out)
 	}
 	g.Add(run.Node{Name: "plan", Owner: "planner"}, func(e *run.Entry) (string, error) {
-		request := r.Request
-		if brief != "" {
-			request = brief
-		}
+		request := plannerRequest()
 		if !planned {
 			request += recoveryContext(r, c)
 			planned = true
