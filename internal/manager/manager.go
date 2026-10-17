@@ -13,11 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/tyrelh/lathe/dashboard"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
+	"github.com/tyrelh/lathe/internal/workflow"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
@@ -78,6 +80,7 @@ var stopWait = 10 * time.Second
 // handed to the dashboard for its forms; nil ones leave it read-only. sources
 // are handed to it for its reads outside the database.
 func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions dashboard.Actions, sources dashboard.Sources) error {
+	out = &lockedWriter{out: out}
 	lock, err := Lock(dataRoot)
 	if err != nil {
 		return fmt.Errorf("a manager is already running for %s", dataRoot)
@@ -108,6 +111,22 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 	defer srv.Close()
 
 	fmt.Fprintf(out, "lathe manager: capacity %d · dashboard http://%s\n", m.capacity, dashboard.Addr)
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollCtx.Done():
+				return
+			case <-ticker.C:
+				m.pollPRs(pollCtx, workspace.ViewPR)
+			}
+		}
+	}()
+	defer func() { cancelPoll(); <-pollDone }()
 	tick := time.NewTicker(poll)
 	defer tick.Stop()
 	for {
@@ -130,6 +149,53 @@ func Lock(dataRoot string) (*workspace.Lock, error) {
 		return nil, err
 	}
 	return workspace.Acquire(dataRoot, filepath.Join(dataRoot, "manager"))
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	out io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.Write(p)
+}
+
+// pollPRs observes final outcomes for runs with publication records.
+func (m *manager) pollPRs(ctx context.Context, view func(string, string) (workspace.PR, error)) {
+	rows, err := m.db.UnrecordedPRRuns()
+	if err != nil {
+		fmt.Fprintln(m.out, "lathe manager: polling PRs:", err)
+		return
+	}
+	for _, row := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		url := ""
+		for i := row.Iteration; i >= 0; i-- {
+			if pr, ok := workflow.ReadPRRecord(worker.ReportDir(m.dataRoot, row.ID, i)); ok {
+				url = pr.URL
+				break
+			}
+		}
+		if url == "" {
+			continue
+		}
+		pr, err := view(row.Repo, url)
+		if err == nil {
+			switch pr.State {
+			case "MERGED":
+				err = m.db.RecordPRState(row.ID, "merged")
+			case "CLOSED":
+				err = m.db.RecordPRState(row.ID, "closed")
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(m.out, "lathe manager: polling PR for %s: %v\n", row.ID, err)
+		}
+	}
 }
 
 type manager struct {

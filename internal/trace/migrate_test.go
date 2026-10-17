@@ -10,6 +10,25 @@ import (
 	"testing"
 )
 
+func TestPRStateMigration(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(root)
+	if err != nil { t.Fatal(err) }
+	if _, err := db.sql.Exec(`INSERT INTO runs (run_id, workflow, repo, request, status) VALUES ('old-pr', 'build', '/repo', 'old', 'ok')`); err != nil { t.Fatal(err) }
+	for _, column := range []string{"pr_state", "pr_state_at"} {
+		if _, err := db.sql.Exec("ALTER TABLE runs DROP COLUMN " + column); err != nil { t.Fatal(err) }
+	}
+	if _, err := db.sql.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(migrations)-1)); err != nil { t.Fatal(err) }
+	db.Close()
+	db, err = Open(root)
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	var state, at sql.NullString
+	if err := db.sql.QueryRow(`SELECT pr_state, pr_state_at FROM runs WHERE run_id = 'old-pr'`).Scan(&state, &at); err != nil { t.Fatal(err) }
+	if state.Valid || at.Valid { t.Fatal("migration inferred an outcome") }
+	if _, err := db.sql.Exec(`UPDATE runs SET pr_state = 'open'`); err == nil { t.Fatal("missing state constraint") }
+}
+
 // An existing database one migration behind, opened by many connections
 // and processes at once, is upgraded exactly once: each opener reads the
 // version under the write lock, so none repeats a migration another already
@@ -22,8 +41,8 @@ func TestConcurrentUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Back to the schema before the last migration.
-		for _, column := range []string{"kind", "source_iteration", "guidance", "resolved_request", "restored", "preservation"} {
-			if _, err := db.sql.Exec("ALTER TABLE iterations DROP COLUMN " + column); err != nil {
+		for _, column := range []string{"pr_state", "pr_state_at"} {
+			if _, err := db.sql.Exec("ALTER TABLE runs DROP COLUMN " + column); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -75,7 +94,7 @@ func TestConcurrentUpgrade(t *testing.T) {
 		if err := db.sql.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != len(migrations) {
 			t.Fatalf("user_version = %d, %v; want %d", version, err, len(migrations))
 		}
-		rows, err := db.sql.Query(`SELECT kind, source_iteration, guidance, resolved_request, restored, preservation FROM iterations LIMIT 1`)
+		rows, err := db.sql.Query(`SELECT pr_state, pr_state_at FROM runs LIMIT 1`)
 		if err != nil {
 			t.Fatalf("upgraded schema: %v", err)
 		}

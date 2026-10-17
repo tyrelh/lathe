@@ -2,6 +2,8 @@ package manager
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,89 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
+
+func TestPollPRs(t *testing.T) {
+	m, db, out := newManager(t, 1, &fake{})
+	ids := map[string]string{}
+	for _, state := range []string{"MERGED", "CLOSED", "OPEN", "ERROR", "missing", "malformed", "UNKNOWN"} {
+		id := submit(t, db, "scout", "/"+state)
+		ids[state] = id
+		if state == "missing" { continue }
+		dir := worker.ReportDir(m.dataRoot, id, 0)
+		if err := os.MkdirAll(dir, 0o700); err != nil { t.Fatal(err) }
+		body := fmt.Sprintf(`{"url":%q}`, "https://github.com/o/r/pull/"+state)
+		if state == "malformed" { body = "{" }
+		if err := os.WriteFile(filepath.Join(dir, "pr.json"), []byte(body), 0o600); err != nil { t.Fatal(err) }
+	}
+	calls := map[string]int{}
+	failed := true
+	view := func(repo, url string) (workspace.PR, error) {
+		calls[repo]++
+		state := strings.TrimPrefix(repo, "/")
+		if state == "missing" || state == "malformed" { t.Fatalf("polled %s", repo) }
+		if state == "ERROR" {
+			if failed { return workspace.PR{}, fmt.Errorf("gh unavailable") }
+			state = "MERGED"
+		}
+		return workspace.PR{State: state}, nil
+	}
+	m.pollPRs(context.Background(), view)
+	for state, id := range ids {
+		row, err := db.Get(id)
+		if err != nil { t.Fatal(err) }
+		if state == "MERGED" || state == "CLOSED" {
+			if row.PRState == nil || *row.PRState != strings.ToLower(state) || row.PRStateAt == nil { t.Fatalf("%s: %+v", state, row) }
+		} else if row.PRState != nil || row.PRStateAt != nil { t.Fatalf("%s was recorded", state) }
+	}
+	if !strings.Contains(out.String(), "gh unavailable") { t.Fatal("failure not logged") }
+	if err := m.dispatch(); err != nil { t.Fatal(err) }
+	failed = false
+	m.pollPRs(context.Background(), view)
+	row, _ := db.Get(ids["ERROR"])
+	if row.PRState == nil || *row.PRState != "merged" { t.Fatal("retry did not record") }
+	if calls["/MERGED"] != 1 || calls["/CLOSED"] != 1 { t.Fatal("polled final states again") }
+}
+
+func TestPollPRsIterationPrecedence(t *testing.T) {
+	m, db, _ := newManager(t, 1, &fake{})
+	id := submit(t, db, "build", "/historical")
+	attempt := trace.NewAttemptID(id)
+	if err := db.Reserve(id, attempt, ""); err != nil {
+		t.Fatal(err)
+	}
+	token := trace.NewClaimToken()
+	if _, err := db.Claim(attempt, token, "host", 1, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Revise(id, 0, "revision", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= 1; i++ {
+		dir := worker.ReportDir(m.dataRoot, id, i)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf(`{"url":"https://github.com/o/r/pull/%d"}`, i+1)
+		if err := os.WriteFile(filepath.Join(dir, "pr.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := 0
+	m.pollPRs(context.Background(), func(repo, url string) (workspace.PR, error) {
+		calls++
+		if repo != "/historical" || url != "https://github.com/o/r/pull/2" {
+			t.Fatalf("view arguments: %q, %q", repo, url)
+		}
+		return workspace.PR{State: "MERGED"}, nil
+	})
+	row, err := db.Get(id)
+	if err != nil || calls != 1 || row.PRState == nil || *row.PRState != "merged" {
+		t.Fatalf("iteration outcome: %+v, calls %d, error %v", row, calls, err)
+	}
+}
 
 // fake is a launcher that records what it was asked to start and answers
 // whatever a test wants about whether it is still running. Claim races,

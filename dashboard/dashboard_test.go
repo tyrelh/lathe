@@ -24,7 +24,84 @@ import (
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/trace"
+	"github.com/tyrelh/lathe/internal/worker"
 )
+
+func TestRunDetailPRState(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	id, err := db.Submit(trace.Request{Workflow: "build", Repo: repo, Request: "test"})
+	if err != nil { t.Fatal(err) }
+	mux := Handler(root, "test", Actions{}, Sources{})
+	read := func() map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, local("GET", "/api/runs/"+id, nil))
+		if w.Code != http.StatusOK { t.Fatalf("status %d: %s", w.Code, w.Body.String()) }
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil { t.Fatal(err) }
+		return body
+	}
+	body := read()
+	run := body["run"].(map[string]any)
+	if run["pr_state"] != nil || run["pr_state_at"] != nil || body["pr_url"] != "" { t.Fatalf("initial: %+v", body) }
+	dir := worker.ReportDir(root, id, 0)
+	if err := os.MkdirAll(dir, 0o700); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, "pr.json"), []byte(`{"url":"https://github.com/o/r/pull/1"}`), 0o600); err != nil { t.Fatal(err) }
+	if err := db.RecordPRState(id, "merged"); err != nil { t.Fatal(err) }
+	body = read()
+	run = body["run"].(map[string]any)
+	if run["pr_state"] != "merged" || run["pr_state_at"] == nil || body["pr_url"] != "https://github.com/o/r/pull/1" { t.Fatalf("recorded: %+v", body) }
+}
+
+func TestRunDetailIterationPR(t *testing.T) {
+	root := t.TempDir()
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, attempt, token := claimed(t, db, "build", repo, "initial request")
+	if err := db.Complete(id, attempt, token, trace.StatusOK, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Revise(id, 0, "revision", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= 1; i++ {
+		dir := worker.ReportDir(root, id, i)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf(`{"url":"https://github.com/o/r/pull/%d"}`, i+1)
+		if err := os.WriteFile(filepath.Join(dir, "pr.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.RecordPRState(id, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	Handler(root, "test", Actions{}, Sources{}).ServeHTTP(w, local("GET", "/api/runs/"+id, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Run trace.Row `json:"run"`
+		URL string `json:"pr_url"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.URL != "https://github.com/o/r/pull/2" || body.Run.PRState == nil || *body.Run.PRState != "closed" || body.Run.PRStateAt == nil {
+		t.Fatalf("iteration record: %+v", body)
+	}
+	if _, err := time.Parse(time.RFC3339, *body.Run.PRStateAt); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // repo is the checkout path the seeded runs record.
 const repo = "/repos/alpha"
@@ -179,7 +256,7 @@ func TestRoutes(t *testing.T) {
 			}
 		}
 	})
-	h := handler(ro, "v0.2.0-test", Actions{}, Sources{})
+	h := handler(ro, t.TempDir(), "v0.2.0-test", Actions{}, Sources{})
 
 	get := func(path string) string {
 		w := httptest.NewRecorder()
@@ -281,7 +358,7 @@ func TestOverviewAndMeta(t *testing.T) {
 			}
 		}
 	})
-	h := handler(ro, "v0.2.0", Actions{}, Sources{})
+	h := handler(ro, t.TempDir(), "v0.2.0", Actions{}, Sources{})
 
 	do := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -367,7 +444,7 @@ func TestOverviewAndMeta(t *testing.T) {
 	// A dashboard opened on nothing at all: Init creates the database, and the
 	// empty rankings marshal as [] so the client can map over them.
 	w := httptest.NewRecorder()
-	handler(readOnly(t, nil), "dev", Actions{}, Sources{}).ServeHTTP(w, local("GET", "/api/overview", nil))
+	handler(readOnly(t, nil), t.TempDir(), "dev", Actions{}, Sources{}).ServeHTTP(w, local("GET", "/api/overview", nil))
 	if body := w.Body.String(); !strings.Contains(body, `"top_runs":[]`) ||
 		!strings.Contains(body, `"top_models":[]`) || !strings.Contains(body, `"top_providers":[]`) ||
 		!strings.Contains(body, `"top_projects":[]`) ||
@@ -388,7 +465,7 @@ func TestSubmitRun(t *testing.T) {
 
 	var calls [][4]string
 	var result error
-	h := handler(ro, "dev", Actions{Submit: func(workflow, repo, prompt, issue string) (string, error) {
+	h := handler(ro, t.TempDir(), "dev", Actions{Submit: func(workflow, repo, prompt, issue string) (string, error) {
 		calls = append(calls, [4]string{workflow, repo, prompt, issue})
 		if result != nil {
 			return "", result
@@ -406,7 +483,7 @@ func TestSubmitRun(t *testing.T) {
 	}
 	build := `{"repo":"/repos/alpha","workflow":"build","prompt":"  add retries  "}`
 
-	if code, _ := post(handler(ro, "dev", Actions{}, Sources{}), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
+	if code, _ := post(handler(ro, t.TempDir(), "dev", Actions{}, Sources{}), Addr, "http://"+Addr, "application/json", build); code != http.StatusMethodNotAllowed {
 		t.Errorf("nil submit: %d, want the POST route unregistered (405)", code)
 	}
 
@@ -482,7 +559,7 @@ func TestResumeRoute(t *testing.T) {
 	})
 	var resumed []string
 	var resumeErr error
-	h := handler(ro, "dev", Actions{Resume: func(runID, guidance string) (int, error) {
+	h := handler(ro, t.TempDir(), "dev", Actions{Resume: func(runID, guidance string) (int, error) {
 		resumed = append(resumed, runID+": "+guidance)
 		return 1, resumeErr
 	}}, Sources{})
@@ -506,7 +583,7 @@ func TestResumeRoute(t *testing.T) {
 	if code, _ := post("http://"+Addr, `{"guidance":"again"}`); code != http.StatusConflict {
 		t.Errorf("refusal: %d", code)
 	}
-	assertNoWriteRoute(t, handler(ro, "dev", Actions{}, Sources{}), "POST", "/api/runs/"+id+"/recoveries")
+	assertNoWriteRoute(t, handler(ro, t.TempDir(), "dev", Actions{}, Sources{}), "POST", "/api/runs/"+id+"/recoveries")
 }
 
 // The run page's two writes: revise and cancel. They carry New run's
@@ -529,7 +606,7 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 
 	var revised, cancelled []string
 	var reviseErr, cancelErr error
-	h := handler(ro, "dev", Actions{
+	h := handler(ro, t.TempDir(), "dev", Actions{
 		Revise: func(runID, request string) (int, error) {
 			revised = append(revised, runID+": "+request)
 			return 2, reviseErr
@@ -611,7 +688,7 @@ func TestReviseAndCancelRoutes(t *testing.T) {
 	}
 
 	// Without the actions, neither route exists.
-	bare := handler(ro, "dev", Actions{}, Sources{})
+	bare := handler(ro, t.TempDir(), "dev", Actions{}, Sources{})
 	for _, path := range []string{revise, cancel} {
 		assertNoWriteRoute(t, bare, "POST", path)
 	}
@@ -643,7 +720,7 @@ func TestRunEligibility(t *testing.T) {
 			ids[i] = id
 		}
 	})
-	h := handler(ro, "dev", Actions{}, Sources{})
+	h := handler(ro, t.TempDir(), "dev", Actions{}, Sources{})
 	for i, c := range cases {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, local("GET", "/api/runs/"+ids[i], nil))
@@ -684,7 +761,7 @@ func TestWorktreeReporting(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	h := handler(ro, "dev", Actions{}, Sources{})
+	h := handler(ro, t.TempDir(), "dev", Actions{}, Sources{})
 	get := func(path string, v any) {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -721,7 +798,7 @@ func TestWorktreeReporting(t *testing.T) {
 func TestAgentRoutes(t *testing.T) {
 	ro := readOnly(t, nil)
 	home, _, roster := seededRoster(t)
-	h := handler(ro, "dev", Actions{}, Sources{Roster: roster})
+	h := handler(ro, t.TempDir(), "dev", Actions{}, Sources{Roster: roster})
 
 	get := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -876,7 +953,7 @@ func TestAgentRoutes(t *testing.T) {
 		t.Errorf("foreign host: %d, want 403", w.Code)
 	}
 
-	broken := handler(ro, "dev", Actions{}, Sources{Roster: func() (config.Config, error) { return config.Config{}, errors.New("bad roster") }})
+	broken := handler(ro, t.TempDir(), "dev", Actions{}, Sources{Roster: func() (config.Config, error) { return config.Config{}, errors.New("bad roster") }})
 	for _, path := range []string{"/api/agents", "/api/agents/planner"} {
 		w := httptest.NewRecorder()
 		broken.ServeHTTP(w, local("GET", path, nil))
@@ -885,7 +962,7 @@ func TestAgentRoutes(t *testing.T) {
 		}
 	}
 
-	bare := handler(ro, "dev", Actions{}, Sources{})
+	bare := handler(ro, t.TempDir(), "dev", Actions{}, Sources{})
 	for _, path := range []string{"/api/agents", "/api/agents/planner"} {
 		w := httptest.NewRecorder()
 		bare.ServeHTTP(w, local("GET", path, nil))

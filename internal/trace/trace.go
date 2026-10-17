@@ -416,6 +416,8 @@ func (d *DB) Event(runID, phaseID, typ, name string, payload any) error {
 
 // Row is one run as `lathe runs` lists it and the dashboard renders it.
 type Row struct {
+	PRState   *string `json:"pr_state"`
+	PRStateAt *string `json:"pr_state_at"`
 	ID        string  `json:"run_id"`
 	Workflow  string  `json:"workflow"`
 	Repo      string  `json:"repo"`
@@ -448,7 +450,7 @@ const runColumns = `SELECT run_id, workflow, repo, request, status,
 	COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(attempt_id, ''),
 	COALESCE(reason, ''), COALESCE(submitted_at, ''), COALESCE(started_at, ''),
 	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, ''),
-	iteration, COALESCE(activity_at, '')`
+	iteration, COALESCE(activity_at, ''), pr_state, pr_state_at`
 
 // queryer is a *sql.DB or *sql.Tx.
 type queryer interface {
@@ -480,11 +482,38 @@ func scanRows(rows *sql.Rows) ([]Row, error) {
 		var spec string
 		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status,
 			&r.Branch, &r.Commit, &r.AttemptID, &r.Reason, &r.Submitted, &r.Started,
-			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity); err != nil {
+			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity, &r.PRState, &r.PRStateAt); err != nil {
 			return nil, err
 		}
 		r.Spec = []byte(spec)
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RecordPRState records a final outcome once, with its observation time.
+func (d *DB) RecordPRState(runID, state string) error {
+	if state != "merged" && state != "closed" {
+		return fmt.Errorf("invalid PR state %q", state)
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET pr_state = ?, pr_state_at = ? WHERE run_id = ? AND pr_state IS NULL`, state, nowUTC(), runID)
+	return err
+}
+
+// UnrecordedPRRuns returns only ID, Repo and Iteration for runs without a final PR outcome.
+func (d *DB) UnrecordedPRRuns() ([]Row, error) {
+	rows, err := d.sql.Query(`SELECT run_id, COALESCE(repo, ''), iteration FROM runs WHERE pr_state IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Row{}
+	for rows.Next() {
+		var row Row
+		if err := rows.Scan(&row.ID, &row.Repo, &row.Iteration); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

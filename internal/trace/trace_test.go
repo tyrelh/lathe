@@ -10,6 +10,66 @@ import (
 	"testing"
 )
 
+func TestUnrecordedPRRunsProjection(t *testing.T) {
+	db := open(t)
+	id, err := db.Submit(Request{Workflow: "build", Repo: "/poll-repo", Request: "large request payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`UPDATE runs SET spec = ?, iteration = 3 WHERE run_id = ?`, `{"payload":"large specification"}`, id); err != nil {
+		t.Fatal(err)
+	}
+	full, err := db.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Request == "" || len(full.Spec) == 0 {
+		t.Fatal("fixture has no payload")
+	}
+	rows, err := db.UnrecordedPRRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("candidates: %+v", rows)
+	}
+	row := rows[0]
+	if row.ID != id || row.Repo != "/poll-repo" || row.Iteration != 3 {
+		t.Fatalf("missing polling fields: %+v", row)
+	}
+	if row.Request != "" || row.Spec != nil || row.Workflow != "" || row.Status != "" {
+		t.Fatalf("loaded non-polling fields: %+v", row)
+	}
+}
+
+func TestPRState(t *testing.T) {
+	db := open(t)
+	for _, state := range []string{"merged", "closed"} {
+		id, err := db.Submit(Request{Workflow: "build", Repo: "/repo", Request: state})
+		if err != nil { t.Fatal(err) }
+		row, err := db.Get(id)
+		if err != nil || row.PRState != nil || row.PRStateAt != nil { t.Fatalf("initial: %+v, %v", row, err) }
+		if err := db.RecordPRState(id, "OPEN"); err == nil { t.Fatal("accepted invalid state") }
+		if err := db.RecordPRState(id, state); err != nil { t.Fatal(err) }
+		row, _ = db.Get(id)
+		if row.PRState == nil || *row.PRState != state || row.PRStateAt == nil || *row.PRStateAt == "" { t.Fatalf("recorded: %+v", row) }
+		var wg sync.WaitGroup
+		for _, next := range []string{"merged", "closed"} {
+			wg.Add(1)
+			go func() { defer wg.Done(); if err := db.RecordPRState(id, next); err != nil { t.Error(err) } }()
+		}
+		wg.Wait()
+		after, _ := db.Get(id)
+		if *after.PRState != state || *after.PRStateAt != *row.PRStateAt { t.Fatal("overwrote final state") }
+	}
+	rows, err := db.UnrecordedPRRuns()
+	if err != nil || len(rows) != 0 { t.Fatalf("candidates: %+v, %v", rows, err) }
+	id, err := db.Submit(Request{Workflow: "scout", Repo: "/repo", Request: "unknown"})
+	if err != nil { t.Fatal(err) }
+	rows, err = db.UnrecordedPRRuns()
+	if err != nil || len(rows) != 1 || rows[0].ID != id { t.Fatalf("candidates: %+v, %v", rows, err) }
+}
+
 // TestWriteFakeRun checks that a run with two phases and four events reads back
 // in the order it was written.
 func TestWriteFakeRun(t *testing.T) {

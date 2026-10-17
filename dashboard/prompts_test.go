@@ -21,7 +21,7 @@ import (
 func TestPromptWriteRoutes(t *testing.T) {
 	ro := readOnly(t, nil)
 	home, seed, roster := seededRoster(t)
-	h := handler(ro, "dev", Actions{
+	h := handler(ro, t.TempDir(), "dev", Actions{
 		SavePrompt: func(key, body, baseHash string) error { return agentconfig.SaveFile(home, key, body, baseHash) },
 		ResetPrompt: func(key, baseHash string) error {
 			return agentconfig.ResetFile(home, seed, "v1", key, baseHash)
@@ -250,7 +250,7 @@ func TestPromptWriteRoutes(t *testing.T) {
 	}
 
 	// Without the actions, no write route exists.
-	bare := handler(ro, "dev", Actions{}, Sources{Roster: roster})
+	bare := handler(ro, t.TempDir(), "dev", Actions{}, Sources{Roster: roster})
 	for _, c := range []struct{ method, path string }{{"PUT", path}, {"DELETE", path}, {"PUT", "/api/agents/planner/config"}} {
 		assertNoWriteRoute(t, bare, c.method, c.path)
 	}

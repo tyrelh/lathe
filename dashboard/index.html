@@ -1525,7 +1525,7 @@ function runShell() {
         <a href="#/runs">&larr; all runs</a><h2 id="project-title" class="one-line"></h2>
         <div class="actions"><button type="button" onclick="readRun(this)">Full request &amp; details</button>
           <button class="more" id="run-cancel" type="button" onclick="cancelRun()" hidden>Cancel</button></div>
-        </div><p id="head"></p>
+        </div><p id="head"></p><p id="run-pr"></p>
         <dl id="summary" class="stats"></dl></section>
       <div class="workspace"><section class="card tabbed">
         <div class="tabs" role="tablist" aria-label="Run activity" onkeydown="tabKey(event)">
@@ -1605,12 +1605,19 @@ async function loadRun(current) {
   fitPages();
 }
 
+function runPR(url, state) {
+  if (!/^https?:\/\//i.test(url || '')) return '';
+  const outcome = state === 'merged' || state === 'closed' ? ` · ${esc(state)}` : '';
+  return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Pull request</a>${outcome}`;
+}
+
 // renderRunHeader fills the run page's title, request, total and the actions
 // d offers.
 function renderRunHeader(d) {
   const r = d.run;
   $('project-title').innerHTML = esc(r.repo || 'unknown repo');
   $('head').innerHTML = esc(r.request);
+  $('run-pr').innerHTML = runPR(d.pr_url, r.pr_state);
   $('run-total').textContent = money(r.cost);
   // The form lives in the scaffold, so a draft survives every poll; only
   // whether it is offered changes. The server says which runs may qualify,

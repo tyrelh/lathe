@@ -113,6 +113,9 @@ ALTER TABLE iterations ADD COLUMN resolved_request TEXT;
 ALTER TABLE iterations ADD COLUMN restored INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE iterations ADD COLUMN preservation TEXT;
 `,
+	// 7: final observed pull request outcome.
+	`ALTER TABLE runs ADD COLUMN pr_state TEXT CHECK (pr_state IN ('merged', 'closed'));
+ALTER TABLE runs ADD COLUMN pr_state_at TEXT;`,
 }
 
 // migrate applies every migration the database has not seen yet.
