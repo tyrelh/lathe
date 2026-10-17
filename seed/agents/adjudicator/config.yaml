@@ -1,6 +1,4 @@
-# Weighs every report and the test result, and alone decides whether the
-# builder goes round again. The 1M context is for holding every round's
-# reports at once.
+# Weighs every report and the test result, and alone decides whether the builder goes round again.
 provider: openai-codex
 model: gpt-6-sol
 thinking: medium
