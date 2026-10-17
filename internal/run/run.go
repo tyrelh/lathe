@@ -34,12 +34,10 @@ import (
 const maxCorrections = 2
 
 // toolBudget is how many tool calls one agent turn may make before lathe ends
-// the turn and asks for the report. It is the backstop, deliberately above the
-// largest number a seeded prompt asks an agent to keep to (50, in
-// seed/agents/planner/user.md and each seed/agents/code-review-*/user.md), so a
-// well-behaved agent lands on its own and only a
-// spiralling one ever meets this. A slow agent may meet its deadline first,
-// which ends the turn the same way.
+// the turn and asks for the report. It is a backstop, deliberately above the
+// ~50 tool calls the seeded prompts ask for, so only a spiralling agent meets
+// it. A slow agent may meet its deadline first, which ends the turn the same
+// way.
 const toolBudget = 80
 
 // errBudget means the turn was cut short by toolBudget or the agent's deadline
@@ -528,7 +526,7 @@ type Handle struct {
 	corrections *int
 }
 
-// SessionID is stable across correction and fix turns.
+// SessionID is stable across correction turns and graph re-entries.
 func (h *Handle) SessionID() string {
 	if h.params.SessionID != "" {
 		return h.params.SessionID
@@ -739,8 +737,8 @@ func repoInstructions(repo string) string {
 	return ""
 }
 
-// spawn is one Pi invocation. Corrections and fix phases reuse the original
-// session id, which keeps the builder context across the red loop.
+// spawn runs one Pi turn for h's phase. Corrections and re-entries of the same
+// graph node reuse the phase's session id, so the agent keeps its context.
 func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
 	// Rewritten before every spawn rather than once per run: each agent's allow
 	// list differs, and the guard re-reads the file per tool call. One file per

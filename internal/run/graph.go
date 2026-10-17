@@ -27,9 +27,8 @@ type Entry struct {
 	// Round is 0 on the first entry and increments on each re-entry.
 	Round int
 	// SendBacksLeft is how many more times this node may name an earlier one.
-	// The runner refuses one past that, but the policy at zero belongs to the
-	// node: plan review forwards with its objections folded into risks, and the
-	// test loop fails the run.
+	// The runner refuses one past that; what a node does at zero is its own
+	// policy.
 	SendBacksLeft int
 
 	node *node
