@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // EnvironmentError is a test command that could not execute in the worker environment.
@@ -12,15 +13,14 @@ func (e *EnvironmentError) Error() string {
 	return fmt.Sprintf("test command exited %d: environment failure; install the required executable, check the worker PATH and executable permissions, then rerun", e.ExitCode)
 }
 
-// commandContext returns the run's context, bounded by command_timeout when set.
-func (r *Run) commandContext() (context.Context, context.CancelFunc) {
-	// Derived from the run's context, so a cancelled run kills the command and
-	// its whole process group rather than waiting for it. The bound is the
-	// roster's command_timeout: a code phase is lathe's own work, so borrowing
-	// the tester's deadline would both tie every code phase to that one agent
-	// and break any workflow whose captured roster does not include it.
+// commandContext derives from the run's context, bounded by command_timeout,
+// else by fallback when positive.
+func (r *Run) commandContext(fallback time.Duration) (context.Context, context.CancelFunc) {
 	if d := r.cfg.CommandDeadline; d > 0 {
 		return context.WithTimeout(r.ctx, d)
+	}
+	if fallback > 0 {
+		return context.WithTimeout(r.ctx, fallback)
 	}
 	return context.WithCancel(r.ctx)
 }

@@ -601,7 +601,7 @@ func (h *Handle) authPreflight(check func(context.Context, pi.Options) error) er
 			return errors.New("auth preflight: provider identifiers must not contain control characters; correct the provider configuration and resubmit")
 		}
 	}
-	ctx, cancel := r.commandContext()
+	ctx, cancel := r.commandContext(0)
 	defer cancel()
 	var failures []error
 	for _, provider := range providers {
