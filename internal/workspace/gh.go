@@ -116,17 +116,9 @@ func OwnsPR(pr PR, branch, head string) error {
 // repo's GitHub repository. It returns false when there is none and refuses
 // more than one: ownership must be unambiguous.
 func FindPR(repo, branch string) (PR, bool, error) {
-	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--state", "all", "--json", prFields)
-	cmd.Dir = repo
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := process.Output(cmd)
-	if err != nil {
-		return PR{}, false, fmt.Errorf("gh pr list --head %s: %w: %s", branch, err, strings.TrimSpace(stderr.String()))
-	}
 	var prs []PR
-	if err := json.Unmarshal(out, &prs); err != nil {
-		return PR{}, false, fmt.Errorf("decode gh pr list: %w", err)
+	if err := ghJSON(repo, "gh pr list --head "+branch, "gh pr list", &prs, "pr", "list", "--head", branch, "--state", "all", "--json", prFields); err != nil {
+		return PR{}, false, err
 	}
 	var match []PR
 	for _, pr := range prs {
@@ -161,19 +153,28 @@ func ReadyPR(repo, url string) error {
 
 // ViewPR reads url's current state from gh.
 func ViewPR(repo, url string) (PR, error) {
-	cmd := exec.Command("gh", "pr", "view", url, "--json", prFields)
+	var pr PR
+	if err := ghJSON(repo, "gh pr view "+url, "gh pr view", &pr, "pr", "view", url, "--json", prFields); err != nil {
+		return PR{}, err
+	}
+	return pr, nil
+}
+
+// ghJSON runs gh with args in repo and decodes its stdout into v. A failure
+// is reported under label with gh's stderr, a bad decode under decodeLabel.
+func ghJSON(repo, label, decodeLabel string, v any, args ...string) error {
+	cmd := exec.Command("gh", args...)
 	cmd.Dir = repo
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := process.Output(cmd)
 	if err != nil {
-		return PR{}, fmt.Errorf("gh pr view %s: %w: %s", url, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %w: %s", label, err, strings.TrimSpace(stderr.String()))
 	}
-	var pr PR
-	if err := json.Unmarshal(out, &pr); err != nil {
-		return PR{}, fmt.Errorf("decode gh pr view: %w", err)
+	if err := json.Unmarshal(out, v); err != nil {
+		return fmt.Errorf("decode %s: %w", decodeLabel, err)
 	}
-	return pr, nil
+	return nil
 }
 
 // Evidence is what a run recorded about the pull request it opened: the URL,
