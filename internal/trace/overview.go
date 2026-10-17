@@ -131,8 +131,7 @@ func (d *DB) Overview() (Overview, error) {
 	}
 
 	rows, err = tx.Query(
-		`SELECT COALESCE(repo, ''), COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0)
-		 FROM runs GROUP BY COALESCE(repo, '') ORDER BY SUM(cost) DESC, COALESCE(repo, '') LIMIT ?`, topN)
+		projectColumns+` GROUP BY COALESCE(repo, '') ORDER BY SUM(cost) DESC, COALESCE(repo, '') LIMIT ?`, topN)
 	if err != nil {
 		return o, err
 	}

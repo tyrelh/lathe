@@ -5,6 +5,24 @@ import "database/sql"
 // Projects returns every repository with a run, including repositories whose
 // runs have no recorded spend. Shares use the same lifetime total as Overview.
 func (d *DB) Projects() ([]ProjectSpend, error) {
+	return d.projects("")
+}
+
+// Project returns lifetime totals for one exact repository path.
+func (d *DB) Project(repo string) (ProjectSpend, error) {
+	projects, err := d.projects(` WHERE COALESCE(repo, '') = ?`, repo)
+	if err != nil {
+		return ProjectSpend{}, err
+	}
+	if len(projects) == 0 {
+		return ProjectSpend{}, sql.ErrNoRows
+	}
+	return projects[0], nil
+}
+
+// projects returns the repositories matching where, ranked by cost, with
+// shares of the lifetime total read in the same transaction.
+func (d *DB) projects(where string, args ...any) ([]ProjectSpend, error) {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return nil, err
@@ -14,8 +32,7 @@ func (d *DB) Projects() ([]ProjectSpend, error) {
 	if err := tx.QueryRow(`SELECT COALESCE(SUM(cost), 0) FROM runs`).Scan(&total); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(`SELECT COALESCE(repo, ''), COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0)
-		FROM runs GROUP BY COALESCE(repo, '') ORDER BY SUM(cost) DESC, COALESCE(repo, '')`)
+	rows, err := tx.Query(projectColumns+where+` GROUP BY COALESCE(repo, '') ORDER BY SUM(cost) DESC, COALESCE(repo, '')`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -26,31 +43,8 @@ func (d *DB) Projects() ([]ProjectSpend, error) {
 	return projects, tx.Commit()
 }
 
-// Project returns lifetime totals for one exact repository path.
-func (d *DB) Project(repo string) (ProjectSpend, error) {
-	tx, err := d.sql.Begin()
-	if err != nil {
-		return ProjectSpend{}, err
-	}
-	defer tx.Rollback()
-	var total float64
-	if err := tx.QueryRow(`SELECT COALESCE(SUM(cost), 0) FROM runs`).Scan(&total); err != nil {
-		return ProjectSpend{}, err
-	}
-	rows, err := tx.Query(`SELECT COALESCE(repo, ''), COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0)
-		FROM runs WHERE COALESCE(repo, '') = ? GROUP BY COALESCE(repo, '')`, repo)
-	if err != nil {
-		return ProjectSpend{}, err
-	}
-	projects, err := scanProjects(rows, total)
-	if err != nil {
-		return ProjectSpend{}, err
-	}
-	if len(projects) == 0 {
-		return ProjectSpend{}, sql.ErrNoRows
-	}
-	return projects[0], tx.Commit()
-}
+// projectColumns is the select scanProjects reads; the two must match.
+const projectColumns = "SELECT COALESCE(repo, ''), COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(cost), 0) FROM runs"
 
 func scanProjects(rows *sql.Rows, total float64) ([]ProjectSpend, error) {
 	defer rows.Close()
