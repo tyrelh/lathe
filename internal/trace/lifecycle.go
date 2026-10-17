@@ -231,10 +231,8 @@ func (d *DB) ReserveMode(runID, attemptID, logPath, mode string) error {
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	if err := claimed(res); err != nil {
 		return err
-	} else if n == 0 {
-		return ErrClaimLost
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO attempts (attempt_id, run_id, dispatched_at, log_path, iteration, mode)
@@ -276,10 +274,8 @@ func (d *DB) Claim(attemptID, token, host string, pid int, lease time.Duration) 
 	if err != nil {
 		return Row{}, err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	if err := claimed(res); err != nil {
 		return Row{}, err
-	} else if n == 0 {
-		return Row{}, ErrClaimLost
 	}
 
 	var runID string
@@ -294,10 +290,8 @@ func (d *DB) Claim(attemptID, token, host string, pid int, lease time.Duration) 
 	if err != nil {
 		return Row{}, err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	if err := claimed(res); err != nil {
 		return Row{}, err
-	} else if n == 0 {
-		return Row{}, ErrClaimLost
 	}
 	if _, err := tx.Exec(
 		`UPDATE iterations SET started_at = ?
@@ -335,10 +329,8 @@ func (d *DB) Beat(attemptID, token string, lease time.Duration) (cancel bool, er
 	if err != nil {
 		return false, err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	if err := claimed(res); err != nil {
 		return false, err
-	} else if n == 0 {
-		return false, ErrClaimLost
 	}
 	var cancelAt sql.NullString
 	err = d.sql.QueryRow(
@@ -406,10 +398,8 @@ func (d *DB) Complete(runID, attemptID, token, status, reason string) error {
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	if err := claimed(res); err != nil {
 		return err
-	} else if n == 0 {
-		return ErrClaimLost
 	}
 	if _, err := tx.Exec(`UPDATE attempts SET outcome = ? WHERE attempt_id = ?`, status, attemptID); err != nil {
 		return err
