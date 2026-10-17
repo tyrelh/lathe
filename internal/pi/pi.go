@@ -31,7 +31,6 @@ const maxLine = 8 * 1024 * 1024
 type Event struct {
 	Type       string          `json:"type"`
 	Message    json.RawMessage `json:"message"`
-	Usage      *Usage          `json:"usage"` // pointer: absent must be distinguishable from zero
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`
 	Args       json.RawMessage `json:"args"`
