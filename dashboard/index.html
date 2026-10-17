@@ -1460,62 +1460,67 @@ async function list(current) {
   stamp();
 }
 
-async function detail(current) {
-  const {body: d} = await get('/api/runs/' + encodeURIComponent(view.id) + '?after=' + after);
-  if (current !== generation) return;
-  const r = d.run;
-  // Carried on the run, so the chart and the details card read each phase's
-  // own iteration from the one object they are both handed.
-  r.iterations = d.iterations || [];
-
-  // Folded in before the phases are drawn, not after: a settled run stops
-  // polling at the end of this pass, so a total added later never gets drawn.
-  const events = d.events.filter(e => e.event_id > after);
-  for (const e of events) {
-    if (e.type === 'input' || isCommand(e)) {
-      // Rendered once, on arrival: the details card is redrawn every poll, and
-      // re-escaping every system prompt each second is the cost of not doing it.
-      inputs.set(e.phase_id, (inputs.get(e.phase_id) || '') +
-        `<p>${e.type === 'input' ? (e.name === 'jev' ? 'Jev request' : 'Agent turn') : 'Command'}</p><pre>${esc(text(e.payload, 2))}</pre>`);
-    }
-    if (e.type === 'input' && e.name !== 'jev') {
+// foldEvent adds one run event to the per-phase maps the chart, costs and
+// details card read.
+function foldEvent(e) {
+  const id = e.phase_id;
+  // Rendered once, on arrival: the details card is redrawn every poll, and
+  // re-escaping every system prompt each second is the cost of not doing it.
+  const addInput = label => inputs.set(id, (inputs.get(id) || '') + `<p>${label}</p><pre>${esc(text(e.payload, 2))}</pre>`);
+  const addResponse = () => {
+    if (typeof e.payload?.text !== 'string') return;
+    responses.set(id, (responses.get(id) || '') +
+      `<p>Response ${(e.payload.attempt ?? 0) + 1}${e.type !== 'output' ? ' · rejected' : ''}</p><pre>${esc(e.payload.text)}</pre>`);
+  };
+  switch (e.type) {
+    case 'input': {
+      addInput(e.name === 'jev' ? 'Jev request' : 'Agent turn');
+      if (e.name === 'jev') break;
       const level = e.payload?.thinking;
-      if (typeof level === 'string' && level) thinking.set(e.phase_id, level);
-      else thinking.delete(e.phase_id);
+      if (typeof level === 'string' && level) thinking.set(id, level);
+      else thinking.delete(id);
+      break;
     }
-    if (isCommand(e)) bucket(tails, e.phase_id);
-    if (e.type === 'log' && e.name === 'output') bucket(tails, e.phase_id).push(text(e.payload));
-    if (e.type === 'output') outputs.set(e.phase_id, e.payload?.report);
-    // Events arrive in ID order across pages. Replace rather than sum: the
-    // last settled invocation is the phase's current context estimate.
-    if (e.type === 'context' && e.payload) contexts.set(e.phase_id, e.payload);
-    if (e.type === 'output' && e.name === 'jev') {
-      responses.set(e.phase_id, '<p>Jev response</p>' + (e.payload?.text
-        ? `<pre>${esc(prettyJSON(e.payload.text))}</pre>` : '<p class="dim">No response arrived.</p>'));
-    } else if ((e.type === 'output' || e.type === 'envelope' || e.type === 'gate') && typeof e.payload?.text === 'string') {
-      responses.set(e.phase_id, (responses.get(e.phase_id) || '') +
-        `<p>Response ${(e.payload.attempt ?? 0) + 1}${e.type !== 'output' ? ' · rejected' : ''}</p><pre>${esc(e.payload.text)}</pre>`);
+    case 'log':
+      if (e.name === 'command') { addInput('Command'); bucket(tails, id); }
+      else if (e.name === 'output') bucket(tails, id).push(text(e.payload));
+      break;
+    case 'output':
+      outputs.set(id, e.payload?.report);
+      if (e.name === 'jev') {
+        responses.set(id, '<p>Jev response</p>' + (e.payload?.text
+          ? `<pre>${esc(prettyJSON(e.payload.text))}</pre>` : '<p class="dim">No response arrived.</p>'));
+      } else addResponse();
+      break;
+    case 'envelope':
+    case 'gate':
+      addResponse();
+      break;
+    case 'context':
+      // Events arrive in ID order across pages. Replace rather than sum: the
+      // last settled invocation is the phase's current context estimate.
+      if (e.payload) contexts.set(id, e.payload);
+      break;
+    case 'usage': {
+      if (!e.payload) break;
+      bucket(usage, id).push(e.payload);
+      const s = spend.get(id) || { model: '', tokens: 0, cost: 0 };
+      s.tokens += e.payload.tokens || 0;
+      s.cost += e.payload.cost || 0;
+      s.model = e.payload.model || s.model;   // absent on runs traced before it was recorded
+      spend.set(id, s);
+      break;
     }
-    if (e.type !== 'usage' || !e.payload) continue;
-    bucket(usage, e.phase_id).push(e.payload);
-    const s = spend.get(e.phase_id) || { model: '', tokens: 0, cost: 0 };
-    s.tokens += e.payload.tokens || 0;
-    s.cost += e.payload.cost || 0;
-    s.model = e.payload.model || s.model;   // absent on runs traced before it was recorded
-    spend.set(e.phase_id, s);
   }
+}
+const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);
+const isCommand = e => e.type === 'log' && e.name === 'command';
+// Indented for a panel, compact for a one-line preview; one dispatch either way.
+const text = (p, indent) => p == null ? '' : typeof p === 'string' ? p : JSON.stringify(p, null, indent);
 
-  // A settled run is final: the phases and the log below are the whole of it,
-  // so the poll stops rather than re-running three queries every second. A full
-  // page means the server capped this poll and there is more to fetch first.
-  draining = d.events.length >= PAGE;
-  if (!live(r.status) && !draining) done = true;
-  followLabel.style.display = view.page === 'run' ? 'inline-flex' : 'none';
-
-  // The header, chart, costs and details are re-rendered every poll; the log
-  // is appended, so scrolling through a phase is not undone a second later.
-  if (!$('log')) {
-    app.innerHTML = `<div class="page">
+// runShell is the run page's markup, filled in by each poll.
+function runShell() {
+  return `<div class="page">
       <section class="card page-summary run-project"><div class="run-heading">
         <a href="#/runs">&larr; all runs</a><h2 id="project-title" class="one-line"></h2>
         <div class="actions"><button type="button" onclick="readRun(this)">Full request &amp; details</button>
@@ -1545,11 +1550,65 @@ async function detail(current) {
             <p><button class="more" id="resume-submit" type="submit">Resume run</button></p></form>
           <p id="resume-status" role="status"></p></section>
       </aside></div></div>`;
-    $('event-controls').appendChild(followLabel);
-    resized.observe($('run-side'));
-    resized.observe($('iterations'));
-    resized.observe($('costs'));
-  }
+}
+
+// buildRunScaffold puts the run page's markup in place and starts measuring
+// its resizable regions.
+function buildRunScaffold() {
+  app.innerHTML = runShell();
+  $('event-controls').appendChild(followLabel);
+  resized.observe($('run-side'));
+  resized.observe($('iterations'));
+  resized.observe($('costs'));
+}
+
+async function detail(current) {
+  const {body: d} = await get('/api/runs/' + encodeURIComponent(view.id) + '?after=' + after);
+  if (current !== generation) return;
+  const r = d.run;
+  // Carried on the run, so the chart and the details card read each phase's
+  // own iteration from the one object they are both handed.
+  r.iterations = d.iterations || [];
+
+  // Folded in before the phases are drawn, not after: a settled run stops
+  // polling at the end of this pass, so a total added later never gets drawn.
+  const events = d.events.filter(e => e.event_id > after);
+  for (const e of events) foldEvent(e);
+
+  // A settled run is final: the phases and the log below are the whole of it,
+  // so the poll stops rather than re-running three queries every second. A full
+  // page means the server capped this poll and there is more to fetch first.
+  draining = d.events.length >= PAGE;
+  if (!live(r.status) && !draining) done = true;
+  followLabel.style.display = view.page === 'run' ? 'inline-flex' : 'none';
+
+  // The header, chart, costs and details are re-rendered every poll; the log
+  // is appended, so scrolling through a phase is not undone a second later.
+  if (!$('log')) buildRunScaffold();
+  renderRunHeader(d);
+  const eventBody = $('events-body');
+  const visibleEvents = activeTab === 'events' && eventBody.clientHeight > 0;
+  const following = followBox.checked && !followSuspended && (!visibleEvents || atLiveEnd(eventBody));
+  if (visibleEvents && followBox.checked && !following) followSuspended = true;
+  shown = {run: r, phases: d.phases};
+  draw();
+
+  renderRunSummary(r);
+  renderWorktreeBar(r);
+  stamp();
+
+  // Follow the tail, but only for someone already at the bottom: measure
+  // before appending, or the new rows have already moved the answer. Scrolling
+  // up to read a tool call is how you say "stop following".
+  appendLog(events);
+  if (d.events.length && visibleEvents && following) toTail(eventBody);
+  fitPages();
+}
+
+// renderRunHeader fills the run page's title, request, total and the actions
+// d offers.
+function renderRunHeader(d) {
+  const r = d.run;
   $('project-title').innerHTML = esc(r.repo || 'unknown repo');
   $('head').innerHTML = esc(r.request);
   $('run-total').textContent = money(r.cost);
@@ -1559,13 +1618,10 @@ async function detail(current) {
   $('revise').hidden = !d.revisable;
   $('resume').hidden = !d.recoverable;
   $('run-cancel').hidden = !live(r.status);
-  const eventBody = $('events-body');
-  const visibleEvents = activeTab === 'events' && eventBody.clientHeight > 0;
-  const following = followBox.checked && !followSuspended && (!visibleEvents || atLiveEnd(eventBody));
-  if (visibleEvents && followBox.checked && !following) followSuspended = true;
-  shown = {run: r, phases: d.phases};
-  draw();
+}
 
+// renderRunSummary fills the run page's stats.
+function renderRunSummary(r) {
   const stat = (label, value, c = '') =>
     `<div><dt>${label}</dt><dd${c ? ` class="${c}"` : ''}>${value || '<span class="dim">—</span>'}</dd></div>`;
   $('summary').innerHTML = [
@@ -1577,16 +1633,19 @@ async function detail(current) {
     stat('run', esc(r.run_id)),
     ...(r.iterations.length > 1 ? [stat('active', active(r)), stat('iterations', count(r.iterations.length))] : []),
   ].join('');
-  // The bar names only what the page does not: where the latest iteration ran.
+}
+
+// renderWorktreeBar names only what the page does not: where the latest
+// iteration ran.
+function renderWorktreeBar(r) {
   const latest = newestFirst(r.iterations)[0] || {};
   const tree = latest.worktree, state = latest.worktree_state !== 'active' && latest.worktree_state;
   const note = state ? ` <span class="dim">(${esc(state)})</span>` : '';
   bar.innerHTML = tree ? `<span title="${esc(tree)}">worktree ${esc(tree)}${note}</span>` : '';
-  stamp();
+}
 
-  // Follow the tail, but only for someone already at the bottom: measure
-  // before appending, or the new rows have already moved the answer. Scrolling
-  // up to read a tool call is how you say "stop following".
+// appendLog adds a row per event to the run log and advances the after cursor.
+function appendLog(events) {
   const log = $('log');
   for (const e of events) {
     after = e.event_id;
@@ -1597,8 +1656,6 @@ async function detail(current) {
       <td>${esc(e.name)}</td>
       <td>${eventPayload(e)}</td>`;
   }
-  if (d.events.length && visibleEvents && following) toTail(eventBody);
-  fitPages();
 }
 
 // active is the time iterations spent executing, summed over iterations and
@@ -2187,10 +2244,6 @@ function details(p, r, now) {
     + disclosure('inputs', 'Inputs', inputs.get(id) || '<p class="dim">Input context not recorded.</p>');
 }
 
-const failed = e => e.type === 'error' || (e.type === 'tool_call' && e.payload?.isError);
-const isCommand = e => e.type === 'log' && e.name === 'command';
-// Indented for a panel, compact for a one-line preview; one dispatch either way.
-const text = (p, indent) => p == null ? '' : typeof p === 'string' ? p : JSON.stringify(p, null, indent);
 function eventPayload(e) {
   // Commands and failures stay visible in full, including a blocked call's reason.
   const whole = failed(e) || isCommand(e) || (e.type === 'tool_call' && e.name === 'bash');
