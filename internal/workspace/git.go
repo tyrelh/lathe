@@ -15,8 +15,7 @@ import (
 	"github.com/tyrelh/lathe/internal/process"
 )
 
-// Head is the commit HEAD points at. A worker records it before a run starts,
-// and the commit phase compares against it afterwards.
+// Head is the commit HEAD points at in repo.
 func Head(repo string) (string, error) { return git(repo, "rev-parse", "HEAD") }
 
 // ValidBranch reports whether git would accept name as a branch name. A name
@@ -44,9 +43,8 @@ func RefExists(repo, name string) bool {
 	return false
 }
 
-// DiffStat is the shape of the uncommitted change, for an agent that has to
-// describe it. Untracked files are absent by construction; the caller passes
-// the changed path list alongside, which has them.
+// DiffStat is `git diff --stat HEAD` for repo's tracked changes; untracked
+// files are absent.
 func DiffStat(repo string) (string, error) { return git(repo, "diff", "--stat", "HEAD") }
 
 // WorkingDiff is the uncommitted tracked change against HEAD, cut to limit
@@ -62,8 +60,8 @@ func WorkingDiff(repo string, limit int) (string, error) {
 	return patch, nil
 }
 
-// Checkout creates branch and switches to it. It fails when the name is taken,
-// which is the same thing the gate on the proposed name already checked.
+// Checkout creates branch at HEAD and switches to it; it fails when the name is
+// taken.
 func Checkout(repo, branch string) error { return gitRun(repo, nil, "checkout", "-b", branch) }
 
 // Commit stages exactly paths and commits message. The message goes in on

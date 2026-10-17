@@ -21,9 +21,8 @@ import (
 	"github.com/tyrelh/lathe/internal/process"
 )
 
-// KindLocalPath is the only workspace kind this release ships. A local path
-// cannot move a developer's checkout onto another machine, which is why the
-// descriptor is typed now and why git_ref is the one that matters for hosting.
+// KindLocalPath is a workspace on a local filesystem path; it is the only kind
+// Check accepts.
 const KindLocalPath = "local_path"
 
 // Desc names where a run executes. It is captured at submission and checked
@@ -90,10 +89,11 @@ func git(repo string, args ...string) (string, error) {
 // write to the directory while it is held.
 type Lock struct{ f *os.File }
 
-// Acquire takes the lock for repo, without blocking. The lock file lives in
-// the data root rather than in the repository: nothing lathe does is stamped
-// into the repository it acts on.
+// Acquire takes a non-blocking exclusive lock for repo under dataRoot/locks; it
+// errors when another process holds it.
 func Acquire(dataRoot, repo string) (*Lock, error) {
+	// In the data root, not the repository: nothing lathe does is stamped into
+	// the repository it acts on.
 	dir := filepath.Join(dataRoot, "locks")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err

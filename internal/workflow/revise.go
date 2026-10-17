@@ -162,6 +162,8 @@ func publish(e *run.Entry, r *run.Run, rev *run.Revision, sha string) error {
 			return err
 		}
 	}
+	// Read again: pushing and closing a pull request are separate operations,
+	// and someone else may have done the second in between.
 	if pr, err = workspace.ViewPR(r.Repo, rev.PR); err != nil {
 		return fmt.Errorf("pushed %s to %s, but the pull request could not be read afterwards: %w", short(sha), rev.Branch, err)
 	}

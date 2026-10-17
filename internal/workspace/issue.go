@@ -18,8 +18,8 @@ var (
 	issueURL    = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*/?$`)
 )
 
-// IssueReference validates input before queuing and expands shorthand for gh.
-// A bare number is resolved against the target checkout's GitHub remote.
+// IssueReference validates ref and returns a bare issue number or a canonical
+// issue URL.
 func IssueReference(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if m := issueNumber.FindStringSubmatch(ref); m != nil {

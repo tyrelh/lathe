@@ -17,8 +17,8 @@ func run(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// A workspace names one checkout on one host, and refuses to be executed
-// anywhere else — the check a git_ref workspace will not need.
+// A local workspace names one checkout on one host and is refused on any other
+// host or with an unknown kind.
 func TestLocalDescribesThisHost(t *testing.T) {
 	dir := t.TempDir()
 	ws, err := Local(dir)
