@@ -66,7 +66,7 @@ even when the run succeeds. Planner failures and cancellation stop the run.
 
 A builder that needs a file the plan does not allow stops and reports it in `needed`; the plan goes back to the planner and reviewer (a scope request), then the builder resumes in the same session with the revised plan, skipping branch creation and routing. Two scope send-backs are allowed per iteration; the third request fails the iteration without publishing anything. Each request is saved as `scope-<n>.json` and each revised plan as `plan-<n>.json`. Malformed paths fail at once; protected paths are never granted.
 
-A failed, cancelled or lost run can be continued with `lathe resume <id> "guidance"` (guidance required; `--detach` and `--json` work as for other commands). It appends a recovery iteration to the same run: the saved `result.patch` is restored into a fresh worktree at the recorded base, then planning, review, implementation and full validation start again with the earlier reports and your guidance. `--restart [--base <ref>]` starts over without restoring that work. Recovery is refused while any worker, launch, reservation or cleanup of the run is unsettled, when the saved work is missing or damaged (use `--restart`), when an issue's task was never captured, and when the failed iteration already made a commit, which may be published. `lathe show` prints scope requests and whether the run may be resumed.
+A failed, cancelled or lost run can be continued with `lathe resume <id> "guidance"` (guidance required; see Flags for its options). It appends a recovery iteration to the same run: the saved `result.patch` is restored into a fresh worktree at the recorded base, then planning, review, implementation and full validation start again with the earlier reports and your guidance. `--restart [--base <ref>]` starts over without restoring that work. Recovery is refused while any worker, launch, reservation or cleanup of the run is unsettled, when the saved work is missing or damaged (use `--restart`), when an issue's task was never captured, and when the failed iteration already made a commit, which may be published. `lathe show` prints scope requests and whether the run may be resumed.
 
 ## Writing the request
 
@@ -78,13 +78,19 @@ error handling" gets a vague one.
 
 ## Flags
 
-Before the request, not after:
+Put flags before the request or run ID (Go stops parsing at the first positional argument):
 
-- `--issue <number|URL|owner/repo#number>` use a GitHub issue instead of a prompt for `plan`, `implement`, or `build`; bare numbers resolve against the target checkout. The worker fetches the title and body with authenticated `gh` in a traced `issue` phase after auth preflight and before planning and saves `issue.json`. Comments are not included.
-- `--repo <dir>` act on another repository
-- `--detach` record the request, print the run ID, exit 0
-- `--model`, `--provider`, `--thinking` override every agent's configuration for one run, and turn routing off
-- agent configuration lives in `~/.lathe/agents/<name>/{config.yaml,system.md,user.md}` and `~/.lathe/routing/`; it is the only source, a missing or invalid file refuses the submission with the file named, and a target repository's `lathe.toml` is ignored
+- `--issue <number|URL|owner/repo#number>` uses a GitHub issue instead of a prompt for `plan`, `implement`, or `build`; bare numbers resolve against the target checkout. The worker fetches the title and body with authenticated `gh` in a traced `issue` phase after auth preflight and before planning and saves `issue.json`. Comments are not included.
+- `scout`, `plan`, `implement`, `build`: `--repo <dir>` acts on another repository; `--detach` records the request and prints the run ID.
+- `revise`: `--detach` records the revision and prints its run ID and iteration.
+- `resume`: `--detach`, `--restart`, `--base <ref>` (only with `--restart`), and `--json`.
+- `scout`, `plan`, `implement`, `build`, `revise`, `resume`: `--model`, `--provider`, `--thinking` override every agent's configuration for one run and turn routing off.
+- `show`, `wait`: `--json` and `--iteration n` select an earlier iteration; `wait` exits with that iteration's outcome.
+- `runs`: `-n` selects the number of recent runs (default 20).
+
+## Configuration
+
+Agent configuration lives in `~/.lathe/agents/<name>/{config.yaml,system.md,user.md}` and `~/.lathe/routing/`. Missing files are seeded from the binary at submission; invalid files refuse the submission with the file named. A target repository's `lathe.toml` is ignored.
 
 `implement`, `build` and `revise` run in their own worktrees under
 `~/.local/share/lathe/worktrees` and several may run at once for one repository, up to `LATHE_CAPACITY`. Worktrees are removed when a run stops, after its result is
