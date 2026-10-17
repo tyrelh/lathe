@@ -519,13 +519,6 @@ func outcome(status string) int {
 // legacy names kept so lathe show still reads older runs.
 var reportFiles = []string{"issue.json", "result.json", "plan.json", "implement.json", "build.json", "test.json", "validation.json", "pr.json"}
 
-// iterationView is one iteration as show and wait --json print it, with the
-// models its recorded configuration assigned each agent.
-type iterationView struct {
-	trace.Iteration
-	Models map[string]string `json:"models"`
-}
-
 // report prints what an iteration produced, including the partial reports of
 // one that failed, was cancelled, or was lost, and the run's history around
 // it. Tokens and cost are the run's, across every iteration. An iteration
@@ -552,13 +545,9 @@ func report(db *trace.DB, row trace.Row, dataRoot string, n int, asJSON bool) in
 		}
 	}
 	if asJSON {
-		views := make([]iterationView, len(its))
-		for i, x := range its {
-			views[i] = iterationView{x, worker.Models(x.Spec)}
-		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(map[string]any{"run": row, "iteration": n, "iterations": views,
+		enc.Encode(map[string]any{"run": row, "iteration": n, "iterations": worker.IterationViews(its),
 			"dir": dir, "reports_iteration": from, "reports": present,
 			"recovery": recoveryLines(db, row, its, dataRoot, n)})
 		return outcome(it.Status)

@@ -34,6 +34,10 @@ const SpecVersion = 4
 // refused, since nothing recorded which commit they should start from.
 const legacyVersion = 3
 
+// RecoveryVersion is stamped into a recovery's specification. It is a v4
+// specification plus Recovery, which this lathe requires at that version.
+const RecoveryVersion = 5
+
 // Spec is everything about a run that configuration could otherwise change
 // while it waits in the queue: the workflow, the request, where it executes
 // and the effective roster. Repository contents are not in it — a worker reads
@@ -596,6 +600,22 @@ func Models(spec []byte) map[string]string {
 		models[name] = a.Provider + "/" + a.Model
 	}
 	return models
+}
+
+// IterationView is one iteration with the models its recorded configuration
+// assigned each agent.
+type IterationView struct {
+	trace.Iteration
+	Models map[string]string `json:"models"`
+}
+
+// IterationViews returns its as IterationViews, never nil.
+func IterationViews(its []trace.Iteration) []IterationView {
+	views := make([]IterationView, len(its))
+	for i, it := range its {
+		views[i] = IterationView{it, Models(it.Spec)}
+	}
+	return views
 }
 
 // protectedPaths is the protected-path list a recorded specification carries.
