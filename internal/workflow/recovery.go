@@ -146,7 +146,7 @@ func recoveryContext(r *run.Run, c *code) string {
 			}
 		}
 		dismissed := dismissalsOf(rec.Prior, &v, source)
-		section(&b, "Findings a revised plan dismissed", dismissalLines(dismissed))
+		section(&b, "Findings a revised plan dismissed", planDismissalLines(dismissed))
 		if c != nil {
 			c.outstanding = outstandingOf(&v, dismissed)
 			for i := range c.outstanding {

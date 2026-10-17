@@ -335,7 +335,7 @@ func TestUnreviewedRecoveryPlanAppliesNothing(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
 	prior := t.TempDir()
-	finding := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "OUTSTANDING", Outcome: "fix"}
+	finding := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "OUTSTANDING", Requested: "fix"}
 	verdict, changes := verdictRevise, "fix it"
 	v := Validation{Outcome: outcomeUnresolved, Rounds: []*Round{{
 		Reports:      map[string]*CodeReviewOutput{"code-review-general": {Findings: &[]Finding{finding}}},
@@ -408,7 +408,7 @@ func TestDismissalArtifacts(t *testing.T) {
 
 	// Rendered once in the recovery context, and the finding is not carried.
 	first := t.TempDir()
-	finding := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "DISMISSED-FINDING", Outcome: "fix"}
+	finding := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "DISMISSED-FINDING", Requested: "fix"}
 	verdict, changes := verdictRevise, "fix it"
 	writeResult(first, "validation.json", &Validation{Outcome: outcomeUnresolved, Rounds: []*Round{{
 		Reports:      map[string]*CodeReviewOutput{"code-review-general": {Findings: &[]Finding{finding}}},
@@ -433,8 +433,8 @@ func TestRecoveryAppliesTheReviewedDisposition(t *testing.T) {
 	cfg, repo := buildRepo(t)
 	stub := codeStub(t)
 	prior := t.TempDir()
-	moot := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "MOOT-FINDING", Outcome: "fix"}
-	carried := Finding{Ref: "general-1.2", Source: "code-review-general", Evidence: "e", Explanation: "CARRIED-FINDING", Outcome: "fix"}
+	moot := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "MOOT-FINDING", Requested: "fix"}
+	carried := Finding{Ref: "general-1.2", Source: "code-review-general", Evidence: "e", Explanation: "CARRIED-FINDING", Requested: "fix"}
 	verdict, changes := verdictRevise, "fix both"
 	v := Validation{Summary: "unresolved", Outcome: outcomeUnresolved, Rounds: []*Round{{
 		Reports: map[string]*CodeReviewOutput{"code-review-general": {Findings: &[]Finding{moot, carried}}},
@@ -492,7 +492,7 @@ func TestRecoveryContext(t *testing.T) {
 	if err := writeResult(dir, "implement.json", &ImplementOutput{Summary: &impl, Changed: &files, Needed: &needed, Wrote: &empty}); err != nil {
 		t.Fatal(err)
 	}
-	finding := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "STILL-LOUD", Outcome: "fix"}
+	finding := Finding{Ref: "general-1.1", Source: "code-review-general", Evidence: "e", Explanation: "STILL-LOUD", Requested: "fix"}
 	rep := &CodeReviewOutput{Findings: &[]Finding{finding}}
 	verdict, changes := verdictRevise, "soften"
 	adj := &AdjudicationOutput{Verdict: &verdict, Changes: &changes, Decisions: &[]Decision{{Ref: "general-1.1", Action: actionFix, Reason: "r"}}}
