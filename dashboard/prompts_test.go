@@ -12,7 +12,6 @@ import (
 
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
-	"github.com/tyrelh/lathe/internal/trace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,15 +19,7 @@ import (
 // answers with the agent as its page now loads it, a stale hash is a conflict
 // that writes nothing, and the file always comes from the roster.
 func TestPromptWriteRoutes(t *testing.T) {
-	root := t.TempDir()
-	if err := trace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ro, err := trace.OpenRO(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
+	ro := readOnly(t, nil)
 	home, seed, roster := seededRoster(t)
 	h := handler(ro, "dev", Actions{
 		SavePrompt: func(key, body, baseHash string) error { return agentconfig.SaveFile(home, key, body, baseHash) },
@@ -64,20 +55,9 @@ func TestPromptWriteRoutes(t *testing.T) {
 		Config  *settings `json:"config"`
 		Prompts []prompt  `json:"prompts"`
 	}
-	request := func(h http.Handler, method, path, host, origin, contentType, body string) *httptest.ResponseRecorder {
-		r := local(method, path, strings.NewReader(body))
-		r.Host = host
-		if origin != "" {
-			r.Header.Set("Origin", origin)
-		}
-		r.Header.Set("Content-Type", contentType)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		return w
-	}
 	send := func(method, path string, body any) (int, map[string]any, agent) {
 		b, _ := json.Marshal(body)
-		w := request(h, method, path, Addr, "http://"+Addr, "application/json", string(b))
+		w := browserWrite(h, method, path, Addr, "http://"+Addr, "application/json", string(b))
 		var out map[string]any
 		var a agent
 		json.Unmarshal(w.Body.Bytes(), &out)
@@ -122,7 +102,7 @@ func TestPromptWriteRoutes(t *testing.T) {
 			{Addr, "", "application/json"}, {Addr, "http://evil.example", "application/json"},
 			{Addr, "http://" + Addr, "text/plain"}, {"evil.example:4700", "http://evil.example:4700", "application/json"},
 		} {
-			if w := request(h, method, path, c.host, c.origin, c.contentType, body); w.Code != http.StatusForbidden {
+			if w := browserWrite(h, method, path, c.host, c.origin, c.contentType, body); w.Code != http.StatusForbidden {
 				t.Errorf("%s to %s from %q as %s: %d", method, c.host, c.origin, c.contentType, w.Code)
 			}
 		}
@@ -174,8 +154,12 @@ func TestPromptWriteRoutes(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, local("GET", "/api/agents", nil))
+	cfg, err := roster()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var list []agent
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || len(list) != 15 {
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || len(list) != len(cfg.Agents)+len(config.Routes) {
 		t.Fatalf("list after save: %v %s", err, w.Body)
 	}
 	for _, a := range list {
@@ -268,10 +252,7 @@ func TestPromptWriteRoutes(t *testing.T) {
 	// Without the actions, no write route exists.
 	bare := handler(ro, "dev", Actions{}, Sources{Roster: roster})
 	for _, c := range []struct{ method, path string }{{"PUT", path}, {"DELETE", path}, {"PUT", "/api/agents/planner/config"}} {
-		w := request(bare, c.method, c.path, Addr, "http://"+Addr, "application/json", `{"body":"x","base_hash":"`+sys.Hash+`"}`)
-		if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
-			t.Errorf("%s %s on a read-only dashboard: %d", c.method, c.path, w.Code)
-		}
+		assertNoWriteRoute(t, bare, c.method, c.path)
 	}
 	if read(file) != seeded {
 		t.Fatal("a read-only dashboard wrote")
