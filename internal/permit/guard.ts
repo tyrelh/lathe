@@ -42,6 +42,11 @@ export interface Block {
 	reason: string;
 }
 
+const WRITES = ["write", "edit"];
+const SHELLS = ["bash", "powershell"];
+const READS = ["read", "grep", "find", "ls"];
+const GOVERNED = new Set([...WRITES, ...SHELLS, ...READS]);
+
 // globMatch is Go's filepath.Match over a basename, which never contains a
 // separator. A malformed pattern matches nothing, the same as Go returning an
 // error that permit.Denied discards.
@@ -109,8 +114,7 @@ export function normalize(input: string): string {
 // yet — the ordinary case for a new file — falls back to the nearest existing
 // ancestor, which settles a symlinked directory and not every case.
 export function resolveReal(input: string, cwd: string): string {
-	const norm = normalize(input);
-	const p = isAbsolute(norm) ? resolve(norm) : resolve(cwd, norm);
+	const p = absolute(input, cwd);
 	try {
 		return realpathSync(p);
 	} catch {
@@ -130,18 +134,19 @@ export function resolveReal(input: string, cwd: string): string {
 // decide is the whole rule, separated from reading the scope file so a test can
 // hold it to the same table internal/permit's Go tests use.
 export function decide(toolName: string, input: any, cwd: string, scope: Scope): Block | undefined {
-	if (toolName === "write" || toolName === "edit") {
+	if (WRITES.includes(toolName)) {
 		const abs = resolveReal(String(input?.path ?? ""), cwd);
 		const hit = denied(abs, scope.deny);
 		if (hit) return { block: true, reason: `${abs} is protected (it matches ${hit}) and may never be written` };
 
-		const rel = relative(real(cwd), abs).split(sep).join("/");
+		const native = relative(real(cwd), abs);
 		// An absolute path or a climb out of the repo arrives here as
 		// "../../..", which is true and unreadable; the agent gets told what it
 		// actually did instead.
-		if (rel.startsWith("../")) {
+		if (outside(native)) {
 			return { block: true, reason: `${abs} is outside the repository and may never be written` };
 		}
+		const rel = native.split(sep).join("/");
 		if (!scope.allow.includes(rel)) {
 			return {
 				block: true,
@@ -157,7 +162,7 @@ export function decide(toolName: string, input: any, cwd: string, scope: Scope):
 		if (reason) return { block: true, reason };
 	}
 
-	if (toolName === "bash" || toolName === "powershell") {
+	if (SHELLS.includes(toolName)) {
 		const command = String(input?.command ?? "");
 		const hit = scope.bashDeny.find((rule) => new RegExp(rule).test(command));
 		if (hit) return { block: true, reason: `the command matches the deny rule ${hit} and will not be run` };
@@ -166,13 +171,22 @@ export function decide(toolName: string, input: any, cwd: string, scope: Scope):
 	return undefined;
 }
 
-const READS = ["read", "grep", "find", "ls"];
+// absolute is input normalized and resolved against cwd unless absolute.
+function absolute(input: string, cwd: string): string {
+	const norm = normalize(input);
+	return isAbsolute(norm) ? resolve(norm) : resolve(cwd, norm);
+}
+
+// outside reports whether rel, a native relative() result, leaves its base:
+// the TS twin of permit.Escapes.
+function outside(rel: string): boolean {
+	return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
 
 // readTarget is the file Pi's read tool opens for input: input itself when it
 // exists, else the first existing spelling of Pi's resolveReadPath fallbacks.
 export function readTarget(input: string, cwd: string): string {
-	const norm = normalize(input);
-	const p = isAbsolute(norm) ? resolve(norm) : resolve(cwd, norm);
+	const p = absolute(input, cwd);
 	const nfd = p.normalize("NFD");
 	const curly = (s: string) => s.replace(/'/g, "\u2019");
 	return [p, p.replace(/ (AM|PM)\./gi, "\u202F$1."), nfd, curly(p), curly(nfd)].find((v) => existsSync(v)) ?? p;
@@ -184,7 +198,7 @@ export function unreadable(path: string, cwd: string, roots: string[], deny: str
 	const abs = resolveReal(path, cwd);
 	for (const root of roots) {
 		const rel = relative(real(root), abs);
-		if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+		if (outside(rel)) continue;
 		const hit = rel ? denied(rel, deny) : undefined;
 		return hit ? `${abs} is protected (it matches ${hit}) and may never be read` : undefined;
 	}
@@ -258,8 +272,7 @@ export default function (pi: any) {
 		// Reads are governed because an agent with web_read can carry anything
 		// it reads out in a URL; the scope's readRoots decide whether they are
 		// checked at all.
-		const governed = ["write", "edit", "bash", "powershell", ...READS].includes(event.toolName);
-		if (!governed) return undefined;
+		if (!GOVERNED.has(event.toolName)) return undefined;
 		const scope = readScope();
 		if ("block" in scope) return scope;
 		return decide(event.toolName, event.input, ctx.cwd, scope);
