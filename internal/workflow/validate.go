@@ -342,6 +342,9 @@ func (v *Validation) previous() *Round {
 // finished work? Only accepted says yes; every other outcome is unfinished.
 func (v *Validation) Accepted() bool { return v.Outcome == outcomeAccepted }
 
+// verdict is how validation ended, as "validation <outcome>: <reason>".
+func (v *Validation) verdict() string { return fmt.Sprintf("validation %s: %s", v.Outcome, v.Reason) }
+
 // settle records how validation ended. The summary is what `lathe show` prints.
 func (v *Validation) settle(outcome, reason string) {
 	v.Outcome, v.Reason = outcome, reason
