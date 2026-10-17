@@ -3,9 +3,7 @@ provider: anthropic
 model: claude-opus-5-5
 thinking: low
 timeout: 10m
-# Routing tiers, cheapest first. A tier sets only what differs from the agent's
-# own configuration. The default tier matches the model above, so a routing
-# failure lands where an unrouted run would.
+# Routing tiers, cheapest first. These spell out provider, model and thinking so agent-level model edits do not shift them. The default matches the model above, so routing failure lands on the unrouted model.
 tiers:
   - when: Mechanical change in one or two files; the plan spells out every edit
     provider: anthropic

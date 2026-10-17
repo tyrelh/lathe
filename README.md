@@ -109,18 +109,23 @@ The agents you can configure are `scout`, `planner`, `plan-reviewer`, `builder`,
 
 ## Model routing
 
-The planner and builder ship with tiers, cheapest first, in their `config.yaml`, and TypeSafe's Jev model picks one each iteration based on the task. Routing runs whenever an agent's config has tiers; delete them to turn it off.
+The planner and builder ship with tiers, cheapest first, in their `config.yaml`, and TypeSafe's Jev model picks one each iteration based on the task. Routing runs whenever an agent's config has tiers; delete them to turn it off. The shipped builder tiers are:
 
 ```yaml
 tiers:
   - when: Mechanical change in one or two files; the plan spells out every edit
-    model: gpt-6-luna
+    provider: anthropic
+    model: claude-sonnet-5-5
+    thinking: low
   - when: Behaviour change within one area; some judgment about existing code needed
-    model: gpt-6-sol
+    provider: anthropic
+    model: claude-opus-5-5
+    thinking: low
     default: true
   - when: Cross-cutting change, concurrency, migrations, or an under-specified plan
-    model: gpt-6-astra
-    thinking: high
+    provider: anthropic
+    model: claude-opus-5-5
+    thinking: medium
 ```
 
 - Below a confidence of 0.5 routing picks the more capable of the two most probable tiers (the runner-up needs a probability above 0), and never goes past them.
