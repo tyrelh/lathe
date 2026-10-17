@@ -2129,6 +2129,23 @@ function renderReport(v) {
   return `<p>${esc(String(v))}</p>`;
 }
 
+// planResult renders a planner's report.
+function planResult(report) {
+  return `<h3>Plan</h3><p>${esc(report.summary)}</p>`
+    + reportList('Steps', report.steps, true)
+    + reportList('Allowed files', report.files)
+    + reportList('Risks', report.risks, false, 'No risks reported.');
+}
+
+// reviewResult renders a plan reviewer's report.
+function reviewResult(report) {
+  const feedback = Array.isArray(report.feedback) ? report.feedback : null;
+  return `<h3>Review</h3><p>${esc(report.summary)}</p>`
+    + (feedback?.length === 0
+      ? '<p class="ok">Accepted · no objections.</p>'
+      : reportList('Feedback', feedback, false, 'Feedback not recorded.'));
+}
+
 // routeResult renders a routing phase's report: the tier picked and why, and
 // every tier with the probability Jev gave it.
 function routeResult(d) {
@@ -2193,17 +2210,11 @@ function phaseCard(p, r, now) {
   const report = outputs.get(id);
   let result = '';
   if (report && p.owner === 'planner') {
-    result = `<h3>Plan</h3><p>${esc(report.summary)}</p>`
-      + reportList('Steps', report.steps, true)
-      + reportList('Allowed files', report.files)
-      + reportList('Risks', report.risks, false, 'No risks reported.');
+    result = planResult(report);
   } else if (report && p.owner === 'plan-reviewer') {
-    const feedback = Array.isArray(report.feedback) ? report.feedback : null;
-    result = `<h3>Review</h3><p>${esc(report.summary)}</p>`
-      + (feedback?.length === 0
-        ? '<p class="ok">Accepted · no objections.</p>'
-        : reportList('Feedback', feedback, false, 'Feedback not recorded.'));
+    result = reviewResult(report);
   } else if (report && p.name.startsWith('route-')) {
+    // Routing phases are engineer-owned, so they are told apart by name.
     result = routeResult(report);
   } else if (report !== undefined) {
     result = `<h3>Output</h3>${renderReport(report)}`;
