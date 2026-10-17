@@ -67,7 +67,7 @@ type Supervisors interface {
 	Stop(endpoint, token string) error
 }
 
-// stopWait is how long recovery waits for a stopped launch's group to end.
+// stopWait is how long reconcile waits for a stopped launch's group to end.
 var stopWait = 10 * time.Second
 
 // Run drains the queue and serves the dashboard until ctx is cancelled. Only
@@ -139,10 +139,10 @@ type manager struct {
 	capacity int
 	// uncertain is the attempt whose worker the launcher could not vouch for.
 	// It holds capacity until a person confirms the process is gone, and the
-	// refusal message is the whole recovery procedure.
+	// refusal message is the whole procedure for freeing it.
 	uncertain map[string]bool
-	// blocked is the source repositories whose recovery is unresolved; their
-	// queued runs are not dispatched.
+	// blocked is the source repositories whose worktree cleanup is unresolved;
+	// their queued runs are not dispatched.
 	blocked map[string]error
 	warned  bool
 }
@@ -438,9 +438,8 @@ func (m *manager) cleanup(host string) (map[string]error, error) {
 	return unresolved, nil
 }
 
-// refuse prints why nothing is being admitted. There is no recovery command
-// in this release, so this message is the recovery documentation: everything
-// a person needs to unblock the queue by hand is in it.
+// refuse prints, once, the manual steps that free capacity held by a run whose
+// worker cannot be confirmed stopped.
 func (m *manager) refuse(active []trace.Row) {
 	if m.warned {
 		return
