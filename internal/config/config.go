@@ -61,10 +61,7 @@ type File struct {
 // Config is the loaded roster: every agent the binary knows, in roster order,
 // with its tools, tiers and the text of every configuration file.
 type Config struct {
-	Protected      []string
-	BashDenied     []string
-	CommandTimeout string
-	Agents         []Agent
+	Agents []Agent
 	// Tiers is each routed agent's tiers, cheapest first.
 	Tiers map[string][]TierConfig
 	// Files is every configuration file keyed by its slash-separated path
@@ -82,11 +79,8 @@ func AgentFile(agent, file string) string {
 // Agents the binary does not know are dropped.
 func New(agents []Agent, tiers map[string][]TierConfig, files map[string]File) (Config, error) {
 	c := Config{
-		Protected:      Protected,
-		BashDenied:     BashDenied,
-		CommandTimeout: CommandTimeout,
-		Tiers:          map[string][]TierConfig{},
-		Files:          files,
+		Tiers: map[string][]TierConfig{},
+		Files: files,
 	}
 	for _, p := range Permissions {
 		i := slices.IndexFunc(agents, func(a Agent) bool { return a.Name == p.Name })
@@ -332,7 +326,7 @@ type Snapshot struct {
 	Version    int      `json:"version"`
 	Protected  []string `json:"protected"`
 	BashDenied []string `json:"bash_denied"`
-	// CommandDeadline is Config.CommandTimeout parsed.
+	// CommandDeadline is CommandTimeout.
 	CommandDeadline time.Duration       `json:"command_deadline"`
 	Agents          map[string]Resolved `json:"agents"`
 	// Routing is every routed agent's question and tiers. ConfidenceFloor
@@ -385,17 +379,11 @@ const SnapshotVersion = 3
 // off for the run.
 func (c Config) Capture(agents []string, ov Overrides) (Snapshot, error) {
 	s := Snapshot{
-		Version:    SnapshotVersion,
-		Protected:  c.Protected,
-		BashDenied: c.BashDenied,
-		Agents:     map[string]Resolved{},
-	}
-	if c.CommandTimeout != "" {
-		d, err := time.ParseDuration(c.CommandTimeout)
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("command_timeout: %w", err)
-		}
-		s.CommandDeadline = d
+		Version:         SnapshotVersion,
+		Protected:       Protected,
+		BashDenied:      BashDenied,
+		CommandDeadline: CommandTimeout,
+		Agents:          map[string]Resolved{},
 	}
 	for _, name := range agents {
 		r, err := c.Resolve(name, ov)

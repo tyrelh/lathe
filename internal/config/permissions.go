@@ -1,6 +1,9 @@
 package config
 
-import "slices"
+import (
+	"slices"
+	"time"
+)
 
 // Agent permissions are compiled in and never written to disk: agent
 // configuration can change what an agent is told and which model runs it,
@@ -65,7 +68,7 @@ var BashDenied = []string{
 
 // CommandTimeout bounds a code phase's command, which is lathe's own work
 // rather than an agent's.
-const CommandTimeout = "10m"
+const CommandTimeout = 10 * time.Minute
 
 // Route is one agent that may have tiers: its routing phase, which is that
 // phase's graph node name, and the path of its routing instructions.
