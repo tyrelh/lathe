@@ -69,15 +69,16 @@ func assertPreflight(t *testing.T, stub string, iteration int, failed bool) {
 }
 
 func TestPlanAuthPreflight(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "ready", true: "missing"}[fail], func(t *testing.T) {
 			cfg, repo := load(t)
 			preflightProviders(&cfg, "plan-reviewer")
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			write(t, filepath.Join(stub, "plan-reviewer.0"), reviewReply(t, "clarify the steps"))
 			want := 0
 			if fail {
-				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				write(t, filepath.Join(stub, "auth-fail"), "later-auth")
 				want = 1
 			}
 			if got := execute(t, cfg, "plan", repo, "greet the world"); got != want {
@@ -96,6 +97,7 @@ func TestPlanAuthPreflight(t *testing.T) {
 
 // plan.json lands in the run directory with the file list intact.
 func TestPlanWritesPlanJSON(t *testing.T) {
+	t.Parallel()
 	stubPi(t, planReply(t, `"fetch.go", "fetch_test.go"`), reviewOK(t))
 	cfg, repo := load(t)
 
@@ -119,6 +121,7 @@ func TestPlanWritesPlanJSON(t *testing.T) {
 // A protected path dies at the gate rather than reaching a builder that would
 // then be permitted to write it.
 func TestPlanRejectsProtectedPath(t *testing.T) {
+	t.Parallel()
 	bad := planReply(t, `"fetch.go", ".env"`)
 	stubPi(t, bad, bad, bad)
 	cfg, repo := load(t)

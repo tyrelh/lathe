@@ -83,7 +83,7 @@ func reviseWith(t *testing.T, cfg config.Config, repo, request string, ctx conte
 	if err != nil {
 		t.Fatal(err)
 	}
-	dataRoot := filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe")
+	dataRoot := dataRoot(t)
 	db, err := trace.Open(dataRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func reviseWith(t *testing.T, cfg config.Config, repo, request string, ctx conte
 		ID: row.ID, Workflow: "revise", Request: request, Repo: repo,
 		Dir:      filepath.Join(dataRoot, "runs", row.ID, fmt.Sprintf("iteration-%d", n)),
 		Snapshot: roster, DB: db, Out: out, Ctx: ctx,
-		Iteration: n, Attempt: attempt, Revision: rev,
+		Iteration: n, Attempt: attempt, Revision: rev, PiBin: piBin(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestReviseAuthPreflight(t *testing.T) {
 			write(t, filepath.Join(stub, "builder.sh"), "printf 'hello again\\n' > hello.txt\n")
 			want := 0
 			if fail {
-				t.Setenv("LATHE_TEST_AUTH_FAIL", "later-auth")
+				write(t, filepath.Join(stub, "auth-fail"), "later-auth")
 				want = 1
 			}
 			if got := revise(t, cfg, repo, "say hello again"); got != want {
@@ -394,7 +394,7 @@ func TestUnfinishedRevisionsPublishNothing(t *testing.T) {
 			write(t, filepath.Join(stub, "code-review-slop.sh"), "touch "+filepath.Join(stub, "reviewing")+"; sleep 30\n")
 			id := latestRun(t).ID
 			ctx, cancel := cancelOnFile(t, filepath.Join(stub, "reviewing"), 10*time.Second, func() {
-				db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
+				db, err := trace.Open(dataRoot(t))
 				if err == nil {
 					_, _ = db.RequestCancel(id)
 					_ = db.Close()

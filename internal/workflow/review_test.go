@@ -55,6 +55,7 @@ func TestReviewOutput(t *testing.T) {
 }
 
 func TestPlanReviewLoop(t *testing.T) {
+	t.Parallel()
 	initial := planReply(t, `"fetch.go"`)
 	revised := planReply(t, `"fetch.go", "fetch_test.go"`)
 	bad := piReply(t, "not an envelope")
@@ -82,6 +83,7 @@ func TestPlanReviewLoop(t *testing.T) {
 		{"failed final review", failedFinal, last, 1, 1, fmt.Sprintf("plan revised %d times; 1 objections unresolved", maxReviewSendBacks), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			stubPi(t, tc.replies...)
 			cfg, repo := load(t)
 			var terminal strings.Builder
@@ -197,6 +199,7 @@ func TestPlanReviewLoop(t *testing.T) {
 }
 
 func TestReplanRejectsProtectedPath(t *testing.T) {
+	t.Parallel()
 	bad := planReply(t, `".env"`)
 	stubPi(t, planReply(t, `"fetch.go"`), reviewReply(t, "include configuration"), bad, bad, bad)
 	cfg, repo := load(t)
@@ -244,6 +247,7 @@ fi
 // the review limit fail the run instead of becoming risks. One the planner
 // resolves is forgotten like any other objection.
 func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
+	t.Parallel()
 	const blocker = "pages/blog/[slug].tsx needs editing but is not in files; the plan says the run will fail"
 	for _, tc := range []struct {
 		name    string
@@ -253,7 +257,7 @@ func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
 	}{{"blocked at the limit", false, 1, maxReviewSendBacks + 1}, {"blocker resolved", true, 0, 2}} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, repo := buildRepo(t)
-			stub := codeStub(t)
+			stub := codeStubNoPath(t)
 			write(t, filepath.Join(stub, "plan-reviewer"), blockedReply(t, blocker))
 			if tc.clears {
 				write(t, filepath.Join(stub, "plan-reviewer.1"), reviewOK(t))
@@ -296,8 +300,9 @@ func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
 // nothing. The run stops there rather than sending the plan round four more
 // times and forwarding it unreviewed at the limit.
 func TestReviewerThatNeverRanStopsTheRun(t *testing.T) {
+	t.Parallel()
 	cfg, repo := buildRepo(t)
-	stub := codeStub(t)
+	stub := codeStubNoPath(t)
 	write(t, filepath.Join(stub, "plan-reviewer.sh"), "echo 'No API key found for anthropic.' >&2; exit 1\n")
 
 	if code := execute(t, cfg, "implement", repo, "restyle the metadata"); code != 1 {
