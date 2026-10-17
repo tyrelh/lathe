@@ -97,6 +97,19 @@ func (e Event) DecodeMessage() (Message, error) {
 	return m, err
 }
 
+// Assistant returns e's decoded message and true only when e is a message_end
+// whose message decodes and has the assistant role.
+func (e Event) Assistant() (Message, bool) {
+	if e.Type != "message_end" {
+		return Message{}, false
+	}
+	m, err := e.DecodeMessage()
+	if err != nil || m.Role != "assistant" {
+		return Message{}, false
+	}
+	return m, true
+}
+
 // Handler sees every parsed event as it arrives and returns whether to keep
 // reading. It must not block for long: the agent's stdout is not being read
 // while it runs. Returning false stops the stream where it stands, which is
@@ -342,21 +355,8 @@ func Scan(r io.Reader, raw io.Writer, onEvent Handler) (Result, error) {
 				delete(inflight, ev.ToolCallID)
 			}
 		case "message_end":
-			if m, err := ev.DecodeMessage(); err == nil && m.Role == "assistant" {
-				if m.Usage != nil {
-					res.Tokens += m.Usage.TotalTokens
-					res.Cost += m.Usage.Cost.Total
-				}
-				if m.StopReason != nil && *m.StopReason == "stop" {
-					res.Text = m.Text()
-				}
-				res.Failure = ""
-				if m.StopReason != nil && *m.StopReason == "error" {
-					res.Failure = m.ErrorMessage
-					if res.Failure == "" {
-						res.Failure = "the provider returned an error with no message"
-					}
-				}
+			if m, ok := ev.Assistant(); ok {
+				res.addAssistant(m)
 			}
 		}
 
@@ -373,6 +373,29 @@ const stderrTail = 500
 // waitErr wraps a failed Pi's err with the tail of its stderr.
 func waitErr(err error, stderr *bytes.Buffer) error {
 	return fmt.Errorf("pi: %w: %s", err, tail(strings.TrimSpace(stderr.String()), stderrTail))
+}
+
+// addAssistant adds m's usage to r, sets Text when m stopped normally, and
+// sets Failure to m's provider error, clearing it otherwise.
+func (r *Result) addAssistant(m Message) {
+	if m.Usage != nil {
+		r.Tokens += m.Usage.TotalTokens
+		r.Cost += m.Usage.Cost.Total
+	}
+	var stop string
+	if m.StopReason != nil {
+		stop = *m.StopReason
+	}
+	r.Failure = ""
+	switch stop {
+	case "stop":
+		r.Text = m.Text()
+	case "error":
+		r.Failure = m.ErrorMessage
+		if r.Failure == "" {
+			r.Failure = "the provider returned an error with no message"
+		}
+	}
 }
 
 func tail(s string, n int) string {

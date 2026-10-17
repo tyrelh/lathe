@@ -839,7 +839,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 			// Streaming partial updates are message_update, not message_end, so
 			// they never reach here; a response that ended in a tool call does,
 			// and it spent real money.
-			if m, err := ev.DecodeMessage(); err == nil && m.Role == "assistant" && m.Usage != nil {
+			if m, ok := ev.Assistant(); ok && m.Usage != nil {
 				seq++
 				if err := r.db.RecordUsage(trace.Usage{
 					RunID: r.ID, PhaseID: h.phase.ID, Agent: a.Name,
