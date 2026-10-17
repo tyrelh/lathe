@@ -298,9 +298,8 @@ func Build(r *run.Run) int {
 
 // openPR has the pr-author write the pull request for branch, already
 // pushed, and opens it under build policy: a draft carrying the validation
-// report when the work is unaccepted. It records the intent before gh runs,
-// so a lost acknowledgement can be recognised, and pr.json after. It returns
-// the URL.
+// report when the work is unaccepted. It writes pr.json after gh succeeds and
+// returns the URL.
 func openPR(e *run.Entry, r *run.Run, c *code, branch, message string) (string, error) {
 	var out PROutput
 	if err := e.Call(&out, prRequest(c, branch, message), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
@@ -312,9 +311,6 @@ func openPR(e *run.Entry, r *run.Run, c *code, branch, message string) (string, 
 		body += validationReport(&c.v)
 	}
 	body += verificationCallout(&c.v)
-	if err := writeResult(r.Dir, "pr-intent.json", map[string]any{"branch": branch, "draft": draft, "validation": c.v.Outcome}); err != nil {
-		return "", err
-	}
 	url, err := workspace.CreatePR(r.Repo, branch, *out.Title, body, draft)
 	if err != nil {
 		return "", err
