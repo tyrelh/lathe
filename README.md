@@ -43,7 +43,7 @@ plan:      request → auth → [issue] → [route-plan] → plan → review   (
 implement: … → [route-build] → implement → validate → adjudicate   (up to 10 repairs;
            a builder needing more files sends back to plan → review, up to 2 times)
 build:     … → branch → [route-build] → implement → validate → adjudicate → commit → pr
-revise:    request → auth → [route-plan] → plan → review → [route-build] → implement → validate → adjudicate → commit → push to the same pr
+revise:    request → auth → [route-plan] → plan → review → [route-build] → implement → validate → adjudicate → commit → publish (accepted only)
 ```
 
 ## Running
