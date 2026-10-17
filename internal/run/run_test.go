@@ -410,8 +410,8 @@ func scalar[T any](t *testing.T, db *sql.DB, q string, args ...any) T {
 	return v
 }
 
-// Phase 4's done-when: a malformed first reply costs exactly one correction
-// turn, in the same Pi session, under one phase.
+// A malformed first reply costs exactly one correction turn, in the same Pi
+// session, under one phase.
 func TestCallCorrectsInTheSameSession(t *testing.T) {
 	bin, argsFile := stubPi(t,
 		reply(t, "I looked around. No json block here at all."),
@@ -982,7 +982,7 @@ func TestEnforceRevertsWhatTheGuardWouldHaveBlocked(t *testing.T) {
 	}
 }
 
-// Without MarkClean, lathe never proved the tree was its to revert, so it does
+// Without EnsureClean, lathe never proved the tree was its to revert, so it does
 // not. A scout on a repo you are mid-edit in must not touch your work.
 func TestEnforceStaysOutOfATreeCleanDidNotPass(t *testing.T) {
 	repo := gitRepo(t)
@@ -1118,9 +1118,8 @@ func TestALaterPhaseKeepsAnEarlierPhasesWork(t *testing.T) {
 	}
 
 	// A second phase with an empty scope, which is what a tester has. Its own
-	// leavings are still out of scope and still fail it here — Phase 4 is where
-	// test dirt stops being fatal — but the failure has to be about them and
-	// nothing else.
+	// leavings are out of scope and fail it, but the failure has to be about
+	// them and nothing else.
 	r.PiBin = stubWriter(t, reply(t, envelope("ran the suite")), "coverage.out")
 	err := r.Phase(Params{Name: "test", Owner: "scout"},
 		func(h *Handle) error { return h.Call(&out, "run the tests") })

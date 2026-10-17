@@ -196,8 +196,8 @@ func TestGraphResetSessionStartsTheNextEntryCold(t *testing.T) {
 	}
 }
 
-// Failed is what replaced RecoverableError: the phase is recorded failed, the
-// node still picks where to go, and the run is not poisoned.
+// Failed records the phase as failed while the node still picks where to go,
+// and the run is not poisoned.
 func TestGraphFailedRecordsThePhaseAndContinues(t *testing.T) {
 	r := newRun(t, "")
 	g := NewGraph(r)
