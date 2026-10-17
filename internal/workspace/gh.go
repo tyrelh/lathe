@@ -72,6 +72,9 @@ type PR struct {
 	Cross   bool   `json:"isCrossRepository"`
 }
 
+// Open reports whether the pull request is open.
+func (p PR) Open() bool { return p.State == "OPEN" }
+
 // prFields is every field PR decodes.
 const prFields = "url,state,headRefName,baseRefName,isDraft,headRefOid,isCrossRepository"
 
@@ -100,7 +103,7 @@ func CheckPublication(repo, branch, head, url string) (PR, error) {
 // branch in its base repository at head.
 func OwnsPR(pr PR, branch, head string) error {
 	switch {
-	case pr.State != "OPEN":
+	case !pr.Open():
 		return fmt.Errorf("pull request %s is %s; reopening or follow-up work needs a separate request", pr.URL, strings.ToLower(pr.State))
 	case pr.Cross:
 		return fmt.Errorf("pull request %s comes from another repository; lathe does not own it", pr.URL)
@@ -194,7 +197,7 @@ func CheckRevisable(repo string, e Evidence) (PR, error) {
 		return PR{}, err
 	}
 	switch {
-	case pr.State != "OPEN":
+	case !pr.Open():
 		return pr, fmt.Errorf("pull request %s is %s; only an open one takes a revision", e.PR, strings.ToLower(pr.State))
 	case pr.Head != e.Branch:
 		return pr, fmt.Errorf("pull request %s comes from %s, not %s", e.PR, pr.Head, e.Branch)
