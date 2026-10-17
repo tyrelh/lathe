@@ -96,13 +96,16 @@ func readManifest(home string) (manifest, error) {
 	return m, nil
 }
 
+// writeAtomic is config.WriteFileAtomic for a string body.
+func writeAtomic(path, body string) error { return config.WriteFileAtomic(path, []byte(body)) }
+
 // writeManifest replaces home's manifest atomically.
 func writeManifest(home string, m manifest) error {
 	b, err := yaml.Marshal(m)
 	if err != nil {
 		return err
 	}
-	return config.WriteAtomic(filepath.Join(home, ManifestName), string(b))
+	return writeAtomic(filepath.Join(home, ManifestName), string(b))
 }
 
 // seedFiles returns every file in fsys, in fs.WalkDir's lexical order.
@@ -223,7 +226,7 @@ func Seed(home string, fsys fs.FS, version string) (Report, error) {
 		rec, recorded := m.Files[rel]
 		record := func() { m.Files[rel], changed = entry{seedHash, version}, true }
 		if errors.Is(err, fs.ErrNotExist) {
-			if err := config.WriteAtomic(path, seed); err != nil {
+			if err := writeAtomic(path, seed); err != nil {
 				return r, err
 			}
 			record()
@@ -256,7 +259,7 @@ func Seed(home string, fsys fs.FS, version string) (Report, error) {
 				r.Drift = append(r.Drift, rel)
 				continue
 			}
-			if err := config.WriteAtomic(path, seed); err != nil {
+			if err := writeAtomic(path, seed); err != nil {
 				return r, err
 			}
 			record()
@@ -474,7 +477,7 @@ func editLocked(home, key, baseHash string, fn func(path, cur string) error) err
 // baseHash is not the current file's hash.
 func SaveFile(home, key, body, baseHash string) error {
 	return editLocked(home, key, baseHash, func(path, _ string) error {
-		return config.WriteAtomic(path, body)
+		return writeAtomic(path, body)
 	})
 }
 
@@ -492,7 +495,7 @@ func ResetFile(home string, fsys fs.FS, version, key, baseHash string) error {
 		if err != nil {
 			return err
 		}
-		if err := config.WriteAtomic(path, string(b)); err != nil {
+		if err := writeAtomic(path, string(b)); err != nil {
 			return err
 		}
 		m.Files[key] = entry{config.Hash(string(b)), version}
@@ -537,7 +540,7 @@ func SaveSettings(home, agent string, s Settings, baseHash string) error {
 		if _, err := parseConfig(agent, path, buf.Bytes()); err != nil {
 			return err
 		}
-		return config.WriteAtomic(path, buf.String())
+		return writeAtomic(path, buf.String())
 	})
 }
 

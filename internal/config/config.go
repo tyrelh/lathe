@@ -1,15 +1,14 @@
 // Package config holds the agent roster as loaded from the engineer's agent
 // configuration, merged with the compiled permissions, and resolves it into
 // the snapshot a run executes from. It reads no files itself: internal/agentconfig
-// loads them and hands the result to New.
+// loads them and hands the result to New. WriteFileAtomic is an atomic,
+// owner-only writer the packages that write lathe's files share.
 package config
 
 import (
 	"cmp"
 	"errors"
 	"fmt"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -306,19 +305,6 @@ func (r Resolved) Prompt(request string) string {
 		return request
 	}
 	return strings.ReplaceAll(r.UserPrompt, RequestPlaceholder, request)
-}
-
-// TargetRoot is the repo lathe acts on: discovered from where it was invoked,
-// never configured. A directory outside a git repo is an error rather than a
-// silent fallback to cwd, because the fallback would point an agent at $HOME.
-func TargetRoot(dir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("%s is not inside a git repository", dir)
-	}
-	return filepath.Abs(strings.TrimSpace(string(out)))
 }
 
 // Snapshot is the effective roster captured at submission: every agent the

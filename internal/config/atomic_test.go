@@ -6,17 +6,11 @@ import (
 	"testing"
 )
 
-func TestHash(t *testing.T) {
-	if Hash("a") == Hash("b") || Hash("a") != Hash("a") || len(Hash("")) != 64 {
-		t.Fatal("hash is not a sha256 of the body")
-	}
-}
-
-func TestWriteAtomic(t *testing.T) {
+func TestWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a", "b", "file.md")
 	for _, body := range []string{"first\n", "second"} {
-		if err := WriteAtomic(path, body); err != nil {
+		if err := WriteFileAtomic(path, []byte(body)); err != nil {
 			t.Fatal(err)
 		}
 		if b, err := os.ReadFile(path); err != nil || string(b) != body {

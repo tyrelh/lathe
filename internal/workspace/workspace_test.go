@@ -156,3 +156,20 @@ func TestBranchCommitPush(t *testing.T) {
 		t.Fatalf("origin has %q, want %q", out, after)
 	}
 }
+
+func TestDiscover(t *testing.T) {
+	got, err := Discover(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ = filepath.Abs(want); got.Path != want {
+		t.Fatalf("discovered %q; want %q", got.Path, want)
+	}
+	if _, err := Discover(t.TempDir()); err == nil {
+		t.Fatal("a directory outside any git repo was discovered as a checkout")
+	}
+}
