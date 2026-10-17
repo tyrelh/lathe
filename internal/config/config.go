@@ -74,6 +74,22 @@ func AgentFile(agent, file string) string {
 	return "agents/" + agent + "/" + file
 }
 
+// The files every agent has under its directory.
+const (
+	ConfigFile = "config.yaml"
+	SystemFile = "system.md"
+	UserFile   = "user.md"
+)
+
+// RequestPlaceholder is where a user prompt takes the request.
+const RequestPlaceholder = "{{request}}"
+
+// AgentPrompts.Kind values; index.html hard-codes 'routing'.
+const (
+	KindAgent   = "agent"
+	KindRouting = "routing"
+)
+
 // New merges loaded agent configuration with the compiled permissions. It
 // returns the agents in Permissions order and errors when one is missing.
 // Agents the binary does not know are dropped.
@@ -89,7 +105,7 @@ func New(agents []Agent, tiers map[string][]TierConfig, files map[string]File) (
 		}
 		a := agents[i]
 		a.Tools = append([]string{}, p.Tools...)
-		a.System, a.User = AgentFile(p.Name, "system.md"), AgentFile(p.Name, "user.md")
+		a.System, a.User = AgentFile(p.Name, SystemFile), AgentFile(p.Name, UserFile)
 		c.Agents = append(c.Agents, a)
 		if t := tiers[p.Name]; len(t) > 0 {
 			if err := CheckTiers(p.Name, t); err != nil {
@@ -247,11 +263,11 @@ type Settings struct {
 func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 	out := make([]AgentPrompts, 0, len(c.Agents)+len(Routes))
 	for _, a := range c.Agents {
-		cfg, err := c.view(AgentFile(a.Name, "config.yaml"), bodies)
+		cfg, err := c.view(AgentFile(a.Name, ConfigFile), bodies)
 		if err != nil {
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
-		ap := AgentPrompts{Name: a.Name, Kind: "agent", RepoInstructions: a.WantsRepoInstructions(), Prompts: []Prompt{},
+		ap := AgentPrompts{Name: a.Name, Kind: KindAgent, RepoInstructions: a.WantsRepoInstructions(), Prompts: []Prompt{},
 			Config: &Settings{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, Timeout: a.Timeout, FileView: cfg}}
 		for _, p := range []struct{ role, key string }{{"system", a.System}, {"user", a.User}} {
 			if p.key == "" {
@@ -270,7 +286,7 @@ func (c Config) Prompts(bodies bool) ([]AgentPrompts, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", r.Phase, err)
 		}
-		out = append(out, AgentPrompts{Name: r.Phase, Kind: "routing", Routes: r.Agent, Prompts: []Prompt{{Role: "instructions", FileView: v}}})
+		out = append(out, AgentPrompts{Name: r.Phase, Kind: KindRouting, Routes: r.Agent, Prompts: []Prompt{{Role: "instructions", FileView: v}}})
 	}
 	return out, nil
 }
@@ -293,7 +309,7 @@ func (r Resolved) Prompt(request string) string {
 	if r.UserPrompt == "" {
 		return request
 	}
-	return strings.ReplaceAll(r.UserPrompt, "{{request}}", request)
+	return strings.ReplaceAll(r.UserPrompt, RequestPlaceholder, request)
 }
 
 // TargetRoot is the repo lathe acts on: discovered from where it was invoked,
