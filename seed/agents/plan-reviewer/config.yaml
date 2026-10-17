@@ -1,6 +1,4 @@
-# Review the plan against the repository before the builder gets its write
-# scope. Match the planner's context budget so omissions can be checked in the
-# code.
+# Review the plan against the repository before the builder gets its write scope.
 provider: openai-codex
 model: gpt-6-sol
 thinking: medium
