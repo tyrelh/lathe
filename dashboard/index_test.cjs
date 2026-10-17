@@ -127,6 +127,7 @@ const bootstrap = script.lastIndexOf('navigate();');
 assert(bootstrap > 0, 'bootstrap not found');
 vm.runInContext(script.slice(0, bootstrap), context);
 const evaluate = code => vm.runInContext(code, context);
+const PAGE = evaluate('PAGE');
 const call = (fn, ...args) => { context.args = args; return evaluate(`${fn}(...args)`); };
 assert.equal(call('averageMoney', 1, 4), '$0.25');
 assert.equal(call('averageMoney', 9, 0), '$0.00');
@@ -593,7 +594,7 @@ const costs = () => nodes.get('costs').innerHTML;
 
   const events = [event('input',{prompt:'first'}), event('usage',{attempt:0,seq:1,tokens:10,cost:0.1,model:'model'}),
     event('context',{attempt:0,tokens:1200,contextWindow:8000,percent:15.26}), event('permit',{kept:['a.go'],reverted:['<bad>']})];
-  while (events.length < 500) events.push(event('log','padding'));
+  while (events.length < PAGE) events.push(event('log','padding'));
   assert.equal(nodes.has('log'), false, 'the run scaffold must not be precreated');
   serve(events, phases, {...run, repo:'/repo/MiXeD <&"\'>', request:'fix <prompt>&'});
   await evaluate('tick()');
@@ -777,7 +778,7 @@ const costs = () => nodes.get('costs').innerHTML;
     event('gate',{attempt:1,text:'PROTECTED PATH <reply>',violations:['protected path']},'bad','plan-reviewer'),
     event('output',{attempt:0,report:{summary:'Built <it>',artifacts:[{path:'a.go',note:null}]},text:'BUILT'},'build','builder'),
   ];
-  while (page.length < 500) page.push(event('log','padding'));
+  while (page.length < PAGE) page.push(event('log','padding'));
   serve(page, reportPhases);
   await evaluate('tick()');
   const select = p => { evaluate(`selected = ''`); evaluate(`pick('${p}')`); return panel(); };
@@ -849,7 +850,7 @@ const costs = () => nodes.get('costs').innerHTML;
   const priced = {...run, run_id:'priced', cost:0.9};
   context.location.hash = '#/runs/priced';
   evaluate('view = route()');
-  const blankPage = Array.from({length:500}, () => event('log', 'padding'));
+  const blankPage = Array.from({length:PAGE}, () => event('log', 'padding'));
   serve(blankPage, phases, priced);
   await evaluate('tick()');
   assert.equal(scaffoldCount, 2, 'navigation makes a new run scaffold');
@@ -867,7 +868,7 @@ const costs = () => nodes.get('costs').innerHTML;
     event('usage',{attempt:1,seq:2,provider:'z',model:'free',cost:0},'p2'),
     event('usage',{attempt:1,seq:3,provider:'<pi>',model:'<m>',cost:0},'p2'),
   ];
-  while (priceEvents.length < 500) priceEvents.push(event('log','padding'));
+  while (priceEvents.length < PAGE) priceEvents.push(event('log','padding'));
   serve(priceEvents, phases, priced);
   await drained();
   const providerGroups = () => JSON.parse(JSON.stringify(evaluate('providerCosts()')));
