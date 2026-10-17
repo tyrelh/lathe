@@ -18,8 +18,12 @@ const (
 // wrapped message says why.
 var ErrNotRecoverable = errors.New("this run cannot be resumed")
 
+// recoverableStatus matches the states Recoverable accepts; the two must agree.
+const recoverableStatus = "status IN ('" + StatusFail + "', '" + StatusCancelled + "', '" + StatusLost + "')"
+
 // Recoverable is the run-state half of recovery eligibility: the latest
-// iteration ended failed, cancelled or lost.
+// iteration ended failed, cancelled or lost. It must agree with
+// recoverableStatus.
 func Recoverable(row Row) error {
 	switch row.Status {
 	case StatusFail, StatusCancelled, StatusLost:
@@ -80,7 +84,7 @@ func (d *DB) Recover(runID string, rec Recovery) (int, error) {
 	res, err := tx.Exec(
 		`UPDATE runs SET status = 'queued', iteration = ?, spec = ?, activity_at = ?,
 		   reason = NULL, ended_at = NULL, cancel_at = NULL
-		 WHERE run_id = ? AND iteration = ? AND status IN ('fail', 'cancelled', 'lost')`,
+		 WHERE run_id = ? AND iteration = ? AND `+recoverableStatus,
 		next, string(rec.Spec), at, runID, n)
 	if err != nil {
 		return 0, err
@@ -108,7 +112,7 @@ func (d *DB) Stopped(runID string, n int) error {
 // worktree preserved and removed.
 func stopped(tx *sql.Tx, runID string, n int) error {
 	var open, unsettled, held int
-	if err := tx.QueryRow(`SELECT count(*) FROM launches WHERE run_id = ? AND state IN ('intent', 'registered')`, runID).Scan(&open); err != nil {
+	if err := tx.QueryRow(`SELECT count(*) FROM launches WHERE run_id = ? AND `+openLaunch, runID).Scan(&open); err != nil {
 		return err
 	}
 	if err := tx.QueryRow(`SELECT count(*) FROM attempts WHERE run_id = ? AND outcome IS NULL`, runID).Scan(&unsettled); err != nil {
@@ -140,7 +144,7 @@ func stopped(tx *sql.Tx, runID string, n int) error {
 // own launches and its reservation of path.
 func (d *DB) SourceStopped(runID string, source int, attemptID, path string) error {
 	var open, unsettled, held int
-	if err := d.sql.QueryRow(`SELECT count(*) FROM launches WHERE run_id = ? AND attempt_id != ? AND state IN ('intent', 'registered')`, runID, attemptID).Scan(&open); err != nil {
+	if err := d.sql.QueryRow(`SELECT count(*) FROM launches WHERE run_id = ? AND attempt_id != ? AND `+openLaunch, runID, attemptID).Scan(&open); err != nil {
 		return err
 	}
 	if err := d.sql.QueryRow(`SELECT count(*) FROM attempts WHERE run_id = ? AND attempt_id != ? AND outcome IS NULL`, runID, attemptID).Scan(&unsettled); err != nil {

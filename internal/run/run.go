@@ -330,12 +330,12 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 		}
 		// h.failed is a failure the phase body chose to absorb: recorded here,
 		// invisible to the caller, and never the run's error.
-		status, msg := "success", ""
+		status, msg := trace.PhaseSuccess, ""
 		switch {
 		case err != nil:
-			status, msg = "fail", err.Error()
+			status, msg = trace.PhaseFail, err.Error()
 		case h.failed != nil:
-			status, msg = "fail", h.failed.Error()
+			status, msg = trace.PhaseFail, h.failed.Error()
 		}
 		if msg != "" {
 			r.db.Event(r.ID, ph.ID, "error", p.Name, msg)

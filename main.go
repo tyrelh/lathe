@@ -508,7 +508,7 @@ func outcome(status string) int {
 	case trace.StatusOK:
 		return 0
 	case trace.StatusCancelled:
-		return 130
+		return trace.ExitCancelled
 	default:
 		return 1
 	}
