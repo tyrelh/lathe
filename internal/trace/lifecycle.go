@@ -209,14 +209,15 @@ func NewAttemptID(runID string) string { return runID + "_a" + randomHex(3) }
 // NewClaimToken is what binds a worker's writes to its own claim.
 func NewClaimToken() string { return randomHex(16) }
 
-// Reserve records the intent to dispatch before anything is launched. A
-// manager that dies between this and the launch leaves a starting run with an
-// unclaimed attempt, which is exactly what reconciliation looks for.
+// Reserve is ReserveMode with ModeCheckout.
 func (d *DB) Reserve(runID, attemptID, logPath string) error {
 	return d.ReserveMode(runID, attemptID, logPath, ModeCheckout)
 }
 
-// ReserveMode is Reserve recording the attempt's execution mode.
+// ReserveMode records the intent to dispatch before anything is launched,
+// with the attempt's execution mode. A manager that dies between this and the
+// launch leaves a starting run with an unclaimed attempt, which is exactly what
+// reconciliation looks for.
 func (d *DB) ReserveMode(runID, attemptID, logPath, mode string) error {
 	tx, err := d.sql.Begin()
 	if err != nil {

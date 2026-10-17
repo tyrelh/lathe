@@ -91,10 +91,10 @@ func Restore(wt, base, patch, digest string, protected []string) ([]string, erro
 	return permit.Changed(wt)
 }
 
-// PatchTree is the tree base would have with patch applied, computed in a
+// patchTree is the tree base would have with patch applied, computed in a
 // temporary index so nothing in repo changes. A patch whose tree equals a
 // commit's holds no work beyond that commit.
-func PatchTree(repo, base, patch string) (string, error) {
+func patchTree(repo, base, patch string) (string, error) {
 	tmp, err := os.MkdirTemp("", "lathe-tree-")
 	if err != nil {
 		return "", err
@@ -119,11 +119,11 @@ func PatchTree(repo, base, patch string) (string, error) {
 // reports whether there is any; with none, dest is removed. A patch that
 // does not apply to base is damaged evidence.
 func Residual(repo, base, patch, commit, dest string) (bool, error) {
-	tree, err := PatchTree(repo, base, patch)
+	tree, err := patchTree(repo, base, patch)
 	if err != nil {
 		return false, err
 	}
-	want, err := TreeOf(repo, commit)
+	want, err := treeOf(repo, commit)
 	if err != nil {
 		return false, fmt.Errorf("%s does not have the published commit %s: %w", repo, Short(commit), err)
 	}
@@ -143,8 +143,8 @@ func Residual(repo, base, patch, commit, dest string) (bool, error) {
 	return true, os.WriteFile(dest, diff, 0o600)
 }
 
-// TreeOf is commit's tree.
-func TreeOf(repo, commit string) (string, error) {
+// treeOf is commit's tree.
+func treeOf(repo, commit string) (string, error) {
 	return git(repo, "rev-parse", "--verify", commit+"^{tree}")
 }
 
