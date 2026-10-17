@@ -43,8 +43,11 @@ How many send-backs one node may issue over a run. It counts send-backs issued, 
 **Validation group**:
 The `validate` node: the tester and the code reviewers run at once against the same uncommitted implementation, each as its own traced phase. The tree is frozen while they run, cleanup waits for all of them, and a source file changed meanwhile invalidates the round.
 
-**Worker**:
+**Validation worker**:
 One member of a validation group. A worker that fails to produce a usable result is retried up to twice against the same code; a report with findings, or a red suite, is a result and is not retried.
+
+**Worker process**:
+The process that executes one attempt of an iteration from the spec captured at submission, separate from the submitter and the manager so the run outlives both.
 
 **Builder**:
 The agent that writes the files named by the plan and carries out changes requested by the adjudicator.
@@ -73,6 +76,10 @@ A role lathe runs in the harness, with its own tools, instructions and configura
 **Agent configuration**:
 What one agent is told and runs on, held per machine and owned by the engineer: its system and user prompts, provider, model, thinking, timeout, tiers and whether it receives the repository's instructions. It is the only source of these, captured at submission, so an edit only changes work submitted after it. Every agent's configuration is complete on its own; there is no shared defaults layer and no per-repository layer.
 _Avoid_: prompt override, custom prompt, defaults
+
+**Roster**:
+The set of agents compiled into lathe, in a fixed order, each with its **Agent permissions**. Adding an agent or changing what one may do is a code change (ADR 0007); what each is told and runs on is its **Agent configuration**.
+_Avoid_: roster (for the configuration captured at submission; that is the captured agent configuration)
 
 **Seed**:
 The agent configuration shipped with lathe. It is written on first start, fills in anything missing after an upgrade, and replaces files the engineer never edited. It never overwrites an edit.
