@@ -255,18 +255,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			}
 		}
 		if reviewed {
-			var resubmit strings.Builder
-			resubmit.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
-			printPlan(&resubmit, out)
-			section(&resubmit, "Blocking objections: the plan cannot succeed until these are resolved", blocking)
-			section(&resubmit, "Review feedback", feedback)
-			if unusable {
-				resubmit.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
-			}
-			if c != nil && c.scope.pending != nil {
-				resubmit.WriteString("\nThe builder's scope request above still stands; the plan must still answer it.\n")
-			}
-			request = resubmit.String()
+			request = resubmitRequest(out, feedback, blocking, unusable, c)
 			reviewed = false
 		}
 		return "", e.Call(plan, request, gates...)
@@ -275,24 +264,8 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 	g.Add(run.Node{Name: "review", Owner: "plan-reviewer", SendBacks: maxReviewSendBacks}, func(e *run.Entry) (string, error) {
 		cycle++
 		round := cycle
-		var message strings.Builder
-		fmt.Fprintf(&message, "Review round %d of %d.\nYou may send this plan back %d more times.\n",
-			round, round+e.SendBacksLeft, e.SendBacksLeft)
-		if round > 1 {
-			message.WriteString("\nThe planner returned the following complete plan.\n")
-		}
-		fmt.Fprintf(&message, "\n## Request\n\n%s\n", r.Request)
-		if r.Recovery != nil {
-			fmt.Fprintf(&message, "\n## Recovery guidance (iteration %d ended: %s)\n\n%s\n", r.Recovery.Source, r.Recovery.Failure, r.Recovery.Guidance)
-			section(&message, "Work restored into the tree", r.Recovery.Restored)
-		}
-		printPlan(&message, out)
-		if c != nil && c.scope.pending != nil {
-			scopeReview(&message, c)
-		}
-
 		var report ReviewOutput
-		callErr := e.Call(&report, message.String(), run.ArtifactsExist, run.FilesNonEmpty)
+		callErr := e.Call(&report, reviewMessage(r, out, c, round, e.SendBacksLeft), run.ArtifactsExist, run.FilesNonEmpty)
 		var unusableReport *run.EnvelopeError
 		switch {
 		case callErr == nil:
@@ -314,10 +287,9 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			reviewed = true
 			return "plan", nil
 		}
-		if unusable && c != nil && c.scope.pending != nil {
+		if req := c.pendingScope(); unusable && req != nil {
 			// No usable review established that the scope request is answered,
 			// so the candidate plan is kept for diagnosis and never handed on.
-			req := c.scope.pending
 			if err := writeResult(r.Dir, run.PlanVersionFile(req.N), out); err != nil {
 				return "", err
 			}
@@ -328,7 +300,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			return "", fmt.Errorf("plan review: no usable review of the plan revised for scope request %d after %d send-backs; the builder's scope request is unresolved and the partial work is kept%s",
 				req.N, maxReviewSendBacks, resumeHint(r))
 		}
-		if unusable && c != nil && r.Recovery != nil && !c.disposed {
+		if unusable && c.awaitingDisposition(r) {
 			// A recovery's plan decides what happens to restored work and
 			// prior findings; without a usable review it decides nothing.
 			if err := writeResult(r.Dir, run.PlanFile, out); err != nil {
@@ -341,9 +313,10 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			// Saved for diagnosis, but never handed on: the reviewer said this
 			// plan cannot succeed, and nothing after this node could change that.
 			name := run.PlanFile
-			if c != nil && c.scope.pending != nil {
+			req := c.pendingScope()
+			if req != nil {
 				// The plan the builder was blocked on stays in plan.json.
-				name = run.PlanVersionFile(c.scope.pending.N)
+				name = run.PlanVersionFile(req.N)
 			}
 			if err := writeResult(r.Dir, name, out); err != nil {
 				return "", err
@@ -351,12 +324,12 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			section(r.Out, "blocking objections", blocking)
 			err := fmt.Errorf("plan review: the plan cannot succeed as written after %d revisions: %s",
 				round-1, strings.Join(blocking, "; "))
-			if c != nil && c.scope.pending != nil {
-				c.scope.pending.Outcome = scopeBlocked
-				if saveErr := saveScope(r, c.scope.pending); saveErr != nil {
+			if req != nil {
+				req.Outcome = scopeBlocked
+				if saveErr := saveScope(r, req); saveErr != nil {
 					return "", saveErr
 				}
-				err = fmt.Errorf("%w; the builder's scope request %d is unresolved%s", err, c.scope.pending.N, resumeHint(r))
+				err = fmt.Errorf("%w; the builder's scope request %d is unresolved%s", err, req.N, resumeHint(r))
 			}
 			return "", err
 		}
@@ -374,10 +347,10 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 				fmt.Fprintf(r.Out, "plan revised %d times; %d objections unresolved\n", round-1, len(feedback))
 			}
 		}
-		if c != nil && c.scope.pending != nil {
+		if c.pendingScope() != nil {
 			return c.replanned(e, r)
 		}
-		if c != nil && r.Recovery != nil && !c.disposed {
+		if c.awaitingDisposition(r) {
 			// A recovery's first reviewed plan decides what happens to the
 			// restored work and the prior findings.
 			c.disposed = true
@@ -389,6 +362,44 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 		}
 		return "", nil
 	})
+}
+
+// resubmitRequest is the planner's request after review sent the plan back: the
+// plan, the blocking objections and feedback, and what still stands.
+func resubmitRequest(out *PlanOutput, feedback, blocking []string, unusable bool, c *code) string {
+	var resubmit strings.Builder
+	resubmit.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
+	printPlan(&resubmit, out)
+	section(&resubmit, "Blocking objections: the plan cannot succeed until these are resolved", blocking)
+	section(&resubmit, "Review feedback", feedback)
+	if unusable {
+		resubmit.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
+	}
+	if c.pendingScope() != nil {
+		resubmit.WriteString("\nThe builder's scope request above still stands; the plan must still answer it.\n")
+	}
+	return resubmit.String()
+}
+
+// reviewMessage is the plan reviewer's request for review round, with left
+// send-backs remaining.
+func reviewMessage(r *run.Run, out *PlanOutput, c *code, round, left int) string {
+	var message strings.Builder
+	fmt.Fprintf(&message, "Review round %d of %d.\nYou may send this plan back %d more times.\n",
+		round, round+left, left)
+	if round > 1 {
+		message.WriteString("\nThe planner returned the following complete plan.\n")
+	}
+	fmt.Fprintf(&message, "\n## Request\n\n%s\n", r.Request)
+	if r.Recovery != nil {
+		fmt.Fprintf(&message, "\n## Recovery guidance (iteration %d ended: %s)\n\n%s\n", r.Recovery.Source, r.Recovery.Failure, r.Recovery.Guidance)
+		section(&message, "Work restored into the tree", r.Recovery.Restored)
+	}
+	printPlan(&message, out)
+	if c.pendingScope() != nil {
+		scopeReview(&message, c)
+	}
+	return message.String()
 }
 
 // Printable reports whether Summary, Steps, Files and Risks are all set, the
