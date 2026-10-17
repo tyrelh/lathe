@@ -502,10 +502,21 @@ addEventListener('resize', () => tooltip.hide());
 addEventListener('blur', () => tooltip.hide());
 
 const PAGE = 500;   // the server's per-poll event cap, dashboard.go's eventPage
-// How often each page asks for fresh data. Overview aggregates the whole
-// database and changes slowly; a live run's log does not. Agents load once,
-// then set done; until then they retry.
-const POLL = {overview: 5000, projects: 5000, project: 5000, runs: 2000, run: 500, agents: 5000, agent: 5000, missing: 0};
+// Every page: how often it asks for fresh data (poll, in ms), the nav item it
+// sits under, the loader tick() runs and the markup navigate() starts it with.
+// Overview aggregates the whole database and changes slowly; a live run's log
+// does not. Agents load once, then set done; until then they retry. A run has
+// no shell: its first poll builds the scaffold.
+const PAGES = {
+  overview: {poll: 5000, nav: 'overview', load: overview, shell: () => overviewShell()},
+  projects: {poll: 5000, nav: 'projects', load: projects, shell: () => listShell('projects by spend')},
+  project: {poll: 5000, nav: 'projects', load: project, shell: () => projectShell(view.repo)},
+  runs: {poll: 2000, nav: 'runs', load: list, shell: () => listShell('latest runs')},
+  run: {poll: 500, nav: 'runs', load: detail},
+  agents: {poll: 5000, nav: 'agents', load: agents, shell: () => listShell('agents and routing phases')},
+  agent: {poll: 5000, nav: 'agents', load: agent, shell: () => agentShell()},
+  missing: {poll: 0, load: () => missing()},
+};
 
 // Per-page state: navigate() resets all of it through resetPageState().
 
@@ -597,16 +608,16 @@ const bucket = (m, k) => m.get(k) ?? m.set(k, []).get(k);
 // Stable page bodies survive polling; only their contents change.
 const panel = (id, title) => `<section class="card panel"><h2>${title}</h2><div id="${id}" class="scroll" tabindex="0" aria-label="${title}"></div></section>`;
 function pageShell(page) {
-  if (page === 'project') return projectShell(view.repo);
-  if (page === 'overview') return `<div class="page"><div id="page-summary" class="card page-summary"></div><div class="ranking-grid">`
+  return PAGES[page]?.shell?.() ?? '';
+}
+const overviewShell = () => `<div class="page"><div id="page-summary" class="card page-summary"></div><div class="ranking-grid">`
     + `<div class="ranking-column"><section class="card average-card"><h2>average spend per PR</h2><b id="average-spend" class="cost"></b></section>`
     + panel('rank-projects', 'top projects by spend') + panel('rank-runs', 'top runs by spend') + '</div>'
     + `<div class="ranking-column">` + panel('rank-models', 'top models by spend')
     + panel('rank-providers', 'top providers by spend') + '</div></div></div>';
-  if (page === 'runs' || page === 'projects' || page === 'agents') return `<div class="page"><div id="page-summary" class="card page-summary"></div>${panel('list-body', {runs: 'latest runs', projects: 'projects by spend', agents: 'agents and routing phases'}[page])}</div>`;
-  if (page === 'agent') return `<div class="page"><div id="agent-head" class="card page-summary"></div>${panel('agent-config', 'configuration')}${panel('agent-prompts', 'prompts')}</div>`;
-  return '';
-}
+// The runs, projects and agents pages: a summary over one list.
+const listShell = title => `<div class="page"><div id="page-summary" class="card page-summary"></div>${panel('list-body', title)}</div>`;
+const agentShell = () => `<div class="page"><div id="agent-head" class="card page-summary"></div>${panel('agent-config', 'configuration')}${panel('agent-prompts', 'prompts')}</div>`;
 function ensurePage(page) {
   if (app.dataset.page === page) return;
   app.dataset.page = page;
@@ -846,12 +857,11 @@ function navigate() {
   bar.textContent = '';
   followBox.checked = false;
   followLabel.style.display = 'none';
-  for (const [id, page] of [['nav-overview', 'overview'], ['nav-runs', 'runs'], ['nav-projects', 'projects'], ['nav-agents', 'agents']]) {
-    const on = view.page === page || (page === 'runs' && view.page === 'run')
-      || (page === 'projects' && view.page === 'project') || (page === 'agents' && view.page === 'agent');
+  for (const page of ['overview', 'runs', 'projects', 'agents']) {
+    const id = 'nav-' + page;
     // Runs stays selected while a single run is open: a run is something
     // inside Runs, not a third place to be.
-    if (on) $(id).setAttribute('aria-current', 'page');
+    if (PAGES[view.page].nav === page) $(id).setAttribute('aria-current', 'page');
     else $(id).removeAttribute('aria-current');
   }
   tick();
@@ -878,14 +888,7 @@ async function tick() {
   polling = true;
   const current = generation;
   try {
-    if (view.page === 'overview') await overview(current);
-    else if (view.page === 'projects') await projects(current);
-    else if (view.page === 'project') await project(current);
-    else if (view.page === 'runs') await list(current);
-    else if (view.page === 'run') await detail(current);
-    else if (view.page === 'agents') await agents(current);
-    else if (view.page === 'agent') await agent(current);
-    else missing();
+    await PAGES[view.page].load(current);
     if (current === generation) { failure = ''; fresh = Date.now(); stamp(); }
   } catch (e) {
     // The last good values stay on screen; only the freshness note changes.
@@ -2269,7 +2272,7 @@ function meta() {
 let last = 0;
 setInterval(() => {
   stamp();
-  const wait = POLL[view.page];
+  const wait = PAGES[view.page].poll;
   if (wait && Date.now() - last >= wait) { last = Date.now(); tick(); }
 }, 500);
 
