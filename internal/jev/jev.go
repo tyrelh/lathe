@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// KeyEnv is the environment variable that holds the TypeSafe API key.
+const KeyEnv = "TYPESAFE_API_KEY"
+
 // Model is pinned: tier descriptions and the confidence floor are tuned
 // against one version, so moving it is a lathe change that comes with
 // recalibrating.
@@ -73,7 +76,7 @@ func (a Answer) Cost() float64 { return float64(a.InputTokens) * PricePerMTokIn 
 // On error the Answer holds only Raw, if a response arrived.
 func Score(ctx context.Context, key, instructions string, criteria []string, state any) (Answer, error) {
 	if key == "" {
-		return Answer{}, errors.New("TYPESAFE_API_KEY is not set")
+		return Answer{}, errors.New(KeyEnv + " is not set")
 	}
 	body, err := json.Marshal(map[string]any{
 		"model": Model,

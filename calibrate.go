@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/jev"
 	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
@@ -27,7 +28,7 @@ func routeCalibrate(args []string) int {
 	agent := fs.String("agent", "", "the routed agent to calibrate: planner or builder")
 	limit := fs.Int("limit", 30, "how many past runs to ask about")
 	fs.Parse(args)
-	if *agent != "planner" && *agent != "builder" {
+	if config.RoutingKey(*agent) == "" {
 		fmt.Fprintln(os.Stderr, "lathe route-calibrate: --agent must be planner or builder")
 		return 2
 	}
@@ -54,9 +55,9 @@ func routeCalibrate(args []string) int {
 // with a blank column for a hand label. Only each run's first iteration is
 // asked about, and a builder sample needs that iteration's plan.json.
 func calibrate(ctx context.Context, w io.Writer, db *trace.DB, dataRoot, dir, agent string, limit int) error {
-	key := os.Getenv("TYPESAFE_API_KEY")
+	key := os.Getenv(jev.KeyEnv)
 	if key == "" {
-		return errors.New("TYPESAFE_API_KEY is not set")
+		return errors.New(jev.KeyEnv + " is not set")
 	}
 	root, err := config.TargetRoot(dir)
 	if err != nil {
