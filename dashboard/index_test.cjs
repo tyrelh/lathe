@@ -584,8 +584,12 @@ function serve(events, ps = phases, r = run, eligible = {}) {
   const body = json({run:r,phases:ps,events,iterations,...eligible});
   if (resolveFetch) resolveFetch(body); else response = body;
 }
-// drained waits for a served page that a full page already requested.
-const drained = () => new Promise(setImmediate);
+// settle lets pending microtasks and fetches run, such as the tick navigate()
+// launches or a served page that a full page already requested.
+const settle = () => new Promise(setImmediate);
+// visit enters the page at hash the way the browser does and lets its first
+// tick run.
+const visit = async hash => { context.location.hash = hash; evaluate('navigate()'); await settle(); };
 const chart = () => nodes.get('phases').innerHTML, panel = () => nodes.get('phase').innerHTML;
 const costs = () => nodes.get('costs').innerHTML;
 // area names the page area the async checks below are in, so a failed assert
@@ -670,7 +674,7 @@ let area = 'run page';
          event('log','test command','p2','command'),event('log','  <b>spaced</b>\n  out','p2','output'),
          event('log','','p2','output')];
   serve(nextEvents, phases, run, {revisable:true, recoverable:false});
-  await drained();
+  await settle();
   assert(!nodes.get('revise').hidden && nodes.get('resume').hidden, 'a revisable run offers revise only');
   assert.equal(evaluate('done'), true);
   assert(!resolveFetch, 'a short page waits for the timer');
@@ -809,7 +813,7 @@ let area = 'run page';
     event('output',{attempt:0,report:{summary:'Ready',feedback:[]},text:'ACCEPTED RAW'},'accepted','plan-reviewer'),
   ], reportPhases);
   evaluate(`selected = 'plan'`);
-  await drained();
+  await settle();
   out = panel();
   for (const text of ['Initial &lt;plan>','data-panel="plan-raw" open','data-panel="plan-inputs" open']) assert(out.includes(text), text);
   assert.equal(out.split('RAW PLAN').length-1,1,'raw output must not duplicate across pages');
@@ -845,7 +849,7 @@ let area = 'run page';
   resolveFetch(json({run,phases,events:[event('usage',{tokens:999}),event('log','late','p1','output'),
                                         event('output',{report:{summary:'late'}})]}));
   await pending;
-  await new Promise(setImmediate);
+  await settle();
   assert.equal(failNext, null, 'navigation during a fetch fetches the new page');
   assert.equal(evaluate('after'),0);
   for (const name of ['usage', 'tails', 'outputs', 'spend', 'contexts', 'thinking']) assert.equal(evaluate(name + '.size'), 0, `stale ${name}`);
@@ -876,7 +880,7 @@ let area = 'run page';
   ];
   while (priceEvents.length < PAGE) priceEvents.push(event('log','padding'));
   serve(priceEvents, phases, priced);
-  await drained();
+  await settle();
   const providerGroups = () => JSON.parse(JSON.stringify(evaluate('providerCosts()')));
   const providerCostOf = provider => providerGroups().find(p => p.provider === provider)?.cost;
   assert.equal(providerCostOf('a/b'), 0.25);
@@ -907,7 +911,7 @@ let area = 'run page';
     event('usage',{attempt:2,seq:4,provider:'other',cost:0.03},'p2'),
     event('usage',{attempt:2,seq:5,cost:0.02},'p2'),
   ], phases, priced);
-  await drained();
+  await settle();
   assert.equal(evaluate('done'), true);
 
   assert.equal(providerCostOf('a'), 0.35);
@@ -937,10 +941,8 @@ let area = 'run page';
 
   // A third run clears those identities and, once drained, explicitly says
   // no usage was recorded (rather than fabricating a balancing cost row).
-  context.location.hash = '#/runs/empty';
   response = json({run:{...run, run_id:'empty', cost:0.5}, phases:[], events:[]});
-  evaluate('navigate()');
-  await new Promise(setImmediate); // navigate launches an async tick
+  await visit('#/runs/empty');
   assert.equal(scaffoldCount, 3);
   assert(nodes.get('run-total').textContent === '$0.50' && costs().includes('No usage recorded.'), costs());
   assert(!costs().includes('unknown/') && !costs().includes('Loading usage…'), costs());
@@ -971,7 +973,6 @@ let area = 'run page';
 
   // Thinking comes from the latest input event per phase, independent of usage.
   const thoughtPhases = [...phases, ...[3, 4, 5, 6].map(n => ({...ph(n,'fix',T(65),T(70)), phase_id:'p'+n}))];
-  context.location.hash = '#/runs/thought';
   response = json({run:{...run, run_id:'thought'}, phases:thoughtPhases, iterations, events:[
     event('input',{prompt:'a',thinking:'low'},'p1'), event('input',{prompt:'b',thinking:'high'},'p1'),
     event('usage',{attempt:0,seq:1,model:'m',cost:0.1},'p1'),
@@ -980,8 +981,7 @@ let area = 'run page';
     event('input',{prompt:'e',thinking:'medium'},'p4'), event('input',{prompt:'f',thinking:''},'p4'),
     event('input',{prompt:'g',thinking:'medium'},'p5'), event('input',{prompt:'h'},'p5'),
     event('input',{prompt:'i'},'p6')]});
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/runs/thought');
   const tipOf = p => chart().match(new RegExp(`data-phase="${p}"[^>]*data-tooltip="([^"]*)"`))[1];
   assert(tipOf('p1').includes('Model: m\nThinking: high\nCost: $0.10'), tipOf('p1'));
   assert(!tipOf('p1').includes('low'), 'latest input wins');
@@ -999,10 +999,8 @@ let area = 'run page';
     evaluate(`pick('${p}')`);
     assert(!panel().includes('<th>Thinking</th>'), `${p} details omit thinking`);
   }
-  context.location.hash = '#/runs/empty';
   response = json({run:{...run, run_id:'empty', cost:0.5}, phases:[], events:[]});
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/runs/empty');
   assert.equal(evaluate('thinking.size'), 0, 'navigation clears thinking');
 
   area = 'runs list';
@@ -1201,9 +1199,7 @@ let area = 'run page';
     {name:"o'<b>", kind:'agent', repo_instructions:false, workflows:[], prompts:[]},
   ];
   routeResponses = new Map([['/api/agents', json(agentRows)]]);
-  context.location.hash = '#/agents';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents');
   assert(navOn('nav-agents') && !navOn('nav-projects'), 'Agents is selected on its list');
   const agentList = nodes.get('list-body').innerHTML;
   assert(agentList.includes('<th>Agent</th><th>Kind</th><th>Workflows</th><th>Prompts</th>'), agentList);
@@ -1224,9 +1220,7 @@ let area = 'run page';
   routeResponses.set('/api/agents/code-review-general', json({...agentRows[1], prompts:[
     {...agentRows[1].prompts[0], body:'Review </textarea><script>alert(1)</script> & report'},
     {...agentRows[1].prompts[1], body:'{{request}}\n\nline 3'}]}));
-  context.location.hash = '#/agents/code-review-general';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents/code-review-general');
   assert(navOn('nav-agents') && !navOn('nav-runs'), 'Agents stays selected on an agent page');
   const agentHead = nodes.get('agent-head').innerHTML;
   assert(agentHead.includes('<h2>code-review-general</h2>') && agentHead.includes('Agent · workflows: implement, build, revise'), agentHead);
@@ -1252,9 +1246,7 @@ let area = 'run page';
 
   // A routing phase has one instructions box and names the agent it routes.
   routeResponses.set('/api/agents/route-plan', json({...agentRows[2], prompts:[{...agentRows[2].prompts[0], body:'Pick a tier.'}]}));
-  context.location.hash = '#/agents/route-plan';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents/route-plan');
   assert(nodes.get('agent-head').innerHTML.includes('Routing phase for <a href="#/agents/planner">planner</a>'));
   boxes = promptsHTML();
   assert(boxes.includes('<label for="prompt-instructions">Instructions</label>') && boxes.includes('Pick a tier.'), boxes);
@@ -1262,22 +1254,18 @@ let area = 'run page';
 
   // An unknown agent is a not-found page; a broken roster is a failure.
   routeResponses.set('/api/agents/nope', {ok:false, status:404, text: async () => 'no such agent\n'});
-  context.location.hash = '#/agents/nope';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents/nope');
   assert(appHTML.includes('No agent named <code>nope</code>') && navOn('nav-agents'), appHTML);
   assert(evaluate('done') && nodes.get('note').className === '', 'not found is final, not stale');
   routeResponses.set('/api/agents/broken', {ok:false, status:500, text: async () => 'roster is broken'});
-  context.location.hash = '#/agents/broken';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents/broken');
   assert(nodes.get('note').className === 'stale' && nodes.get('note').textContent.includes('roster is broken'));
   assert.equal(nodes.get('status').textContent, '');
   // A failed first load is retried by the shared timer until it succeeds.
   routeResponses.set('/api/agents/broken', json({...agentRows[0], name:'broken', prompts:[]}));
   evaluate('last = 0');
   intervals.forEach(f => f());
-  await new Promise(setImmediate);
+  await settle();
   assert(nodes.get('agent-head').innerHTML.includes('<h2>broken</h2>'));
   assert.equal(evaluate('done'), true);
   assert.equal(nodes.get('note').textContent, 'loaded · reload to refresh');
@@ -1290,7 +1278,7 @@ let area = 'run page';
   context.location.hash = '#/agents';
   evaluate('navigate()');
   resolveFetch(json({...agentRows[0], name:'slow', prompts:[]}));
-  await new Promise(setImmediate);
+  await settle();
   assert(!nodes.has('agent-head') && nodes.has('list-body'), 'a late agent reply is not drawn on the list');
   assert(nodes.get('list-body').innerHTML.includes('route-plan'));
   assert.equal(evaluate('done'), true);
@@ -1299,9 +1287,7 @@ let area = 'run page';
   // Edited files: the list marks edited agents, and drift over edits.
   const home = '/home/me/.lathe/';
   routeResponses.set('/api/agents', json(agentRows.map((a, i) => ({...a, prompts: a.prompts.map(p => ({...p, edited: i === 1 && p.role === 'system', drift: i === 0 && p.role === 'user'}))}))));
-  context.location.hash = '#/agents';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents');
   const editedList = nodes.get('list-body').innerHTML;
   assert(editedList.includes('>code-review-general</a> <span class="badge" title="A file differs from its seed">edited</span></td>'), editedList);
   assert(editedList.includes('>planner</a> <span class="badge" title="An edited file whose seed has changed since">drift</span></td>'), editedList);
@@ -1315,9 +1301,7 @@ let area = 'run page';
   routeResponses.set('/api/agents/code-review-general', json(reviewer([
     prompt('system', 'Review </textarea><script>alert(1)</script>', {seed: 'Review', edited: true, drift: true}),
     prompt('user', '{{request}}')])));
-  context.location.hash = '#/agents/code-review-general';
-  evaluate('navigate()');
-  await new Promise(setImmediate);
+  await visit('#/agents/code-review-general');
   assert(nodes.get('agent-head').innerHTML.includes('Edits are saved to ~/.lathe on this machine. Each run captures its configuration when it is submitted.'));
   const boxHTML = role => ['edit', 'status', 'info'].map(part => deepHTML(nodes.get(`prompt-${role}-${part}`))).join('');
   const statusOf = role => nodes.get(`prompt-${role}-status`);
@@ -1415,7 +1399,6 @@ let area = 'run page';
   // A conflict offers the current version and keeps the draft until asked.
   writeReply = reply(409, {error: 'this prompt changed since you loaded it', body: '{{request}} from <elsewhere>', hash: 'h-other', edited: true});
   await call('savePrompt', 'user');
-  confirms.length = 0;
   assert.equal(JSON.parse(writes.pop().body).base_hash, 'h-user');
   assert.equal(statusOf('user').innerHTML, 'this prompt changed since you loaded it <button type="button" data-role="user" data-focus="prompt-user-load" onclick="loadCurrent(this.dataset.role)">Load current version</button>');
   assert.equal(statusOf('user').className, 'fail');
@@ -1429,12 +1412,10 @@ let area = 'run page';
   type('user', 'no placeholder');
   writeReply = {ok: false, status: 400, text: async () => JSON.stringify({error: 'a user prompt has to contain {{request}}'})};
   await call('savePrompt', 'user');
-  confirms.length = 0;
   assert.equal(JSON.parse(writes.pop().body).base_hash, 'h-other');
   assert(statusOf('user').innerHTML === 'a user prompt has to contain {{request}}' && statusOf('user').className === 'fail', boxHTML('user'));
   writeReply = {ok: false, status: 403, text: async () => 'forbidden <origin>\n'};
   await call('savePrompt', 'user');
-  confirms.length = 0;
   writes.pop();
   assert(boxHTML('user').includes('forbidden &lt;origin>'), 'a plain-text refusal is shown as text');
 
@@ -1475,7 +1456,7 @@ let area = 'run page';
   // Confirming the leave navigates and drops the draft.
   context.location.hash = '#/agents';
   listeners.get('hashchange')();
-  await new Promise(setImmediate);
+  await settle();
   assert.equal(confirms.pop(), 'Leave this page? Unsaved prompt edits will be lost.');
   assert(evaluate('view.page') === 'agents' && nodes.has('list-body') && !evaluate('unsaved()'));
   const clean = {preventDefault() { this.prevented = true; }};
