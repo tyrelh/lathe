@@ -3,6 +3,7 @@ package trace
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -151,7 +152,7 @@ func TestReviseRefuses(t *testing.T) {
 			}
 			after, _ := db.Get(id)
 			itsAfter, _ := db.Iterations(id)
-			if fmt.Sprint(before) != fmt.Sprint(after) || len(itsBefore) != len(itsAfter) {
+			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(itsBefore, itsAfter) {
 				t.Fatalf("a refused revision changed the run: %+v -> %+v", before, after)
 			}
 		})

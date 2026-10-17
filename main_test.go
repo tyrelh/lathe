@@ -17,6 +17,65 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
+func TestPreparedTaskIssue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	repo := gitRepo(t, "")
+	request, ref, err := issueRequest("o/r#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := prepare("build", repo, request, ref, config.Overrides{}, io.Discard)
+	if err != nil || req.Issue != "https://github.com/o/r/issues/42" {
+		t.Fatalf("prepared issue = %q, %v", req.Issue, err)
+	}
+	root, err := trace.DataRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := trace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(req.Request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.Get(id)
+	if err != nil || row.TaskID == nil {
+		t.Fatalf("prepared build = %+v, %v", row, err)
+	}
+	for _, workflow := range []string{"build", "plan", "implement", "scout"} {
+		prompt, issue := "", "o/r#42"
+		if workflow == "scout" {
+			prompt, issue = "inspect", ""
+		}
+		id, err := prepareAndSubmit(workflow, req.Repo, prompt, issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, err := db.Get(id)
+		if err != nil || (row.TaskID != nil) != (workflow == "build") {
+			t.Fatalf("%s = %+v, %v", workflow, row, err)
+		}
+		var spec worker.Spec
+		if err := json.Unmarshal(row.Spec, &spec); err != nil {
+			t.Fatal(err)
+		}
+		if issue != "" && spec.Issue != ref {
+			t.Fatalf("spec issue = %q", spec.Issue)
+		}
+		if row.TaskID != nil {
+			task, err := db.GetTask(*row.TaskID)
+			if err != nil || task.IssueRef == nil || *task.IssueRef != ref {
+				t.Fatalf("task issue = %+v, %v", task, err)
+			}
+		}
+	}
+}
+
 // init is gone with lathe.toml.
 func TestInitIsRemoved(t *testing.T) {
 	t.Chdir(t.TempDir())

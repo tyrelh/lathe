@@ -416,6 +416,7 @@ func (d *DB) Event(runID, phaseID, typ, name string, payload any) error {
 
 // Row is one run as `lathe runs` lists it and the dashboard renders it.
 type Row struct {
+	TaskID    *string `json:"task_id"`
 	PRState   *string `json:"pr_state"`
 	PRStateAt *string `json:"pr_state_at"`
 	ID        string  `json:"run_id"`
@@ -450,7 +451,7 @@ const runColumns = `SELECT run_id, workflow, repo, request, status,
 	COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(attempt_id, ''),
 	COALESCE(reason, ''), COALESCE(submitted_at, ''), COALESCE(started_at, ''),
 	COALESCE(ended_at, ''), COALESCE(cancel_at, ''), tokens, cost, COALESCE(spec, ''),
-	iteration, COALESCE(activity_at, ''), pr_state, pr_state_at`
+	iteration, COALESCE(activity_at, ''), pr_state, pr_state_at, task_id`
 
 // queryer is a *sql.DB or *sql.Tx.
 type queryer interface {
@@ -482,7 +483,7 @@ func scanRows(rows *sql.Rows) ([]Row, error) {
 		var spec string
 		if err := rows.Scan(&r.ID, &r.Workflow, &r.Repo, &r.Request, &r.Status,
 			&r.Branch, &r.Commit, &r.AttemptID, &r.Reason, &r.Submitted, &r.Started,
-			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity, &r.PRState, &r.PRStateAt); err != nil {
+			&r.Ended, &r.Cancelled, &r.Tokens, &r.Cost, &spec, &r.Iteration, &r.Activity, &r.PRState, &r.PRStateAt, &r.TaskID); err != nil {
 			return nil, err
 		}
 		r.Spec = []byte(spec)

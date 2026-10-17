@@ -256,7 +256,7 @@ func prepare(name, dir, request, issueRef string, ov config.Overrides, warn io.W
 		return submission{}, err
 	}
 	return submission{Request: trace.Request{
-		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec,
+		Workflow: name, Repo: ws.Path, Request: request, Branch: branch, Spec: spec, Issue: issueRef,
 	}, Base: base}, nil
 }
 

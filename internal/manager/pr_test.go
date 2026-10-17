@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"os"
@@ -14,6 +15,78 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 	"github.com/tyrelh/lathe/internal/workspace"
 )
+
+func TestPRPollingBackfillsAfterObservations(t *testing.T) {
+	m, db, _ := newManager(t, 1, &fake{})
+	raw, err := sql.Open("sqlite", filepath.Join(m.dataRoot, "lathe.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	for _, id := range []string{"open", "merged", "later"} {
+		if _, err := raw.Exec(`INSERT INTO runs (run_id, workflow, repo, request, status, submitted_at) VALUES (?, 'build', '/repo', 'legacy', 'ok', 'old')`, id); err != nil {
+			t.Fatal(err)
+		}
+		recordedPR(t, m, id, 0)
+	}
+	calls := 0
+	m.viewPR = func(string, string) (workspace.PR, error) {
+		calls++
+		// PR candidates are ordered by run ID: later, merged, open.
+		switch calls {
+		case 1:
+			return workspace.PR{}, errors.New("temporarily unavailable")
+		case 2:
+			return workspace.PR{State: "MERGED"}, nil
+		default:
+			return workspace.PR{State: "OPEN"}, nil
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	passes := 0
+	m.pollPRs(ctx, time.Millisecond, func() {
+		m.backfillTasks()
+		passes++
+		open, _ := db.Get("open")
+		merged, _ := db.Get("merged")
+		later, _ := db.Get("later")
+		if open.TaskID == nil || open.PRState == nil || *open.PRState != "open" || merged.TaskID != nil {
+			t.Errorf("backfill after observation: open=%+v merged=%+v", open, merged)
+		}
+		if passes == 1 && later.TaskID != nil {
+			t.Error("never-checked terminal run was backfilled")
+		}
+		if passes == 2 {
+			if later.TaskID == nil {
+				t.Error("subsequent pass did not backfill newly open run")
+			}
+			cancel()
+		}
+	})
+	if passes != 2 {
+		t.Fatalf("passes = %d", passes)
+	}
+}
+
+func TestInterruptedPRPassSkipsBackfill(t *testing.T) {
+	m, db, _ := newManager(t, 1, &fake{})
+	id := submit(t, db, "build", "/repo")
+	recordedPR(t, m, id, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.viewPR = func(string, string) (workspace.PR, error) {
+		cancel()
+		return workspace.PR{State: "OPEN"}, nil
+	}
+	called := false
+	m.pollPRs(ctx, time.Millisecond, func() {
+		called = true
+		m.backfillTasks()
+	})
+	if called {
+		t.Fatal("interrupted pass invoked backfill")
+	}
+}
 
 func recordedPR(t *testing.T, m *manager, id string, iteration int) {
 	t.Helper()

@@ -54,6 +54,8 @@ var (
 // specification: everything configuration could otherwise change under a
 // queued run. Repository contents and worker secrets are not in it.
 type Request struct {
+	TaskID   string
+	Issue    string
 	Workflow string
 	Repo     string
 	Request  string
@@ -70,10 +72,36 @@ func (d *DB) Submit(r Request) (string, error) {
 	defer tx.Rollback()
 
 	id, at := NewRunID(r.Workflow), nowUTC()
+	var taskID any
+	if r.Workflow == "build" {
+		if r.TaskID != "" {
+			var repo string
+			var archived, issueRef *string
+			if err := tx.QueryRow(`SELECT repo, archived_at, issue_ref FROM tasks WHERE id = ?`, r.TaskID).Scan(&repo, &archived, &issueRef); err != nil {
+				return "", err
+			}
+			if archived != nil {
+				return "", fmt.Errorf("task %s is archived", r.TaskID)
+			}
+			if repo != r.Repo {
+				return "", fmt.Errorf("task %s belongs to a different repository", r.TaskID)
+			}
+			if r.Issue != "" && (issueRef == nil || *issueRef != r.Issue) {
+				return "", fmt.Errorf("task %s has a different issue reference", r.TaskID)
+			}
+			taskID = r.TaskID
+		} else {
+			created, err := createTask(tx, r.Repo, r.Request, r.Issue, at)
+			if err != nil {
+				return "", err
+			}
+			taskID = created
+		}
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, submitted_at, activity_at)
-		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
-		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, at, at); err != nil {
+		`INSERT INTO runs (run_id, workflow, repo, request, status, spec, branch, submitted_at, activity_at, task_id)
+		 VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+		id, r.Workflow, r.Repo, r.Request, string(r.Spec), r.Branch, at, at, taskID); err != nil {
 		return "", err
 	}
 	if _, err := tx.Exec(

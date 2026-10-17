@@ -31,6 +31,12 @@ const poll = time.Second
 // answerable.
 const logFile = "manager.log"
 
+func (m *manager) backfillTasks() {
+	if err := m.db.BackfillTasks(); err != nil {
+		fmt.Fprintln(m.out, "lathe manager: backfill tasks:", err)
+	}
+}
+
 // Capacity is how many runs may execute at once, from LATHE_CAPACITY.
 func Capacity() int {
 	if n, err := strconv.Atoi(os.Getenv("LATHE_CAPACITY")); err == nil && n > 0 {
@@ -105,7 +111,7 @@ func Run(ctx context.Context, dataRoot, version string, out io.Writer, actions d
 	pollDone := make(chan struct{})
 	go func() {
 		defer close(pollDone)
-		m.pollPRs(pollCtx, prPoll, nil)
+		m.pollPRs(pollCtx, prPoll, m.backfillTasks)
 	}()
 	defer func() {
 		cancelPolling()

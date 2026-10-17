@@ -26,6 +26,9 @@ func (h *Handle) IssueRequest() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := r.db.FillTaskIssue(r.ID, r.Issue, issue.URL, issue.Title, issue.Body); err != nil {
+		return "", err
+	}
 	data, err := json.MarshalIndent(issue, "", "  ")
 	if err != nil {
 		return "", err

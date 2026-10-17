@@ -22,10 +22,17 @@ func TestConcurrentUpgrade(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Back to the schema before the last migration.
-		for _, column := range []string{"pr_state", "pr_state_at"} {
-			if _, err := db.sql.Exec("ALTER TABLE runs DROP COLUMN " + column); err != nil {
+		for _, statement := range []string{
+			"DROP INDEX runs_task_recent",
+			"ALTER TABLE runs DROP COLUMN task_id",
+			"DROP TABLE tasks",
+		} {
+			if _, err := db.sql.Exec(statement); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if _, err := db.sql.Exec(`INSERT INTO runs (run_id, workflow, repo, request, status) VALUES ('legacy', 'build', '/repo', 'old', 'queued')`); err != nil {
+			t.Fatal(err)
 		}
 		if _, err := db.sql.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(migrations)-1)); err != nil {
 			t.Fatal(err)
@@ -75,11 +82,22 @@ func TestConcurrentUpgrade(t *testing.T) {
 		if err := db.sql.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != len(migrations) {
 			t.Fatalf("user_version = %d, %v; want %d", version, err, len(migrations))
 		}
-		rows, err := db.sql.Query(`SELECT pr_state, pr_state_at FROM runs LIMIT 1`)
+		rows, err := db.sql.Query(`SELECT task_id FROM runs LIMIT 1`)
 		if err != nil {
 			t.Fatalf("upgraded schema: %v", err)
 		}
 		rows.Close()
+		legacy, err := db.Get("legacy")
+		if err != nil || legacy.TaskID != nil {
+			t.Fatalf("migration backfilled a run: %+v, %v", legacy, err)
+		}
+		if _, err := db.sql.Exec(`INSERT INTO tasks (id, repo, text, created_at, updated_at) VALUES ('backlog', '/repo', 'todo', 'now', 'now')`); err != nil {
+			t.Fatal(err)
+		}
+		runs, err := db.TaskRuns("backlog")
+		if err != nil || len(runs) != 0 {
+			t.Fatalf("backlog = %+v, %v", runs, err)
+		}
 		db.Close()
 	}
 }
