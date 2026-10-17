@@ -349,14 +349,14 @@ func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOpt
 			if own.published != "" {
 				// Only the work beyond the published commit is restored, at it.
 				if patch, err = residualOf(dataRoot, row, spec, src, own); err != nil {
-					return trace.Recovery{}, fmt.Errorf("%w: %v; continue without it with lathe resume --restart %s \"guidance\"", trace.ErrNotRecoverable, err, runID)
+					return trace.Recovery{}, fmt.Errorf("%w: %v%s", trace.ErrNotRecoverable, err, restartHint(runID))
 				}
 				base, digest = own.published, ""
 			}
 			if own.published != "" && patch == "" {
 				rs.Unavailable = fmt.Sprintf("iteration %d's work is already published at %s; it is validated again, not reapplied", n, workspace.Short(base))
 			} else if err := restorable(spec, src, patch, digest, rs); err != nil {
-				return trace.Recovery{}, fmt.Errorf("%w: %v; continue without it with lathe resume --restart %s \"guidance\"", trace.ErrNotRecoverable, err, runID)
+				return trace.Recovery{}, fmt.Errorf("%w: %v%s", trace.ErrNotRecoverable, err, restartHint(runID))
 			}
 		}
 	} else if o.Restart {
@@ -379,6 +379,12 @@ func PrepareRecovery(db *trace.DB, dataRoot, runID, guidance string, o ResumeOpt
 		kind = trace.KindRestart
 	}
 	return trace.Recovery{Source: n, Kind: kind, Resolved: request, Guidance: guidance, Spec: b}, nil
+}
+
+// restartHint is how an engineer continues run runID without the work that
+// could not be restored.
+func restartHint(runID string) string {
+	return fmt.Sprintf("; continue without it with lathe resume --restart %s \"guidance\"", runID)
 }
 
 // restorable settles what the source iteration left to restore: a saved

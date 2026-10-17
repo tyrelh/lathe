@@ -323,8 +323,8 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	if recovery != nil && spec.Recovery.Patch != "" {
 		restored, err := workspace.Restore(path, base, spec.Recovery.Patch, spec.Recovery.Digest, spec.Roster.Protected)
 		if err != nil {
-			return 0, "", "", errors.Join(fmt.Errorf("restoring iteration %d's work: %w; continue without it with lathe resume --restart %s \"guidance\"",
-				spec.Recovery.Source, err, row.ID), Settle(db, dataRoot, wt, false))
+			return 0, "", "", errors.Join(fmt.Errorf("restoring iteration %d's work: %w%s",
+				spec.Recovery.Source, err, restartHint(row.ID)), Settle(db, dataRoot, wt, false))
 		}
 		recovery.Restored = restored
 		// Until this lands, a later recovery restores the same evidence again.
