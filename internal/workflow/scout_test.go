@@ -100,6 +100,12 @@ func execute(t *testing.T, cfg config.Config, name, repo, request string) int {
 
 func executeWith(t *testing.T, cfg config.Config, name, repo, request string, ctx context.Context, out io.Writer) int {
 	t.Helper()
+	code, _ := dispatch(t, cfg, name, repo, request, ctx, out, nil)
+	return code
+}
+
+func dispatch(t *testing.T, cfg config.Config, name, repo, request string, ctx context.Context, out io.Writer, rec *run.Recovery) (int, string) {
+	t.Helper()
 	roster, err := cfg.Capture(Agents[name], config.Overrides{})
 	if err != nil {
 		t.Fatal(err)
@@ -125,16 +131,19 @@ func executeWith(t *testing.T, cfg config.Config, name, repo, request string, ct
 	r, err := run.Open(run.Options{
 		ID: id, Workflow: name, Request: request, Repo: repo,
 		Dir: filepath.Join(dataRoot, "runs", id), Snapshot: roster, DB: db,
-		Out: out, Ctx: ctx, Attempt: attempt,
+		Out: out, Ctx: ctx, Attempt: attempt, Recovery: rec,
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if rec != nil {
+		r.Retain(rec.Restored)
 	}
 	code := Graphs[name](r)
 	if err := db.Complete(id, attempt, token, r.Status(), r.Reason()); err != nil {
 		t.Fatal(err)
 	}
-	return code
+	return code, r.Dir
 }
 
 func load(t *testing.T) (config.Config, string) {
