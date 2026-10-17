@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Scope send-backs return planning authority to the planner
