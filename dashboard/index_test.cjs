@@ -22,16 +22,15 @@ class Element {
 }
 for (const id of ['app', 'status', 'note', 'version',
                   'tooltip', 'nav-overview', 'nav-runs', 'nav-projects', 'nav-agents', 'follow-box', 'follow-label',
-                  'project-head', 'project-runs', 'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
-// Parse only the scaffold IDs when app is replaced. In particular, do not
-// precreate #log: that would skip the first-render branch in loadRun().
+                  'follow-home', 'follow-state', 'reader']) nodes.set(id, new Element());
+// Every ID in app's markup is registered when app is replaced, and the last
+// write's are dropped. Nothing precreates #log: that would skip the
+// first-render branch in loadRun(). scaffoldIDs are the regions every run
+// scaffold must carry.
 const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
   'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status',
   'resume', 'resume-guidance', 'resume-submit', 'resume-status', 'log', 'run-total',
   'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
-const pageIDs = ['page-summary', 'average-spend', 'rank-projects', 'rank-runs', 'rank-models', 'rank-providers', 'list-body',
-  'project-head', 'project-runs', 'new-run', 'run-prompt', 'run-issue', 'run-type', 'run-submit', 'run-status',
-  'agent-head', 'agent-config', 'agent-prompts'];
 // The agent page redraws each prompt box's editor on its own, so those regions
 // register the IDs inside them, and each editor registers its own.
 const parsedIDs = new Map();
@@ -60,19 +59,21 @@ function parses(el) {
 // deepHTML is el's markup with every registered region's contents filled in.
 const deepHTML = el => el.innerHTML.replace(/(<[^>]+id="([^"]+)"[^>]*>)/g, (tag, _, id) => tag + (nodes.has(id) ? deepHTML(nodes.get(id)) : ''));
 const appNode = nodes.get('app');
-let appHTML = '', scaffoldCount = 0;
+let appHTML = '', scaffoldCount = 0, appIDs = [];
 Object.defineProperty(appNode, 'innerHTML', {
   get: () => appHTML,
   set: html => {
     appHTML = html;
     if (nodes.has('agent-prompts')) forget(nodes.get('agent-prompts'));
-    for (const id of [...scaffoldIDs, ...pageIDs]) nodes.delete(id);
+    for (const id of appIDs) nodes.delete(id);
     const ids = [...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
     for (const id of ids) {
-      assert([...scaffoldIDs, ...pageIDs].includes(id), `unregistered app ID ${id}`);
+      // A clash with a static node such as #status still fails.
+      assert(!nodes.has(id), `duplicate ID ${id}`);
       nodes.set(id, new Element());
       if (id === 'agent-prompts') parses(nodes.get(id));
     }
+    appIDs = ids;
     if (ids.includes('log')) {
       scaffoldCount++;
       for (const id of scaffoldIDs) assert(ids.includes(id), `stable run region: ${id}`);
