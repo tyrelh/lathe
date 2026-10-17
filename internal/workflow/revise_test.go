@@ -400,21 +400,14 @@ func TestUnfinishedRevisionsPublishNothing(t *testing.T) {
 		}},
 		{"cancelled", trace.StatusCancelled, "", func(t *testing.T, stub string) (context.Context, func()) {
 			write(t, filepath.Join(stub, "code-review-slop.sh"), "touch "+filepath.Join(stub, "reviewing")+"; sleep 30\n")
-			ctx, cancel := context.WithCancel(context.Background())
-			go func() {
-				for i := 0; i < 1000; i++ {
-					if _, err := os.Stat(filepath.Join(stub, "reviewing")); err == nil {
-						break
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
+			id := latestRun(t).ID
+			ctx, cancel := cancelOnFile(t, filepath.Join(stub, "reviewing"), 10*time.Second, func() {
 				db, err := trace.Open(filepath.Join(os.Getenv("XDG_DATA_HOME"), "lathe"))
 				if err == nil {
-					db.RequestCancel(latestRun(t).ID)
-					db.Close()
+					_, _ = db.RequestCancel(id)
+					_ = db.Close()
 				}
-				cancel()
-			}()
+			})
 			return ctx, cancel
 		}},
 	} {

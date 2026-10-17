@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/run"
@@ -61,6 +63,38 @@ func latestRun(t *testing.T) trace.Row {
 		t.Fatalf("runs: %v %v", rows, err)
 	}
 	return rows[0]
+}
+
+func cancelOnFile(t *testing.T, path string, limit time.Duration, before func()) (context.Context, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		timer := time.NewTimer(limit)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				cancel()
+				return
+			case <-ticker.C:
+				if _, err := os.Stat(path); err == nil {
+					if before != nil {
+						before()
+					}
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+	return ctx, cancel
 }
 
 func TestBuildAuthPreflight(t *testing.T) {
