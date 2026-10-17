@@ -91,6 +91,28 @@ func envelope(summary string) string {
 		"\n```\n"
 }
 
+func writeScript(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func readScope(t *testing.T, r *Run, phaseID string) permit.Scope {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.Work, phaseID, permit.ScopeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope permit.Scope
+	if err := json.Unmarshal(b, &scope); err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
 // stubPi writes a fake `pi` that serves replies[n] on its nth invocation and
 // appends its own argv to an args file, so the command line lathe built and
 // the number of turns it took are both checkable without a provider or a key.
@@ -110,9 +132,7 @@ func stubPi(t *testing.T, replies ...string) (bin, argsFile string) {
 	bin = filepath.Join(dir, "fake-pi")
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %q\nn=$(cat %q)\necho $((n+1)) > %q\ncat %q/reply$n.jsonl\n",
 		argsFile, count, count, dir)
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bin = writeScript(t, dir, filepath.Base(bin), strings.TrimPrefix(script, "#!/bin/sh\n"))
 	return bin, argsFile
 }
 
@@ -196,9 +216,7 @@ if [ %t = true ] && [ "$4" != beta ]; then
 fi
 printf '{"provider":"%%s","status":"ready","authType":"api_key","credentials":"SECRET"}\n' "$4"
 `, calls, fail)
-			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			bin = writeScript(t, dir, filepath.Base(bin), strings.TrimPrefix(script, "#!/bin/sh\n"))
 			r := newRun(t, bin)
 			defer r.Finish(!fail, "")
 			r.cfg.Agents = map[string]config.Resolved{}
@@ -242,9 +260,7 @@ func TestAuthPreflightRejectsControlCharactersBeforeInvocation(t *testing.T) {
 		t.Run(fmt.Sprintf("U+%04X", control), func(t *testing.T) {
 			dir := t.TempDir()
 			bin, calls := filepath.Join(dir, "pi"), filepath.Join(dir, "calls")
-			if err := os.WriteFile(bin, []byte(fmt.Sprintf("#!/bin/sh\necho called > %q\n", calls)), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			bin = writeScript(t, dir, "pi", fmt.Sprintf("echo called > %q\n", calls))
 			r := newRun(t, bin)
 			var output strings.Builder
 			r.Out = &output
@@ -343,9 +359,7 @@ func TestAuthPreflightDeadlineAndCancellation(t *testing.T) {
 		t.Run(fmt.Sprintf("parent%t", parent), func(t *testing.T) {
 			dir := t.TempDir()
 			bin, calls := filepath.Join(dir, "pi"), filepath.Join(dir, "calls")
-			if err := os.WriteFile(bin, []byte(fmt.Sprintf("#!/bin/sh\necho \"$4\" >> %q\nsleep 30\n", calls)), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			bin = writeScript(t, dir, "pi", fmt.Sprintf("echo \"$4\" >> %q\nsleep 30\n", calls))
 			r := newRun(t, bin)
 			defer r.Finish(false, "")
 			r.cfg.Agents = map[string]config.Resolved{
@@ -590,9 +604,7 @@ case "$n" in
 esac
 exit "$status"
 `, counter, counter, bin)
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	wrapper = writeScript(t, filepath.Dir(wrapper), filepath.Base(wrapper), strings.TrimPrefix(script, "#!/bin/sh\n"))
 	r := newRun(t, wrapper)
 	var out scoutOutput
 	if err := r.Phase(Params{Name: "scout", Owner: "scout"}, func(h *Handle) error {
@@ -617,10 +629,10 @@ exit "$status"
 	}
 	db := readDB(t)
 	type contextRow struct {
-		Phase string
+		Phase   string
 		Attempt int
-		Tokens *int
-		Window *int
+		Tokens  *int
+		Window  *int
 		Percent *float64
 	}
 	var got []contextRow
@@ -851,9 +863,7 @@ else
   cat %q
 fi
 `, argsFile, count, count, tc.calls, filepath.Join(dir, "reply.jsonl"))
-			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			bin = writeScript(t, dir, filepath.Base(bin), strings.TrimPrefix(script, "#!/bin/sh\n"))
 
 			r := newRun(t, bin)
 			if tc.deadline > 0 {
@@ -934,9 +944,7 @@ func stubWriter(t *testing.T, reply string, writes ...string) string {
 	}
 	script += fmt.Sprintf("cat %q\n", body)
 	bin := filepath.Join(dir, "fake-pi")
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bin = writeScript(t, dir, filepath.Base(bin), strings.TrimPrefix(script, "#!/bin/sh\n"))
 	return bin
 }
 
@@ -1082,14 +1090,7 @@ func TestWebReadAgentsAreHeldToReadRoots(t *testing.T) {
 	if want := "\n-e\n" + filepath.Join(r.Work, web.ExtensionFile) + "\n"; !strings.Contains(string(args), want) {
 		t.Fatalf("a web_read agent did not load the extension:\n%s", args)
 	}
-	b, err := os.ReadFile(filepath.Join(r.Work, r.ID+"_01_plan", permit.ScopeFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var scope permit.Scope
-	if err := json.Unmarshal(b, &scope); err != nil {
-		t.Fatal(err)
-	}
+	scope := readScope(t, r, r.ID+"_01_plan")
 	// The run's own directories hold every agent's tool output, so they are not roots.
 	if !slices.Contains(scope.ReadRoots, r.Repo) || slices.Contains(scope.ReadRoots, r.Dir) || slices.Contains(scope.ReadRoots, r.Work) {
 		t.Fatalf("read roots = %v", scope.ReadRoots)
@@ -1286,9 +1287,7 @@ func TestRunnerLaunchesEveryInvocation(t *testing.T) {
 if [ "$1" = auth ]; then printf '{"provider":"%%s","status":"ready"}\n' "$4"; exit 0; fi
 cat %q
 `, body)
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bin = writeScript(t, dir, filepath.Base(bin), strings.TrimPrefix(script, "#!/bin/sh\n"))
 	l := &launches{}
 	r := newRunWith(t, bin, func(o *Options) {
 		o.Runner = &process.Runner{Bin: os.Args[0], Registrar: l}
@@ -1345,14 +1344,7 @@ func TestReadRootsAreTheWorktree(t *testing.T) {
 		func(h *Handle) error { return h.Call(&out, "plan it") }); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(r.Work, r.ID+"_01_plan", permit.ScopeFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var scope permit.Scope
-	if err := json.Unmarshal(b, &scope); err != nil {
-		t.Fatal(err)
-	}
+	scope := readScope(t, r, r.ID+"_01_plan")
 	if !slices.Contains(scope.ReadRoots, tree) || slices.Contains(scope.ReadRoots, source) {
 		t.Fatalf("read roots = %v; want %s and not %s", scope.ReadRoots, tree, source)
 	}

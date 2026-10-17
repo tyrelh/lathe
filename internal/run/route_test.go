@@ -166,9 +166,7 @@ func TestAuthPreflightRouting(t *testing.T) {
 			dir := t.TempDir()
 			bin, calls := filepath.Join(dir, "pi"), filepath.Join(dir, "calls")
 			script := fmt.Sprintf("#!/bin/sh\necho \"$4\" >> %q\nprintf '{\"provider\":\"%%s\",\"status\":\"ready\"}\\n' \"$4\"\n", calls)
-			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			bin = writeScript(t, dir, "pi", strings.TrimPrefix(script, "#!/bin/sh\n"))
 			r := newRun(t, bin)
 			defer r.Finish(true, "")
 			r.cfg.Agents = map[string]config.Resolved{"builder": {Agent: config.Agent{Name: "builder", Provider: "p-sol"}}}
