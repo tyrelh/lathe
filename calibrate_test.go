@@ -48,10 +48,10 @@ tiers:
 		w.Write([]byte(`{"model":"jev-1.13.0","answers":{"level":{"type":"score","score":0.4,"confidence":0.4,
 			"probabilities":{"0":0.6,"1":0.4}}},"usage":{"input_tokens":1000,"output_tokens":1}}`))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 	old := jev.Endpoint
 	jev.Endpoint = srv.URL
-	defer func() { jev.Endpoint = old }()
+	t.Cleanup(func() { jev.Endpoint = old })
 	t.Setenv("TYPESAFE_API_KEY", "test-key")
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
