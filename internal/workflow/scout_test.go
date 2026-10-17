@@ -14,6 +14,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/run"
 	"github.com/tyrelh/lathe/internal/trace"
 )
@@ -74,18 +75,7 @@ func reply(t *testing.T, artifacts string) string {
 // stream would carry it in.
 func piReply(t *testing.T, text string) string {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{
-		"type": "message_end",
-		"message": map[string]any{
-			"role": "assistant", "stopReason": "stop",
-			"usage":   map[string]any{"totalTokens": 100, "cost": map[string]any{"total": 0.001}},
-			"content": []map[string]string{{"type": "text", "text": text}},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b) + "\n"
+	return pitest.Message(t, text, 100)
 }
 
 // execute takes a request through the whole production path a workflow test

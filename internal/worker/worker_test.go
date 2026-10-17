@@ -14,6 +14,7 @@ import (
 
 	"github.com/tyrelh/lathe/internal/agentconfig"
 	"github.com/tyrelh/lathe/internal/config"
+	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/workflow"
@@ -28,12 +29,6 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
-
-// scoutReply is one Pi stream carrying a complete scout report.
-const scoutReply = `{"type":"message_end","message":{"role":"assistant","stopReason":"stop",` +
-	`"usage":{"totalTokens":10,"cost":{"total":0.001}},"content":[{"type":"text","text":` +
-	`"Looked.\n\n` + "```" + `json\n{\"summary\":\"main.go dispatches\",\"findings\":[],\"artifacts\":[]}\n` +
-	"```" + `"}]}}`
 
 // fakePi puts a stub agent on PATH. Production resolves pi the same way, so
 // this is the only seam a worker test needs.
@@ -50,7 +45,7 @@ func fakePi(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\ncat " + filepath.Join(dir, "reply.jsonl") + "\n"
-	write(t, filepath.Join(dir, "reply.jsonl"), scoutReply+"\n")
+	write(t, filepath.Join(dir, "reply.jsonl"), pitest.Report(t, map[string]any{"summary": "main.go dispatches", "findings": []any{}, "artifacts": []any{}}, 10))
 	stubBin(t, dir, "pi", script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

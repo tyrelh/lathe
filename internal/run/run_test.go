@@ -21,6 +21,7 @@ import (
 	"github.com/tyrelh/lathe/internal/config"
 	"github.com/tyrelh/lathe/internal/permit"
 	"github.com/tyrelh/lathe/internal/pi"
+	"github.com/tyrelh/lathe/internal/pitest"
 	"github.com/tyrelh/lathe/internal/process"
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/web"
@@ -71,18 +72,7 @@ func (s *scoutOutput) Artifacts() []string {
 // `text`. It is the smallest thing Scan will total and Call will parse.
 func reply(t *testing.T, text string) string {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{
-		"type": "message_end",
-		"message": map[string]any{
-			"role": "assistant", "stopReason": "stop",
-			"usage":   map[string]any{"totalTokens": 100, "cost": map[string]any{"total": 0.001}},
-			"content": []map[string]string{{"type": "text", "text": text}},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b) + "\n"
+	return pitest.Message(t, text, 100)
 }
 
 func envelope(summary string) string {
