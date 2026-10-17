@@ -767,7 +767,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// phase, because a validation group's workers are spawned at once.
 	scope := h.permit()
 	extensions := []string{r.guard}
-	if slices.Contains(a.Tools, "web_read") {
+	if slices.Contains(a.Tools, web.Tool) {
 		scope.ReadRoots = r.readRoots
 		extensions = append(extensions, r.read)
 	}

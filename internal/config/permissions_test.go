@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/tyrelh/lathe/internal/web"
 )
 
 func TestPermissions(t *testing.T) {
@@ -13,8 +15,8 @@ func TestPermissions(t *testing.T) {
 			t.Fatalf("%s listed twice", p.Name)
 		}
 		seen[p.Name] = true
-		if slices.Contains(p.Tools, "bash") && slices.Contains(p.Tools, "web_read") {
-			t.Errorf("%s has both bash and web_read", p.Name)
+		if slices.Contains(p.Tools, "bash") && slices.Contains(p.Tools, web.Tool) {
+			t.Errorf("%s has both bash and %s", p.Name, web.Tool)
 		}
 		if (slices.Contains(p.Tools, "write") || slices.Contains(p.Tools, "edit")) && p.Name != "builder" {
 			t.Errorf("%s can write", p.Name)
