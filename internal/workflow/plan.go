@@ -174,17 +174,18 @@ func Plan(r *run.Run) int {
 	return r.Finish(err == nil, reason)
 }
 
-// maxSendBacks permits eight revisions per iteration to close omissions; the
-// review after the last hands any remaining objections to the builder as
-// risks. Scope requests spend from the same allowance.
-const maxSendBacks = 8
+// maxReviewSendBacks is how many times plan review may return a plan to the
+// planner per iteration, including reviews of plans revised for a scope
+// request; the budget is not reset by a scope request. The review after the
+// last forwards remaining objections to the builder as risks.
+const maxReviewSendBacks = 8
 
 // addPlanNodes appends auth, optional issue lookup, planner routing when
 // configured, planning and review.
-// A nonempty revision supplies the planner brief and permits an empty file list.
+// A nonempty brief is a revision's planner brief and permits an empty file list.
 // c is a writing workflow's state, or nil for a plan-only run; with it, the
 // plan must keep or abandon work in the tree and may answer scope requests.
-func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c *code) {
+func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *code) {
 	g.Add(run.Node{Name: "auth", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 		return "", e.AuthPreflight()
 	})
@@ -203,8 +204,8 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c 
 	if r.Routes("planner") {
 		g.Add(run.Node{Name: "route-plan", Owner: "engineer"}, func(e *run.Entry) (string, error) {
 			request := r.Request
-			if revision != "" {
-				request = revision
+			if brief != "" {
+				request = brief
 			}
 			return "", e.Route("planner", PlanRouteState(request))
 		})
@@ -225,13 +226,13 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c 
 	var planned bool
 
 	var plan run.Envelope = out
-	if revision != "" {
+	if brief != "" {
 		plan = (*revisionPlan)(out)
 	}
 	g.Add(run.Node{Name: "plan", Owner: "planner"}, func(e *run.Entry) (string, error) {
 		request := r.Request
-		if revision != "" {
-			request = revision
+		if brief != "" {
+			request = brief
 		}
 		if !planned {
 			request += recoveryContext(r, c)
@@ -252,24 +253,24 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c 
 			}
 		}
 		if reviewed {
-			var revision strings.Builder
-			revision.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
-			printPlan(&revision, out)
-			section(&revision, "Blocking objections: the plan cannot succeed until these are resolved", blocking)
-			section(&revision, "Review feedback", feedback)
+			var resubmit strings.Builder
+			resubmit.WriteString("Revise the plan using the review feedback below. Return the complete plan.\n")
+			printPlan(&resubmit, out)
+			section(&resubmit, "Blocking objections: the plan cannot succeed until these are resolved", blocking)
+			section(&resubmit, "Review feedback", feedback)
 			if unusable {
-				revision.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
+				resubmit.WriteString("\nThe reviewer returned nothing usable. You may reply with the same plan unchanged.\n")
 			}
 			if c != nil && c.scope.pending != nil {
-				revision.WriteString("\nThe builder's scope request above still stands; the plan must still answer it.\n")
+				resubmit.WriteString("\nThe builder's scope request above still stands; the plan must still answer it.\n")
 			}
-			request = revision.String()
+			request = resubmit.String()
 			reviewed = false
 		}
 		return "", e.Call(plan, request, gates...)
 	})
 
-	g.Add(run.Node{Name: "review", Owner: "plan-reviewer", SendBacks: maxSendBacks}, func(e *run.Entry) (string, error) {
+	g.Add(run.Node{Name: "review", Owner: "plan-reviewer", SendBacks: maxReviewSendBacks}, func(e *run.Entry) (string, error) {
 		cycle++
 		round := cycle
 		var message strings.Builder
@@ -323,7 +324,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c 
 				return "", err
 			}
 			return "", fmt.Errorf("plan review: no usable review of the plan revised for scope request %d after %d send-backs; the builder's scope request is unresolved and the partial work is kept%s",
-				req.N, maxSendBacks, resumeHint(r))
+				req.N, maxReviewSendBacks, resumeHint(r))
 		}
 		if unusable && c != nil && r.Recovery != nil && !c.disposed {
 			// A recovery's plan decides what happens to restored work and
@@ -332,7 +333,7 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, revision string, c 
 				return "", err
 			}
 			return "", fmt.Errorf("plan review: no usable review of the recovery's plan after %d send-backs; the candidate plan is saved unapplied, and the restored work and prior findings are as they were%s",
-				maxSendBacks, resumeHint(r))
+				maxReviewSendBacks, resumeHint(r))
 		}
 		if len(blocking) > 0 {
 			// Saved for diagnosis, but never handed on: the reviewer said this

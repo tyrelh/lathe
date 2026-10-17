@@ -67,12 +67,12 @@ func TestPlanReviewLoop(t *testing.T) {
 	bad := piReply(t, "not an envelope")
 	objections := reviewReply(t, "include fetch_test.go", "check the retry limit")
 	ceiling := []string{initial}
-	for range maxSendBacks {
+	for range maxReviewSendBacks {
 		ceiling = append(ceiling, objections, revised)
 	}
 	failedFinal := append(append([]string{}, ceiling...), bad, bad, bad)
 	ceiling = append(ceiling, objections)
-	last := maxSendBacks + 1
+	last := maxReviewSendBacks + 1
 	for _, tc := range []struct {
 		name     string
 		replies  []string
@@ -83,9 +83,9 @@ func TestPlanReviewLoop(t *testing.T) {
 	}{
 		{"first acceptance", []string{initial, reviewOK(t)}, 1, 0, 0, ""},
 		{"revision", []string{initial, objections, revised, reviewOK(t)}, 2, 0, 0, "plan revised 1 times; reviewer accepted"},
-		{"ceiling", ceiling, last, 0, 2, fmt.Sprintf("plan revised %d times; 2 objections unresolved", maxSendBacks)},
+		{"ceiling", ceiling, last, 0, 2, fmt.Sprintf("plan revised %d times; 2 objections unresolved", maxReviewSendBacks)},
 		{"failed review", []string{initial, bad, bad, bad, revised, reviewOK(t)}, 2, 1, 0, "plan revised 1 times; reviewer accepted"},
-		{"failed final review", failedFinal, last, 1, 1, fmt.Sprintf("plan revised %d times; 1 objections unresolved", maxSendBacks)},
+		{"failed final review", failedFinal, last, 1, 1, fmt.Sprintf("plan revised %d times; 1 objections unresolved", maxReviewSendBacks)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stubPi(t, tc.replies...)
@@ -290,7 +290,7 @@ func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
 		clears  bool
 		want    int
 		reviews int
-	}{{"blocked at the limit", false, 1, maxSendBacks + 1}, {"blocker resolved", true, 0, 2}} {
+	}{{"blocked at the limit", false, 1, maxReviewSendBacks + 1}, {"blocker resolved", true, 0, 2}} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, repo := buildRepo(t)
 			stub := codeStub(t)

@@ -350,7 +350,7 @@ func TestUnreviewedRecoveryPlanAppliesNothing(t *testing.T) {
 		"reversals":  []map[string]string{{"path": "stale.txt", "reason": "another approach"}},
 		"dismissals": []map[string]string{{"ref": "general-1.1", "reason": "MOOT-REASON"}}}))
 	write(t, filepath.Join(stub, "plan-reviewer"), piReply(t, "not an envelope"))
-	for i := range maxSendBacks {
+	for i := range maxReviewSendBacks {
 		write(t, filepath.Join(stub, fmt.Sprintf("plan-reviewer.%d", i)), reviewReply(t, "tighten the steps"))
 	}
 

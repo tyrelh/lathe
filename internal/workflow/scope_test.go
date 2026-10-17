@@ -261,7 +261,7 @@ func TestUnresolvedScopeBlockerStopsAtReviewExhaustion(t *testing.T) {
 	if n := spawnsOf(t, stub, "builder"); n != 1 {
 		t.Fatalf("builder spawned %d times", n)
 	}
-	if n := spawnsOf(t, stub, "plan-reviewer"); n != maxSendBacks+2 {
+	if n := spawnsOf(t, stub, "plan-reviewer"); n != maxReviewSendBacks+2 {
 		t.Fatalf("reviews = %d", n)
 	}
 	if reason := latestRun(t).Reason; !strings.Contains(reason, "scope request 1 is unresolved") {
@@ -303,7 +303,7 @@ func TestUnusableFinalScopeReviewStopsTheRun(t *testing.T) {
 	write(t, filepath.Join(stub, "builder.0"), neededReply(t, []string{"hello.txt"}, []string{"extra.txt"}, ""))
 	write(t, filepath.Join(stub, "plan-reviewer"), piReply(t, "not an envelope"))
 	write(t, filepath.Join(stub, "plan-reviewer.0"), reviewOK(t))
-	for i := 1; i <= maxSendBacks; i++ {
+	for i := 1; i <= maxReviewSendBacks; i++ {
 		write(t, filepath.Join(stub, fmt.Sprintf("plan-reviewer.%d", i)), reviewReply(t, "tighten the steps"))
 	}
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
