@@ -85,7 +85,7 @@ func Escapes(path string) bool {
 }
 
 // Scope is what one agent turn is allowed to leave behind, and the whole of
-// what the guard extension is told. Allow is exact repo-relative paths — the
+// the rules the guard extension enforces. Allow is exact repo-relative paths — the
 // plan's file list — so matching it is string equality rather than a glob
 // engine. Deny and BashDeny are patterns. Deny always wins. ReadRoots are the
 // only folders the agent may read, with Deny applied inside them; empty leaves
@@ -297,18 +297,18 @@ type entry struct {
 	untracked bool
 }
 
-// status lists what is uncommitted.
-//
-// -uall because a bare -u collapses an untracked directory into one entry, so a
-// whole directory of out-of-scope files arrives as a path git checkout cannot
-// revert. -z because a path with a space in it comes back quoted and escaped
-// otherwise, and the parser gets it silently wrong for exactly the files you
-// would most want reverted. --no-renames because a rename is one record holding
-// two NUL-separated paths, which this parser would mis-slice; off, it arrives as
-// "D old" plus "?? new", which revert and the claim gate already cover.
-// Ignored files are deliberately absent: build caches and node_modules are not
-// the agent's doing.
+// status lists uncommitted paths, untracked files included and ignored files
+// excluded.
 func status(repo string) ([]entry, error) {
+	// -uall: a bare -u collapses an untracked directory into one entry, a path
+	// git checkout cannot revert.
+	// -z: otherwise a path with a space comes back quoted and escaped, and the
+	// parser gets it silently wrong.
+	// --no-renames: a rename is one record holding two NUL-separated paths,
+	// which this parser would mis-slice; off, it arrives as "D old" plus
+	// "?? new", which revert and the claim gate already cover.
+	// Ignored files are absent: build caches and node_modules are not the
+	// agent's doing.
 	cmd := exec.Command("git", "status", "--porcelain=v1", "-z", "-uall", "--no-renames")
 	cmd.Dir = repo
 	out, err := process.Output(cmd)
@@ -329,22 +329,22 @@ func status(repo string) ([]entry, error) {
 	return entries, nil
 }
 
-// revert puts one path back to the state Clean vouched for.
-//
-// From HEAD rather than from the index, because `git checkout -- <path>` reads
-// the index: a test suite that ran `git add` on an out-of-scope edit would have
-// it "reverted" to itself, reported as reverted, and still sitting there. The
-// bash deny list does not stop staging and is not the thing that should have to.
-//
-// A path HEAD has never seen has nothing to go back to, so it is removed — and
-// unstaged first, or the index keeps content the working tree no longer has. No
-// rename branch: a worktree rename arrives as "D old" plus "?? new", which both
-// sides already cover.
+// revert puts one path back to the state Clean vouched for: HEAD's content, or
+// removed when HEAD has never seen it.
 func revert(repo string, e entry) error {
 	if inHEAD(repo, e.path) {
+		// From HEAD rather than from the index, because `git checkout -- <path>`
+		// reads the index: a test suite that ran `git add` on an out-of-scope
+		// edit would have it "reverted" to itself, reported as reverted, and
+		// still sitting there. The bash deny list does not stop staging and is
+		// not the thing that should have to.
 		return git(repo, "checkout", "HEAD", "--", e.path)
 	}
+	// No rename branch: a worktree rename arrives as "D old" plus "?? new",
+	// which both sides already cover.
 	if !e.untracked {
+		// Unstaged first, or the index keeps content the working tree no longer
+		// has.
 		if err := git(repo, "reset", "-q", "HEAD", "--", e.path); err != nil {
 			return err
 		}

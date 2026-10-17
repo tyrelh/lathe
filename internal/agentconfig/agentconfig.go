@@ -450,8 +450,9 @@ func SaveFile(home, key, body, baseHash string) error {
 }
 
 // ResetFile restores home/key to its seed in fsys and records that seed in
-// the manifest with version, under the home's lock. It writes nothing and returns an error wrapping
-// config.ErrConflict when baseHash is not the current file's hash.
+// the manifest with version, under the home's lock. It writes nothing and
+// returns an error wrapping config.ErrConflict when baseHash is not the
+// current file's hash.
 func ResetFile(home string, fsys fs.FS, version, key, baseHash string) error {
 	path, err := filePath(home, key)
 	if err != nil {

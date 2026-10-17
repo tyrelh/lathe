@@ -17,7 +17,7 @@
 //
 // LATHE_CONTEXT_SNAPSHOT, when set, names a file this extension overwrites at
 // agent_end with Pi's context estimate: { tokens, contextWindow, percent }.
-// run.go reads it after the process exits. It is telemetry riding along with
+// internal/run reads it after the process exits. It is telemetry riding along with
 // the boundary, not part of it; a failed write is dropped.
 //
 // denied() is a port of internal/permit.Denied and the two must not drift: the

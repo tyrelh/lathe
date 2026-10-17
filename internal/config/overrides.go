@@ -21,8 +21,8 @@ func Hash(body string) string {
 }
 
 // WriteAtomic replaces path with body, owner-only (os.CreateTemp's mode),
-// through a temp file in the same directory, creating missing parent directories owner-only. The temp
-// file is removed on failure.
+// through a temp file in the same directory, creating missing parent
+// directories owner-only. The temp file is removed on failure.
 func WriteAtomic(path, body string) (err error) {
 	parent := filepath.Dir(path)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
