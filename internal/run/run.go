@@ -379,12 +379,18 @@ func (r *Run) Finish(accepted bool, reason string) int {
 	if row, err := r.db.Get(r.ID); err == nil {
 		tokens, cost = row.Tokens, row.Cost
 	}
-	fmt.Fprintf(r.Out, "\nlathe %s %s: %s  %d tokens  $%.5f\n  %s\n",
-		r.Workflow, r.ID, status, tokens, cost, r.Dir)
-	if reason != "" {
-		fmt.Fprintf(r.Out, "  %s\n", reason)
-	}
+	Banner(r.Out, r.Workflow, r.ID, "", status, tokens, cost, r.Dir, reason)
 	return code
+}
+
+// Banner writes a run's completion summary to w: label follows the id, and
+// the reason line is written only when reason is not empty.
+func Banner(w io.Writer, workflow, id, label, status string, tokens int, cost float64, dir, reason string) {
+	fmt.Fprintf(w, "\nlathe %s %s%s: %s  %d tokens  $%.5f\n  %s\n",
+		workflow, id, label, status, tokens, cost, dir)
+	if reason != "" {
+		fmt.Fprintf(w, "  %s\n", reason)
+	}
 }
 
 // Status and Reason are what Finish settled on, for the worker to record.
@@ -807,7 +813,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 		SessionID:    h.SessionID(),
 		SessionDir:   r.Work, // the session is thrown away with the attempt that made it
 		Extensions:   extensions,
-		Env:          []string{"LATHE_PERMIT=" + scopeFile, "LATHE_CONTEXT_SNAPSHOT=" + contextFile},
+		Env:          permit.Env(scopeFile, contextFile),
 		Raw:          r.rawW,
 		Runner:       r.runner,
 		OnStart: func(pid int) {

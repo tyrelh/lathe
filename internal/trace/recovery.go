@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -135,7 +136,7 @@ func stopped(tx *sql.Tx, runID string, n int) error {
 	case held > 0:
 		return fmt.Errorf("%w: the run still holds a checkout reservation; its worker is not confirmed stopped", ErrNotRecoverable)
 	case path.String != "" && state.String != WorktreeRemoved:
-		return fmt.Errorf("%w: iteration %d's worktree is %s, not yet preserved and removed; let the manager finish its cleanup first", ErrNotRecoverable, n, orUnknown(state.String))
+		return fmt.Errorf("%w: iteration %d's worktree is %s, not yet preserved and removed; let the manager finish its cleanup first", ErrNotRecoverable, n, cmp.Or(state.String, "in an unknown state"))
 	}
 	return nil
 }
@@ -163,13 +164,6 @@ func (d *DB) SourceStopped(runID string, source int, attemptID, path string) err
 		return fmt.Errorf("iteration %d's writers or cleanup are no longer confirmed settled; nothing was changed", source)
 	}
 	return nil
-}
-
-func orUnknown(s string) string {
-	if s == "" {
-		return "in an unknown state"
-	}
-	return s
 }
 
 // How cleanup preserved an iteration's worktree. PreservedPatch saved its
