@@ -346,11 +346,7 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 		r.db.PhaseUpsert(ph)
 		r.db.Event(r.ID, ph.ID, "phase_end", p.Name, map[string]string{"status": status})
 		if err != nil {
-			// A measured red suite stays in the timeline without poisoning a later success.
-			var red *CommandFailure
-			if !errors.As(err, &red) {
-				r.fail(err)
-			}
+			r.fail(err)
 		}
 	}()
 	return fn(h)

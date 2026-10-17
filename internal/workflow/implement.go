@@ -264,7 +264,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			return &run.EnvironmentError{ExitCode: code}
 		default:
 			// A red suite is a result for the adjudicator, not a failed worker.
-			e.Failed(&run.CommandFailure{ExitCode: code})
+			e.Failed(&CommandFailure{ExitCode: code})
 		}
 		return nil
 	}}}

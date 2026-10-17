@@ -5,6 +5,12 @@ import (
 	"strings"
 )
 
+// CommandFailure is a red suite the tester reported. It is recorded on the test
+// phase and judged by the adjudicator.
+type CommandFailure struct{ ExitCode int }
+
+func (e *CommandFailure) Error() string { return fmt.Sprintf("test command exited %d", e.ExitCode) }
+
 // TestOutput is the tester's discovery and run of the suite; its exit code
 // decides acceptance. Coverage is the tester's account of any test the round no
 // longer runs, which the adjudicator weighs: a green suite reached by skipping

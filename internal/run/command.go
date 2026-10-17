@@ -5,12 +5,6 @@ import (
 	"fmt"
 )
 
-// CommandFailure is a red suite the tester reported, recoverable by a later fix
-// phase. Infrastructure, timeout and enforcement errors remain terminal.
-type CommandFailure struct{ ExitCode int }
-
-func (e *CommandFailure) Error() string { return fmt.Sprintf("test command exited %d", e.ExitCode) }
-
 // EnvironmentError is a test command that could not execute in the worker environment.
 type EnvironmentError struct{ ExitCode int }
 
