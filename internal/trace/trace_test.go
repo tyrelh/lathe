@@ -242,3 +242,12 @@ func TestDataRootPrefersXDG(t *testing.T) {
 		t.Fatalf("DataRoot() = %q, %v", got, err)
 	}
 }
+
+// RunIDSuffix recovers the random part however many underscores the workflow
+// name holds.
+func TestRunIDSuffix(t *testing.T) {
+	id := NewRunID("my_flow")
+	if s := RunIDSuffix(id); len(s) != 8 || id != id[:len(id)-len(s)-1]+"_"+s {
+		t.Fatalf("RunIDSuffix(%q) = %q", id, s)
+	}
+}
