@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Recovery extends the run with a new iteration

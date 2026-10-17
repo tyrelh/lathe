@@ -3,7 +3,7 @@
 The test loop used to be the only check on an implementation: the tester discovered a command, lathe measured it, and a red exit sent the builder back up to four times. Nothing read the code for correctness against the request, for security, or for complexity it did not need. This adds three read-only code reviewers — `code-review-general`, `code-review-security` and `code-review-slop` — that run alongside the tester, and an adjudicator that decides what the builder does next.
 
 ```
-implement: … → implement → validate → adjudicate [→ implement, up to four repairs]
+implement: … → implement → validate → adjudicate [→ implement, up to ten repairs since the adversarial reviewer amendment]
 build:     … → branch → implement → validate → adjudicate [→ implement] → commit → pr
 ```
 
@@ -15,7 +15,7 @@ Running phases in goroutines needed the runner's shared state made safe first. P
 
 ## Only the adjudicator sends work back
 
-The adjudicator is an ordinary node with a send-back budget of four, which it spends on the builder. It receives the request, the plan as amended so far, every report, lathe's measurement and its own earlier decisions; it may read the repository but not edit it. It decides every finding — fix, or dismiss with a reason — and writes one set of changes for the builder. No reviewer has a veto, and the complexity reviewer has the same authority as the other two.
+The adjudicator is an ordinary node with a send-back budget of ten since the adversarial reviewer amendment, which it spends on the builder. It receives the request, the plan as amended so far, every report, lathe's measurement and its own earlier decisions; it may read the repository but not edit it. It decides every finding — fix, or dismiss with a reason — and writes one set of changes for the builder. No reviewer has a veto, and the complexity reviewer has the same authority as the other two.
 
 Some of what it decides is checked mechanically, because it is exactly what an adjudicator might be talked out of. A gate refuses an acceptance while the measured suite is red, including when the failures look unrelated or pre-existing, refuses a decision set that misses or invents a finding, and refuses a scope addition that names a protected path, a glob or a path outside the repository. Acceptance also needs a usable report from every worker, which the node checks before it calls the agent.
 
@@ -38,7 +38,7 @@ Before the group starts, lathe fingerprints every uncommitted path. After the jo
 | Outcome | `implement` | `build` |
 | --- | --- | --- |
 | Accepted: every report usable, measured suite green | Succeeds with the changes left in the tree | Commits and opens a pull request |
-| Unresolved after four repairs | Fails, changes left in the tree, findings in validation.json | Commits and opens a draft pull request carrying the unresolved findings and the test output, and fails |
+| Unresolved after ten repairs | Fails, changes left in the tree, findings in validation.json | Commits and opens a draft pull request carrying the unresolved findings and the test output, and fails |
 | Incomplete: a worker exhausted its retries | Fails, changes left in the tree | Opens a draft explaining what validation is missing, and fails |
 | Invalidated, cancelled, or any other error | Fails | Fails before commit; nothing is published |
 

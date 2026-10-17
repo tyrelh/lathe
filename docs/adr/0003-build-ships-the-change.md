@@ -102,4 +102,4 @@ Build runs in a managed worktree at the commit HEAD was on at submission, not in
 
 ## Since 0004
 
-`commit` and `pr` now sit after `adjudicate`, not `test`. An accepted change ships as before. An unaccepted one — findings unresolved after four repairs, or validation incomplete — is still committed and opened as a draft pull request carrying the validation report, and the run fails: the draft hands unfinished work to a person, it does not claim it passed. Cancellation, a source change during validation and any other error still end the run before anything is committed.
+`commit` and `pr` now sit after `adjudicate`, not `test`. An accepted change ships as before. An unaccepted one — findings unresolved after the adjudicator's repairs run out (ten since 0004's amendment), or validation incomplete — is still committed and opened as a draft pull request carrying the validation report, and the run fails: the draft hands unfinished work to a person, it does not claim it passed. Cancellation, a source change during validation and any other error still end the run before anything is committed.
