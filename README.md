@@ -148,10 +148,4 @@ The dashboard's Agents page lists every agent and routing phase. On an agent's p
 
 ## Testing
 
-```sh
-make test                          # the whole suite, as CI runs it
-go test ./internal/workflow        # one package
-go test -count=1 ./...             # ignore cached results
-```
-
-`internal/workflow` runs whole workflows against stub agents and takes about two minutes uncached. Node is optional; the guard tests skip without it.
+Run `make test` from the repository root (needs Go 1.27). See [AGENTS.md](AGENTS.md#tests) for single-package and single-test commands and runtimes.
