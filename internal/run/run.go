@@ -665,8 +665,8 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		n := maxCorrections
 		left = &n
 	}
-	for attempt := 0; ; attempt++ {
-		res, err := r.spawn(h, agent, prompt, attempt)
+	for turn := 0; ; turn++ {
+		res, err := r.spawn(h, agent, prompt, turn)
 		// Pi may report a killed process instead of the context's error. Keep
 		// run cancellation recognizable to workflows with recoverable phases.
 		if ctxErr := r.ctx.Err(); err != nil && ctxErr != nil {
@@ -700,36 +700,36 @@ func (h *Handle) Call(out Envelope, request string, gates ...Gate) error {
 		}
 		// Rejected replies explain corrections. Validated replies are recorded
 		// below as phase outputs, after the mechanical gates pass.
-		h.recordCheck("envelope", agent.Name, attempt, violations, res.Text)
+		h.recordCheck("envelope", agent.Name, turn, violations, res.Text)
 		if len(violations) == 0 {
 			violations = nil
 			for _, g := range gates {
 				violations = append(violations, g(out, r)...)
 			}
-			h.recordCheck("gate", agent.Name, attempt, violations, res.Text)
+			h.recordCheck("gate", agent.Name, turn, violations, res.Text)
 		}
 		if len(violations) == 0 {
 			// Keep the report and exact response together so the dashboard can
 			// show each phase's result, including plans later revised. A final
 			// plan.json alone cannot reconstruct that history.
 			return h.event("output", agent.Name, map[string]any{
-				"attempt": attempt, "report": out, "text": res.Text,
+				"attempt": turn, "report": out, "text": res.Text,
 			})
 		}
 
 		if *left <= 0 {
 			return &EnvelopeError{fmt.Sprintf("%s did not produce a valid envelope after %d corrections: %s",
-				agent.Name, attempt, strings.Join(violations, "; "))}
+				agent.Name, turn, strings.Join(violations, "; "))}
 		}
 		*left--
 		prompt = correction(violations)
 	}
 }
 
-// recordCheck writes a typ event holding attempt and violations, plus text
-// when violations is non-empty. Write errors are ignored.
-func (h *Handle) recordCheck(typ, agent string, attempt int, violations []string, text string) {
-	payload := map[string]any{"attempt": attempt, "violations": violations}
+// recordCheck writes a typ event holding turn, keyed "attempt", and
+// violations, plus text when violations is non-empty. Write errors are ignored.
+func (h *Handle) recordCheck(typ, agent string, turn int, violations []string, text string) {
+	payload := map[string]any{"attempt": turn, "violations": violations}
 	if len(violations) > 0 {
 		payload["text"] = text
 	}
@@ -768,7 +768,7 @@ func repoInstructions(repo string) string {
 
 // spawn runs one Pi turn for h's phase. Corrections and re-entries of the same
 // graph node reuse the phase's session id, so the agent keeps its context.
-func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (pi.Result, error) {
+func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, turn int) (pi.Result, error) {
 	// Rewritten before every spawn rather than once per run: each agent's allow
 	// list differs, and the guard re-reads the file per tool call. One file per
 	// phase, because a validation group's workers are spawned at once.
@@ -826,12 +826,12 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// from what was sent. Session history stays in Pi's transcript; this is the
 	// input we supply, including corrections and resumed fix prompts.
 	_ = h.event("input", a.Name, map[string]any{
-		"attempt": attempt, "system": opts.SystemPrompt, "prompt": prompt,
+		"attempt": turn, "system": opts.SystemPrompt, "prompt": prompt,
 		"session_id": opts.SessionID, "allow": scope.Allow,
 		"thinking": opts.Thinking,
 	})
 
-	// Spend is persisted per completed model response rather than per attempt,
+	// Spend is persisted per completed model response rather than per turn,
 	// so an interrupted run keeps what it already spent and the dashboard sees
 	// a live run's cost move. seq is assigned before the write and never
 	// reused, which is what makes the response's identity stable.
@@ -850,7 +850,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 				seq++
 				if err := r.db.RecordUsage(trace.Usage{
 					RunID: r.ID, PhaseID: h.phase.ID, Agent: a.Name,
-					Attempt: attempt, Seq: seq,
+					Attempt: turn, Seq: seq,
 					Provider: a.Provider, Model: a.Model,
 					Tokens: m.Usage.TotalTokens, Cost: m.Usage.Cost.Total,
 				}); err != nil {
@@ -874,7 +874,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 			// starting cold.
 			if calls++; calls == toolBudget {
 				_ = h.event("log", "budget_spent",
-					map[string]int{"attempt": attempt, "calls": calls})
+					map[string]int{"attempt": turn, "calls": calls})
 				cancel()
 				return false
 			}
@@ -896,11 +896,11 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	}
 	switch {
 	case snapErr == nil:
-		snapshot["attempt"] = attempt
+		snapshot["attempt"] = turn
 		_ = h.event("context", a.Name, snapshot)
 	case !os.IsNotExist(snapErr):
 		_ = h.event("log", "context_snapshot",
-			map[string]any{"attempt": attempt, "error": snapErr.Error()})
+			map[string]any{"attempt": turn, "error": snapErr.Error()})
 	}
 
 	// The stream's own totals stay the CLI's accounting and a consistency check
@@ -937,7 +937,7 @@ func (r *Run) spawn(h *Handle, a config.Resolved, prompt string, attempt int) (p
 	// Checked on this turn's own context: a cancelled run is not a spent budget.
 	if err != nil && r.ctx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		_ = h.event("log", "deadline_spent",
-			map[string]int{"attempt": attempt, "calls": calls})
+			map[string]int{"attempt": turn, "calls": calls})
 		return res, errBudget
 	}
 	// Returned as an error rather than an empty reply, so Call stops here
