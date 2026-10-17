@@ -443,16 +443,10 @@ func restartBase(spec Spec, src trace.Iteration, ref string) (string, error) {
 // recoveryOf is the run.Recovery a worker executes with, and the earlier
 // iterations' report directories.
 func recoveryOf(db *trace.DB, dataRoot string, row trace.Row, rs *RecoverySpec) (*run.Recovery, error) {
-	its, err := db.Iterations(row.ID)
+	prior, err := priors(db, dataRoot, row)
 	if err != nil {
 		return nil, err
 	}
-	rec := &run.Recovery{Guidance: rs.Guidance, Source: rs.Source, Restart: rs.Restart, Failure: rs.Failure,
-		Unavailable: rs.Unavailable, Publication: rs.Publication}
-	for _, it := range its {
-		if it.N < row.Iteration {
-			rec.Prior = append(rec.Prior, run.Prior{Iteration: it.N, Request: it.Request, Dir: ReportDir(dataRoot, row.ID, it.N)})
-		}
-	}
-	return rec, nil
+	return &run.Recovery{Guidance: rs.Guidance, Source: rs.Source, Restart: rs.Restart, Failure: rs.Failure,
+		Unavailable: rs.Unavailable, Publication: rs.Publication, Prior: prior}, nil
 }
