@@ -274,7 +274,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 		}
 		// A revision delivered despite a lost acknowledgement: the run's
 		// shipped commit catches up with what origin verifiably holds.
-		if spec.Workflow == "revise" && row.Commit != pub.Head {
+		if spec.Workflow == workflow.NameRevise && row.Commit != pub.Head {
 			if err := db.SetShipped(row.ID, attemptID, pub.Branch, pub.Head); err != nil {
 				return 0, "", "", err
 			}
@@ -282,7 +282,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 		}
 	}
 	var revision *run.Revision
-	if spec.Workflow == "revise" {
+	if spec.Workflow == workflow.NameRevise {
 		// Rechecked under the claim, against origin: the pull request had
 		// people around it the whole time the request waited.
 		if revision, err = revisionOf(db, dataRoot, row, spec.Workspace.Path, out); err != nil {
@@ -348,7 +348,7 @@ func inWorktree(ctx context.Context, db *trace.DB, dataRoot string, row trace.Ro
 	code := workflow.Graphs[spec.Workflow](r)
 	code, status, reason := outcome(db, row.ID, r, code)
 
-	keep := spec.Workflow == "implement" || status != trace.StatusOK
+	keep := spec.Workflow == workflow.NameImplement || status != trace.StatusOK
 	if err := Settle(db, dataRoot, wt, keep); err != nil {
 		// Not a success: the result is not preserved or the worktree is not
 		// gone. The worktree stays, recorded pending, and the manager retries.
@@ -688,7 +688,7 @@ func priors(db *trace.DB, dataRoot string, row trace.Row) ([]run.Prior, error) {
 // three. Nothing is inferred from the pull request as it is now: a URL alone
 // does not say the branch is still what lathe left there.
 func Evidence(dataRoot string, row trace.Row) (workspace.Evidence, error) {
-	if row.Workflow != "build" {
+	if row.Workflow != workflow.NameBuild {
 		return workspace.Evidence{}, fmt.Errorf("%s is a %s run; only a build opens a pull request to revise", row.ID, row.Workflow)
 	}
 	// The iteration that opened the pull request owns it: the first, or a

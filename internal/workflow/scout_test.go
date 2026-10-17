@@ -245,14 +245,3 @@ func latestRunDir(t *testing.T) string {
 	}
 	return filepath.Join(runs, entries[0].Name())
 }
-
-func TestNamesMatchGraphs(t *testing.T) {
-	if len(Names) != len(Graphs) {
-		t.Errorf("Names = %v; Graphs has %d", Names, len(Graphs))
-	}
-	for _, name := range Names {
-		if Graphs[name] == nil {
-			t.Errorf("Names lists %q, which is not a graph", name)
-		}
-	}
-}

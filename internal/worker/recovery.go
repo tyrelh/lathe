@@ -71,7 +71,7 @@ func reconcile(dataRoot string, row trace.Row, spec Spec, src trace.Iteration) (
 	if spec.Recovery != nil {
 		inherited = spec.Recovery.Publication
 	}
-	if (spec.Workflow != "build" && spec.Workflow != "revise") || (src.Commit == "" && inherited == nil) {
+	if !workflow.Publishes(spec.Workflow) || (src.Commit == "" && inherited == nil) {
 		return out, nil
 	}
 	refuse := func(format string, a ...any) (owned, error) {
@@ -97,7 +97,7 @@ func reconcile(dataRoot string, row trace.Row, spec Spec, src trace.Iteration) (
 	switch {
 	case inherited != nil:
 		before = inherited.Head
-	case spec.Workflow == "revise":
+	case spec.Workflow == workflow.NameRevise:
 		before = src.Base
 	}
 	switch {
@@ -430,7 +430,7 @@ func restartBase(spec Spec, src trace.Iteration, ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if spec.Workflow == "revise" && sha != recorded {
+	if spec.Workflow == workflow.NameRevise && sha != recorded {
 		return "", fmt.Errorf("%w: a revision continues from its pull request's head %s; --base cannot move it", trace.ErrNotRecoverable, workspace.Short(recorded))
 	}
 	return sha, nil

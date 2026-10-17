@@ -300,9 +300,7 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 			return
 		}
 		prompt, issue := strings.TrimSpace(body.Prompt), strings.TrimSpace(body.Issue)
-		switch body.Workflow {
-		case "scout", "plan", "implement", "build":
-		default:
+		if !workflow.Submittable(body.Workflow) {
 			submitError(w, http.StatusBadRequest, "unknown workflow "+strconv.Quote(body.Workflow))
 			return
 		}
@@ -310,7 +308,7 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 		case (prompt == "") == (issue == ""):
 			submitError(w, http.StatusBadRequest, "enter a prompt or an issue reference, not both")
 			return
-		case body.Workflow == "scout" && issue != "":
+		case body.Workflow == workflow.NameScout && issue != "":
 			submitError(w, http.StatusBadRequest, "scout takes a prompt, not an issue")
 			return
 		}
