@@ -1,7 +1,6 @@
 package run
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,18 +9,18 @@ import (
 	"github.com/tyrelh/lathe/internal/workspace"
 )
 
+// issueFetchTimeout bounds the issue fetch when command_timeout is unset.
+const issueFetchTimeout = time.Minute
+
 // IssueRequest fetches and saves the source task inside a traced code phase.
-// Its deadline and cancellation belong to the run, just like other code phases.
+// The fetch is cancelled with the run and bounded by command_timeout, else by
+// issueFetchTimeout.
 func (h *Handle) IssueRequest() (string, error) {
 	r := h.run
 	if err := h.Log("issue", r.Issue); err != nil {
 		return "", err
 	}
-	deadline := r.cfg.CommandDeadline
-	if deadline <= 0 {
-		deadline = time.Minute
-	}
-	ctx, cancel := context.WithTimeout(r.ctx, deadline)
+	ctx, cancel := r.commandContext(issueFetchTimeout)
 	defer cancel()
 	issue, err := workspace.FetchIssue(ctx, r.Repo, r.Issue)
 	if err != nil {
