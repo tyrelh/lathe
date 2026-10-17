@@ -1,4 +1,10 @@
+---
+status: proposed
+---
+
 # Scoring sits outside the run
+
+Not yet implemented; tracked in #98.
 
 A scorer grades a finished build run with a pull request after the workflow is done, and the engineer starts it from the Scoring dashboard or with `lathe score <run-id>`. Scoring could have been a phase appended to the iteration, reusing phase recording, the Gantt chart and the usage path. It isn't one. A run's state, outcome and cost describe what the workflow did, and grading is a separate question about that work. A scorer that fails or stalls must not make a finished run look unfinished, and its spend must not inflate what the change cost. `PhaseUpsert` already refuses phases on a run that has completed, and `RecordUsage` adds to `runs.cost`, so routing scoring through either would mean weakening both.
 
