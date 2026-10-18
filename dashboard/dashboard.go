@@ -69,6 +69,9 @@ type Actions struct {
 	// Cancel asks a run to stop and returns its status.
 	Cancel func(runID string) (string, error)
 
+	ArchiveTask   func(taskID string) error
+	UnarchiveTask func(taskID string) error
+
 	SavePrompt  SavePrompt
 	ResetPrompt ResetPrompt
 	SaveConfig  SaveConfig
@@ -157,6 +160,12 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 	if actions.Cancel != nil {
 		mux.HandleFunc("POST /api/runs/{id}/cancel", cancelRun(actions.Cancel))
 	}
+	if actions.ArchiveTask != nil {
+		mux.HandleFunc("POST /api/tasks/{id}/archive", changeTaskArchive(actions.ArchiveTask))
+	}
+	if actions.UnarchiveTask != nil {
+		mux.HandleFunc("POST /api/tasks/{id}/unarchive", changeTaskArchive(actions.UnarchiveTask))
+	}
 	mux.HandleFunc("GET /api/meta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"version": version}, nil)
 	})
@@ -181,7 +190,7 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 		writeJSON(w, project, err)
 	})
 	mux.HandleFunc("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) {
-		views, err := taskViews(db, sources.PRURL, r.URL.Query().Get("repo"))
+		views, err := taskViews(db, sources.PRURL, r.URL.Query().Get("repo"), r.URL.Query().Get("archived") == "1")
 		writeJSON(w, views, err)
 	})
 	mux.HandleFunc("GET /api/projects/runs", projectRuns(db))
@@ -239,7 +248,7 @@ type taskView struct {
 	Runs       []string       `json:"runs"`
 }
 
-func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string) ([]taskView, error) {
+func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string, archived bool) ([]taskView, error) {
 	tasks, err := db.Tasks(repo)
 	if err != nil {
 		return nil, err
@@ -250,7 +259,7 @@ func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string) ([]taskV
 	}
 	views := []taskView{}
 	for _, t := range tasks {
-		if t.ArchivedAt != nil {
+		if (t.ArchivedAt != nil) != archived {
 			continue
 		}
 		v := taskView{ID: t.ID, Repo: t.Repo, Text: t.Text, Lane: trace.LaneBacklog, Activity: t.UpdatedAt, Runs: []string{}}
@@ -498,6 +507,23 @@ func appendIteration(w http.ResponseWriter, r *http.Request, text, emptyMsg stri
 		return
 	}
 	writeStatus(w, http.StatusCreated, map[string]any{"run_id": id, "iteration": n})
+}
+
+func changeTaskArchive(action func(string) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !browserJSON(w, r, &struct{}{}) {
+			return
+		}
+		id := r.PathValue("id")
+		if err := action(id); errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "no such task")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeStatus(w, http.StatusOK, map[string]string{"id": id})
+	}
 }
 
 // cancelRun is lathe cancel for the run page: a queued iteration is cancelled

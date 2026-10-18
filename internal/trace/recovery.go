@@ -52,9 +52,8 @@ func (d *DB) Recover(runID string, rec Recovery) (int, error) {
 	}
 	defer tx.Rollback()
 
-	var status string
-	var n int
-	if err := tx.QueryRow(`SELECT status, iteration FROM runs WHERE run_id = ?`, runID).Scan(&status, &n); err != nil {
+	status, n, err := runState(tx, runID, ErrNotRecoverable)
+	if err != nil {
 		return 0, err
 	}
 	if n != rec.Source {

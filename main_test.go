@@ -17,6 +17,37 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
+func TestDashboardArchiveTask(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	_, db, err := openWriter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.Submit(trace.Request{Workflow: "build", Repo: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := db.Get(id)
+	if err := dashboardArchiveTask(*row.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := db.GetTask(*row.TaskID)
+	cancelled, err := db.Cancelled(id)
+	if task.ArchivedAt == nil || !cancelled || err != nil {
+		t.Fatalf("archive = %+v, cancelled = %v, %v", task, cancelled, err)
+	}
+	if err := dashboardUnarchiveTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = db.GetTask(task.ID)
+	if task.ArchivedAt != nil {
+		t.Fatal("still archived")
+	}
+}
+
 func TestPreparePreservesTaskIssue(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

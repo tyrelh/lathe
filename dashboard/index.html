@@ -824,7 +824,10 @@ function route() {
   if (h === '' || h === '/' || h === '/overview') return {page: 'overview'};
   if (h === '/runs') return {page: 'runs'};
   if (h.startsWith('/runs/')) return {page: 'run', id: h.slice(6)};
-  if (h === '/tasks' || h.startsWith('/tasks?')) return {page: 'tasks', repo: new URLSearchParams(h.split('?')[1] || '').get('repo') || ''};
+  if (h === '/tasks' || h.startsWith('/tasks?')) {
+    const q = new URLSearchParams(h.split('?')[1] || '');
+    return {page: 'tasks', repo: q.get('repo') || '', archived: q.get('archived') === '1'};
+  }
   if (h === '/projects') return {page: 'projects'};
   if (h === '/agents') return {page: 'agents'};
   if (h.startsWith('/agents/')) {
@@ -1298,11 +1301,35 @@ async function loadAgent(current) {
   done = true;
 }
 
-const tasksHref = repo => '#/tasks' + (repo ? '?' + projectQuery(repo) : '');
+const taskQuery = (repo, archived) => {
+  const query = [repo ? projectQuery(repo) : '', archived ? 'archived=1' : ''].filter(Boolean).join('&');
+  return query ? '?' + query : '';
+};
+const tasksHref = (repo, archived = view.page === 'tasks' && view.archived) => '#/tasks' + taskQuery(repo, archived);
+const taskWrites = new Set();
+async function changeTaskArchive(id, archived, button) {
+  if (taskWrites.has(id)) return;
+  taskWrites.add(id);
+  button.disabled = true;
+  const current = generation;
+  try {
+    const {ok, error} = await send('/api/tasks/' + encodeURIComponent(id) + (archived ? '/unarchive' : '/archive'), {});
+    if (current !== generation) return;
+    if (!ok) throw Error(error);
+    await loadTasks(current);
+  } catch (e) {
+    if (current === generation) $('task-error').textContent = e.message;
+  } finally {
+    taskWrites.delete(id);
+    if (current === generation) button.disabled = false;
+  }
+}
 const taskLanes = ['Backlog', 'In progress', 'Blocked', 'Ready for review', 'Done'];
 function tasksShell() {
   return `<div class="page"><div class="card page-summary"><h1>Tasks</h1><label for="task-project">Project</label>
-    <select id="task-project" onchange="location.hash=tasksHref(this.value)"><option value="">All projects</option></select></div>
+    <select id="task-project" onchange="location.hash=tasksHref(this.value)"><option value="">All projects</option></select>
+    <label><input id="task-archived" type="checkbox" onchange="location.hash=tasksHref(view.repo,this.checked)"> Show archived</label>
+    <p id="task-error" role="alert"></p></div>
     <div id="task-board" class="task-board" tabindex="0" aria-label="Task lanes"></div></div>`;
 }
 function taskCard(t) {
@@ -1310,21 +1337,23 @@ function taskCard(t) {
   return `<article class="card task-card"><h3>${esc(issue?.title || (t.text || '').split('\n')[0])}</h3>
     <p>${safeHref(issue?.url) ? `<a href="${esc(issue.url)}">Issue</a> · ` : ''}${safeHref(r?.pr_url) ? `<a href="${esc(r.pr_url)}">PR</a> · ` : ''}<span class="dim">${esc(ago(Date.parse(t.activity_at)))}</span></p>
     ${r ? `<p>Current run: ${runLink(r.run_id)}</p>` : ''}
-    ${t.runs.length ? `<details><summary>Earlier runs (${t.runs.length})</summary>${t.runs.map(runLink).join('<br>')}</details>` : ''}</article>`;
+    ${t.runs.length ? `<details><summary>Earlier runs (${t.runs.length})</summary>${t.runs.map(runLink).join('<br>')}</details>` : ''}
+    <button data-task-id="${esc(t.id)}" onclick="changeTaskArchive(this.dataset.taskId,${!!view.archived},this)" ${taskWrites.has(t.id) ? 'disabled' : ''}>${view.archived ? 'Unarchive' : 'Archive'}</button></article>`;
 }
 async function loadTasks(current) {
-  const repo = view.repo;
+  const repo = view.repo, archived = view.archived;
   const projectsLoad = taskProjects !== null ? Promise.resolve(taskProjects) : get('/api/projects').then(({body}) => {
     if (current === generation) taskProjects = body;
     return body;
   });
   const [projects, {body: tasks}] = await Promise.all([
-    projectsLoad, get('/api/tasks' + (repo ? '?' + projectQuery(repo) : '')),
+    projectsLoad, get('/api/tasks' + taskQuery(repo, archived)),
   ]);
   if (current !== generation) return;
   const repos = [...new Set([...projects.map(p => p.repo), ...tasks.map(t => t.repo), ...(repo ? [repo] : [])])];
   swap($('task-project'), '<option value="">All projects</option>' + repos.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join(''));
   $('task-project').value = repo;
+  $('task-archived').checked = !!archived;
   swap($('task-board'), taskLanes.map(lane => `<section class="task-lane"><h2>${lane}</h2>${tasks.filter(t => t.lane === lane).map(taskCard).join('') || '<p class="dim">No tasks</p>'}</section>`).join(''));
   bar.textContent = tasks.length + ' tasks';
 }

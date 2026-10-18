@@ -28,6 +28,123 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
+func TestTaskArchiveRoutes(t *testing.T) {
+	for _, status := range []string{"backlog", trace.StatusQueued, trace.StatusStarting, trace.StatusRunning, trace.StatusOK} {
+		t.Run(status, func(t *testing.T) {
+			var writer *trace.DB
+			var taskID, runID string
+			ro := readOnly(t, func(db *trace.DB, root string) {
+				var err error
+				runID, err = db.Submit(trace.Request{Workflow: "build", Repo: repo})
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, _ := db.Get(runID)
+				taskID = *row.TaskID
+				s, err := sql.Open("sqlite", filepath.Join(root, "lathe.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				if status == "backlog" {
+					_, err = s.Exec(`UPDATE runs SET task_id = NULL WHERE run_id = ?`, runID)
+				} else {
+					for _, table := range []string{"runs", "iterations"} {
+						if _, err = s.Exec(`UPDATE `+table+` SET status = ? WHERE run_id = ?`, status, runID); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				writer, err = trace.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { writer.Close() })
+			})
+			h := handler(ro, "test", Actions{ArchiveTask: writer.ArchiveTask, UnarchiveTask: writer.UnarchiveTask}, Sources{})
+			list := func(query string, count int) []taskView {
+				t.Helper()
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, local("GET", "/api/tasks"+query, nil))
+				var views []taskView
+				if err := json.Unmarshal(w.Body.Bytes(), &views); err != nil || w.Code != 200 || len(views) != count {
+					t.Fatalf("list %s: %d %s", query, w.Code, w.Body.String())
+				}
+				return views
+			}
+			before := list("", 1)[0].Lane
+			for _, action := range []string{"archive", "unarchive"} {
+				path := "/api/tasks/"+taskID+"/"+action
+				for _, tc := range []struct {
+					origin, content, body string
+					code                  int
+				} {
+					{"", "application/json", "{}", 403},
+					{"http://"+Addr, "text/plain", "{}", 403},
+					{"http://"+Addr, "application/json", "{", 400},
+				} {
+					if w := browserWrite(h, "POST", path, Addr, tc.origin, tc.content, tc.body); w.Code != tc.code {
+						t.Fatalf("write protection: %d %s", w.Code, w.Body.String())
+					}
+				}
+				w := browserWrite(h, "POST", path, Addr, "http://"+Addr, "application/json", "{}")
+				if w.Code != 200 {
+					t.Fatalf("%s: %d %s", action, w.Code, w.Body.String())
+				}
+				if action == "archive" {
+					list("", 0)
+					list("?archived=1", 1)
+					list("?archived=1&repo="+url.QueryEscape(repo), 1)
+					list("?archived=1&repo=/missing", 0)
+					cancelled, err := ro.Cancelled(runID)
+					live := status == trace.StatusQueued || status == trace.StatusStarting || status == trace.StatusRunning
+					if err != nil || cancelled != live {
+						t.Fatalf("cancelled = %v, %v", cancelled, err)
+					}
+				} else {
+					list("?archived=1", 0)
+					want := before
+					if status == trace.StatusQueued {
+						want = trace.LaneBlocked
+					}
+					if got := list("", 1)[0].Lane; got != want {
+						t.Fatalf("restored lane = %s, want %s", got, want)
+					}
+				}
+				missing := browserWrite(h, "POST", "/api/tasks/missing/"+action, Addr, "http://"+Addr, "application/json", "{}")
+				if missing.Code != 404 {
+					t.Fatalf("missing = %d", missing.Code)
+				}
+				assertNoWriteRoute(t, handler(ro, "test", Actions{}, Sources{}), "POST", path)
+			}
+		})
+	}
+}
+
+func TestTaskArchiveActionFailures(t *testing.T) {
+	ro := readOnly(t, nil)
+	for _, archive := range []bool{false, true} {
+		actions := Actions{}
+		action := func(string) error { return errors.New("write failed") }
+		path, absent := "/api/tasks/id/unarchive", "/api/tasks/id/archive"
+		if archive {
+			actions.ArchiveTask = action
+			path, absent = absent, path
+		} else {
+			actions.UnarchiveTask = action
+		}
+		h := handler(ro, "test", actions, Sources{})
+		w := browserWrite(h, "POST", path, Addr, "http://"+Addr, "application/json", "{}")
+		if w.Code != 500 || !strings.Contains(w.Body.String(), "write failed") {
+			t.Fatalf("failure: %d %s", w.Code, w.Body.String())
+		}
+		assertNoWriteRoute(t, h, "POST", absent)
+	}
+}
+
 func TestTasksAPI(t *testing.T) {
 	var current, earlier, taskID string
 	db := readOnly(t, func(db *trace.DB, root string) {

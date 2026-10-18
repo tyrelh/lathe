@@ -9,6 +9,104 @@ import (
 	"testing"
 )
 
+func TestArchiveTask(t *testing.T) {
+	for _, status := range []string{"backlog", StatusQueued, StatusStarting, StatusRunning, StatusOK, StatusFail} {
+		t.Run(status, func(t *testing.T) {
+			db := open(t)
+			id := submit(t, db, "build", "/repo")
+			row, _ := db.Get(id)
+			taskID := *row.TaskID
+			if status == "backlog" {
+				if _, err := db.sql.Exec(`UPDATE runs SET task_id = NULL WHERE run_id = ?`, id); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				setStatus(t, db, id, status)
+			}
+			if err := db.ArchiveTask(taskID); err != nil {
+				t.Fatal(err)
+			}
+			task, _ := db.GetTask(taskID)
+			if task.ArchivedAt == nil {
+				t.Fatal("not archived")
+			}
+			cancelled, err := db.Cancelled(id)
+			live := status == StatusQueued || status == StatusStarting || status == StatusRunning
+			if err != nil || cancelled != live {
+				t.Fatalf("cancelled = %v, %v", cancelled, err)
+			}
+			got, _ := db.Get(id)
+			if status == StatusQueued && got.Status != StatusCancelled || (status == StatusStarting || status == StatusRunning) && got.Status != status {
+				t.Fatalf("status = %s", got.Status)
+			}
+			if err := db.ArchiveTask(taskID); err != nil {
+				t.Fatal(err)
+			}
+			again, _ := db.GetTask(taskID)
+			if *again.ArchivedAt != *task.ArchivedAt || again.UpdatedAt != task.UpdatedAt {
+				t.Fatal("repeat archive changed timestamps")
+			}
+			for range 2 {
+				if err := db.UnarchiveTask(taskID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			task, _ = db.GetTask(taskID)
+			if task.ArchivedAt != nil {
+				t.Fatal("still archived")
+			}
+		})
+	}
+	db := open(t)
+	for _, action := range []func(string) error{db.ArchiveTask, db.UnarchiveTask} {
+		if err := action("missing"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("missing task: %v", err)
+		}
+	}
+}
+
+func TestArchiveCurrentSubmission(t *testing.T) {
+	db := open(t)
+	first := submit(t, db, "build", "/repo")
+	row, _ := db.Get(first)
+	second, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: *row.TaskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, at := range map[string]string{first: "2020", second: "2021"} {
+		if _, err := db.sql.Exec(`UPDATE runs SET submitted_at = ? WHERE run_id = ?`, at, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.ArchiveTask(*row.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{first: false, second: true} {
+		if got, err := db.Cancelled(id); err != nil || got != want {
+			t.Fatalf("cancelled %s = %v, %v", id, got, err)
+		}
+	}
+	if err := db.UnarchiveTask(*row.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, db, second, StatusOK)
+	if err := db.ArchiveTask(*row.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if cancelled, err := db.Cancelled(first); err != nil || cancelled {
+		t.Fatalf("earlier live run cancelled = %v, %v", cancelled, err)
+	}
+}
+
+func setStatus(t *testing.T, db *DB, runID, status string) {
+	t.Helper()
+	for _, table := range []string{"runs", "iterations"} {
+		if _, err := db.sql.Exec(`UPDATE `+table+` SET status = ? WHERE run_id = ?`, status, runID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestTaskLane(t *testing.T) {
 	open, closed, merged := "open", "closed", "merged"
 	for _, tc := range []struct {

@@ -127,10 +127,8 @@ func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int,
 	}
 	defer tx.Rollback()
 
-	var status string
-	var n int
-	if err := tx.QueryRow(`SELECT status, iteration FROM runs WHERE run_id = ?`, runID).
-		Scan(&status, &n); err != nil {
+	status, n, err := runState(tx, runID, ErrNotRevisable)
+	if err != nil {
 		return 0, err
 	}
 	if n != expect {
@@ -151,6 +149,21 @@ func (d *DB) Revise(runID string, expect int, request string, spec []byte) (int,
 		return 0, err
 	}
 	return next, tx.Commit()
+}
+
+// runState returns a run's status and iteration, or refused when the run's task is archived.
+func runState(tx *sql.Tx, runID string, refused error) (status string, n int, err error) {
+	var archived bool
+	if err := tx.QueryRow(`SELECT status, iteration,
+		EXISTS (SELECT 1 FROM tasks WHERE tasks.id = runs.task_id AND archived_at IS NOT NULL)
+		FROM runs WHERE run_id = ?`, runID).
+		Scan(&status, &n, &archived); err != nil {
+		return "", 0, err
+	}
+	if archived {
+		return "", 0, fmt.Errorf("%w: its task is archived", refused)
+	}
+	return status, n, nil
 }
 
 // requeue points runID at its new iteration next and queues it, provided the

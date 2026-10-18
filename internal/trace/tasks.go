@@ -119,6 +119,39 @@ func (d *DB) TasksRuns() (map[string][]Row, error) {
 	return out, err
 }
 
+// ArchiveTask requests cancellation of the current live run and archives the task.
+func (d *DB) ArchiveTask(id string) error {
+	task, err := d.GetTask(id)
+	if err != nil {
+		return err
+	}
+	if task.ArchivedAt != nil {
+		return nil
+	}
+	var runID string
+	switch err := d.sql.QueryRow(`SELECT run_id FROM runs WHERE task_id = ? ORDER BY submitted_at DESC, run_id DESC LIMIT 1`, id).Scan(&runID); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return err
+	default:
+		if _, err := d.RequestCancel(runID); err != nil && !errors.Is(err, ErrAlreadyDone) {
+			return err
+		}
+	}
+	at := nowUTC()
+	_, err = d.sql.Exec(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, at, at, id)
+	return err
+}
+
+// UnarchiveTask clears a task's archive timestamp without changing its runs.
+func (d *DB) UnarchiveTask(id string) error {
+	if _, err := d.GetTask(id); err != nil {
+		return err
+	}
+	_, err := d.sql.Exec(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`, nowUTC(), id)
+	return err
+}
+
 func insertTask(tx *sql.Tx, repo, text, issue, at string) (string, error) {
 	id := "task_" + randomHex(12)
 	var tracker any
