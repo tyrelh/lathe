@@ -286,6 +286,9 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			if err := e.Call(report, reviewRequest(c), run.ArtifactsExist, run.FilesNonEmpty); err != nil {
 				return err
 			}
+			if len(*report.Findings) > 0 {
+				e.RequestChanges()
+			}
 			report.stamp(name, cur.number())
 			return nil
 		}})
@@ -347,6 +350,7 @@ func addCodeNodes(g *run.Graph, r *run.Run, c *code) {
 			c.outstanding, c.changes = nil, ""
 			return "", c.settle(r.Dir, outcomeAccepted, "")
 		}
+		e.RequestChanges()
 		fixes := out.fixes(findings)
 		if e.SendBacksLeft == 0 {
 			c.v.Unresolved = fixes

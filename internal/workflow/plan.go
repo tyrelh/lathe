@@ -295,6 +295,9 @@ func addPlanNodes(g *run.Graph, r *run.Run, out *PlanOutput, brief string, c *co
 			blocking, unusable = nil, true
 		}
 		if len(feedback)+len(blocking) > 0 && e.SendBacksLeft > 0 {
+			if !unusable {
+				e.RequestChanges()
+			}
 			reviewed = true
 			return "plan", nil
 		}

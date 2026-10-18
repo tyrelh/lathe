@@ -2116,10 +2116,11 @@ function phaseTiming(p, r, now) {
   if (live(owner.status)) return {status: 'running', start, end: now, bound: false};
   return {status: 'interrupted', start, end: Date.parse(owner.ended_at), bound: true, by: it ? 'iteration' : 'run'};
 }
-const tone = s => s === 'interrupted' ? 'interrupted' : cls(s);
+const tone = s => s === 'requested_changes' ? 'ok' : s === 'interrupted' ? 'interrupted' : cls(s);
+const statusLabel = s => s === 'requested_changes' ? 'Requested changes' : s;
 // Successful phases show no mark; the tooltip and accessible name
 // include the status word, model, and cost.
-const MARK = {success: '', ok: '', fail: '❌', running: '⏳', interrupted: '⚠️'};
+const MARK = {success: '', ok: '', fail: '❌', running: '⏳', interrupted: '⚠️', requested_changes: '📝'};
 
 // axis spans the run's own execution: queue time is left out.
 // A span of at least 1ms keeps a zero-duration run from dividing by zero.
@@ -2276,8 +2277,8 @@ function contextEstimate(context) {
 // min() keeps that floor inside the track at its right edge.
 function block(p, t, g) {
   const s = spend.get(p.phase_id);
-  const name = [`#${p.seq} ${p.name}`, s?.model, t.status, s && money(s.cost)].filter(Boolean).join(' · ');
-  const description = [`#${p.seq} ${p.name}`, `Status: ${t.status}`,
+  const name = [`#${p.seq} ${p.name}`, s?.model, statusLabel(t.status), s && money(s.cost)].filter(Boolean).join(' · ');
+  const description = [`#${p.seq} ${p.name}`, `Status: ${statusLabel(t.status)}`,
     s?.model && `Model: ${s.model}`,
     thinking.get(p.phase_id) && `Thinking: ${thinking.get(p.phase_id)}`, s && `Cost: ${money(s.cost)}`,
     t.end >= t.start && `Duration: ${dur(t.end - t.start)}`,
@@ -2490,7 +2491,7 @@ function phaseCard(p, r, now) {
     (r.iterations || []).find(i => i.iteration === n)?.request ? `: ${esc(clip(r.iterations.find(i => i.iteration === n).request, 120))}` : ''}.
     The latest is iteration ${esc(latest)}${live(r.status) ? `, which is ${esc(r.status)}` : ''}.</p>`;
   return `<h2>phase</h2>
-    <p><b>${esc(p.name)}</b> <span class="dim">· #${p.seq} · ${esc(p.owner)} ·</span> <span class="${tone(t.status)}">${esc(t.status)}</span></p>`
+    <p><b>${esc(p.name)}</b> <span class="dim">· #${p.seq} · ${esc(p.owner)} ·</span> <span class="${tone(t.status)}">${esc(statusLabel(t.status))}</span></p>`
     + earlier + facts + error
     + `<div class="phase-output">${result}${command}${spent}</div>`
     + disclosure('raw', 'Raw responses', responses.get(id) || '<p class="dim">Raw response not recorded here. Older responses may be available in the run’s raw.jsonl.</p>')

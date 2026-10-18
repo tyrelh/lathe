@@ -339,8 +339,9 @@ func (p *Phase) Finish(status, errMsg string) {
 // Phase states. Phases say success where runs say ok, on purpose: stored
 // rows and the dashboard read both vocabularies.
 const (
-	PhaseSuccess = "success"
-	PhaseFail    = "fail"
+	PhaseSuccess          = "success"
+	PhaseFail             = "fail"
+	PhaseRequestedChanges = "requested_changes"
 )
 
 // ExitCancelled is the exit code for a cancelled run: the conventional

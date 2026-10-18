@@ -390,6 +390,79 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 // A revise sends the builder one set of changes, every worker reruns against
 // the repair with the previous decision in front of it, and a scope addition
 // reaches the builder once the gate has refused the protected one.
+func TestInvalidChangeRequestsRemainFailed(t *testing.T) {
+	for _, worker := range []string{"reviewers", "adjudicator"} {
+		t.Run(worker, func(t *testing.T) {
+			cfg, repo := buildRepo(t)
+			stub := codeStubNoPath(t)
+			if worker == "reviewers" {
+				for _, name := range reviewers {
+					write(t, filepath.Join(stub, name), jsonReply(t, map[string]any{
+						"summary": "reviewed", "findings": []map[string]string{{"explanation": "incomplete finding"}}, "artifacts": []string{}}))
+				}
+			} else {
+				write(t, filepath.Join(stub, "adjudicator"), jsonReply(t, map[string]any{"verdict": "revise"}))
+			}
+			if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
+				t.Fatalf("code = %d", code)
+			}
+			seen := 0
+			for _, ph := range runPhases(t) {
+				if (worker == "reviewers" && strings.HasPrefix(ph.Name, "code-review-")) ||
+					(worker == "adjudicator" && ph.Name == "adjudicate") {
+					seen++
+					if ph.Status != trace.PhaseFail || ph.Error == "" {
+						t.Fatalf("invalid report phase = %+v", ph)
+					}
+				}
+			}
+			if seen == 0 {
+				t.Fatal("no report phases")
+			}
+		})
+	}
+}
+
+func TestReviewerRequestedChanges(t *testing.T) {
+	for _, findings := range []bool{false, true} {
+		t.Run(fmt.Sprintf("findings=%t", findings), func(t *testing.T) {
+			cfg, repo := buildRepo(t)
+			stub := codeStubNoPath(t)
+			var decisions []map[string]string
+			if findings {
+				for _, name := range reviewers {
+					write(t, filepath.Join(stub, name), reviewerReply(t, "change the greeting"))
+					ref := strings.TrimPrefix(name, "code-review-") + "-1.1"
+					decisions = append(decisions, decide(ref, "dismiss"))
+				}
+				write(t, filepath.Join(stub, "adjudicator"), acceptReply(t, decisions...))
+			}
+			if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
+				t.Fatalf("code = %d", code)
+			}
+			seen := 0
+			for _, ph := range runPhases(t) {
+				if strings.HasPrefix(ph.Name, "code-review-") {
+					seen++
+					want := trace.PhaseSuccess
+					if findings {
+						want = trace.PhaseRequestedChanges
+					}
+					if ph.Status != want || ph.Error != "" {
+						t.Fatalf("review phase = %+v, want %s", ph, want)
+					}
+				}
+				if ph.Name == "adjudicate" && ph.Status != trace.PhaseSuccess {
+					t.Fatalf("accept phase = %+v", ph)
+				}
+			}
+			if seen != len(reviewers) {
+				t.Fatalf("reviewers = %d", seen)
+			}
+		})
+	}
+}
+
 func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 	t.Parallel()
 	cfg, repo := buildRepo(t)
@@ -404,6 +477,15 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d", code)
+	}
+	var adjudications []string
+	for _, ph := range runPhases(t) {
+		if ph.Name == "adjudicate" {
+			adjudications = append(adjudications, ph.Status)
+		}
+	}
+	if strings.Join(adjudications, ",") != "requested_changes,success" {
+		t.Fatalf("adjudications = %v", adjudications)
 	}
 	if got := stubFile(t, stub, "args.adjudicator.1"); !strings.Contains(got, `".env" is protected`) {
 		t.Fatalf("protected scope addition was not refused: %s", got)
@@ -478,6 +560,11 @@ func TestSendBacksAreBoundedAndRedIsNeverAccepted(t *testing.T) {
 	v := readValidation(t)
 	if v.Outcome != outcomeUnresolved || len(v.Rounds) != maxRepairs+1 || !strings.Contains(v.Reason, "exited 1") {
 		t.Fatalf("validation: %+v", v)
+	}
+	for _, ph := range runPhases(t) {
+		if ph.Name == "adjudicate" && (ph.Status != trace.PhaseRequestedChanges || ph.Error != "") {
+			t.Fatalf("revise phase = %+v", ph)
+		}
 	}
 	row := latestRun(t)
 	if row.Status != "fail" || !strings.Contains(row.Reason, "validation unresolved") || !strings.Contains(row.Reason, "uncommitted") {
