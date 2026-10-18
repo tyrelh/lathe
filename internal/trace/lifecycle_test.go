@@ -7,6 +7,102 @@ import (
 	"time"
 )
 
+func TestFreshTaskRun(t *testing.T) {
+	for _, tc := range []struct {
+		status, pr     string
+		hasPR, allowed bool
+	}{
+		{StatusFail, "", false, true}, {StatusCancelled, "open", true, true},
+		{StatusLost, "", false, true}, {StatusOK, "", false, true},
+		{StatusOK, "closed", true, true}, {StatusQueued, "", false, false},
+		{StatusStarting, "", false, false}, {StatusRunning, "", false, false},
+		{StatusOK, "open", true, false}, {StatusFail, "merged", true, false},
+	} {
+		t.Run(tc.status+tc.pr, func(t *testing.T) {
+			db := open(t)
+			old := submit(t, db, "build", "/repo")
+			row, _ := db.Get(old)
+			setStatus(t, db, old, tc.status)
+			if _, err := db.sql.Exec(`UPDATE runs SET pr_state = ?, submitted_at = '2099-01-01T00:00:00Z' WHERE run_id = ?`, nullIfEmpty(tc.pr), old); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := db.GetTask(*row.TaskID)
+			req := Request{TaskID: *row.TaskID, Workflow: "build", Repo: "/repo", Request: "new request"}
+			id, err := db.FreshTaskRun(req, func(Row) bool { return tc.hasPR })
+			if !tc.allowed {
+				if !errors.Is(err, ErrTaskConflict) {
+					t.Fatalf("refusal: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			runs, err := db.TaskRuns(req.TaskID)
+			if err != nil || len(runs) != 2 || runs[0].ID != id || runs[1].ID != old || runs[0].Submitted != "2099-01-01T00:00:01Z" {
+				t.Fatalf("runs = %+v, %v", runs, err)
+			}
+			after, _ := db.GetTask(req.TaskID)
+			if before != after {
+				t.Fatal("task metadata changed")
+			}
+			if _, err := db.FreshTaskRun(req, nil); !errors.Is(err, ErrTaskConflict) {
+				t.Fatalf("active: %v", err)
+			}
+		})
+	}
+}
+
+func TestFreshTaskRunRollbackAndConcurrency(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	other, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	old := submit(t, db, "build", "/repo")
+	row, _ := db.Get(old)
+	setStatus(t, db, old, StatusFail)
+	req := Request{TaskID: *row.TaskID, Workflow: "build", Repo: "/repo", Request: "fresh"}
+	if _, err := db.sql.Exec(`CREATE TRIGGER refuse_fresh BEFORE INSERT ON iterations BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.FreshTaskRun(req, nil); err == nil {
+		t.Fatal("accepted failed insert")
+	}
+	runs, _ := db.TaskRuns(req.TaskID)
+	if len(runs) != 1 {
+		t.Fatal("failed insert left run")
+	}
+	if _, err := db.sql.Exec(`DROP TRIGGER refuse_fresh`); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for _, writer := range []*DB{db, other} {
+		go func() {
+			_, err := writer.FreshTaskRun(req, nil)
+			results <- err
+		}()
+	}
+	successes := 0
+	for i := 0; i < 2; i++ {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrTaskConflict) {
+			t.Fatal(err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successes = %d", successes)
+	}
+}
+
 func TestStartBacklogTask(t *testing.T) {
 	root := t.TempDir()
 	db, err := Open(root)

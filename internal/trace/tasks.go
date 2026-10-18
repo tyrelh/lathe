@@ -152,8 +152,8 @@ func (d *DB) UnarchiveTask(id string) error {
 	return err
 }
 
-// ErrTaskConflict means a task is no longer eligible for a Backlog write.
-var ErrTaskConflict = errors.New("task is not in Backlog or changed during preparation")
+// ErrTaskConflict means a task is no longer eligible for the requested write.
+var ErrTaskConflict = errors.New("task is not eligible or changed during preparation")
 
 // TaskInput is a task's request and optional complete issue snapshot.
 type TaskInput struct {

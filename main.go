@@ -359,25 +359,33 @@ func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 }
 
 func prepareTaskAndSubmit(db *trace.DB, name, repo, prompt, issue, taskID string) (string, error) {
+	req, err := prepareTaskRun(name, repo, prompt, issue)
+	if err != nil {
+		return "", err
+	}
+	if taskID != "" {
+		req.TaskID = taskID
+		return db.StartTask(req)
+	}
+	return db.Submit(req)
+}
+
+func prepareTaskRun(name, repo, prompt, issue string) (trace.Request, error) {
 	request, issueRef := prompt, ""
 	if issue != "" {
 		var err error
 		if request, issueRef, err = issueRequest(issue); err != nil {
-			return "", err
+			return trace.Request{}, err
 		}
 	}
 	req, err := prepare(name, repo, request, issueRef, config.Overrides{}, io.Discard)
 	if err != nil {
-		return "", err
+		return trace.Request{}, err
 	}
 	if req.Repo != repo {
-		return "", fmt.Errorf("%s now resolves to %s", repo, req.Repo)
+		return trace.Request{}, fmt.Errorf("%s now resolves to %s", repo, req.Repo)
 	}
-	if taskID != "" {
-		req.Request.TaskID = taskID
-		return db.StartTask(req.Request)
-	}
-	return db.Submit(req.Request)
+	return req.Request, nil
 }
 
 // dashboardCreateTask records a standalone task through a writer handle.
@@ -458,6 +466,32 @@ func dashboardStartTask(id string) (string, error) {
 		issue, prompt = *task.IssueRef, ""
 	}
 	return prepareTaskAndSubmit(db, workflow.NameBuild, task.Repo, prompt, issue, id)
+}
+
+func dashboardFreshTaskRun(id, request string) (string, error) {
+	dataRoot, db, err := openWriter()
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	hasPR := func(row trace.Row) bool { return worker.RecordedPRURL(dataRoot, row) != "" }
+	task, err := db.BlockedTask(id, hasPR)
+	if err != nil {
+		return "", err
+	}
+	issue := ""
+	if request == "" {
+		if task.IssueRef == nil || *task.IssueRef == "" {
+			return "", fmt.Errorf("enter a request for this task")
+		}
+		issue = *task.IssueRef
+	}
+	req, err := prepareTaskRun(workflow.NameBuild, task.Repo, request, issue)
+	if err != nil {
+		return "", err
+	}
+	req.TaskID = id
+	return db.FreshTaskRun(req, hasPR)
 }
 
 // issueRequest is the request recorded for a run of issue raw, and its
@@ -688,6 +722,7 @@ func managerCmd() int {
 		Submit: prepareAndSubmit, Revise: dashboardRevise, Resume: dashboardResume, Cancel: dashboardCancel,
 		ArchiveTask: dashboardArchiveTask, UnarchiveTask: dashboardUnarchiveTask,
 		CreateTask: dashboardCreateTask, EditTask: dashboardEditTask, StartTask: dashboardStartTask,
+		FreshTaskRun: dashboardFreshTaskRun,
 		SavePrompt: func(key, body, baseHash string) error {
 			home, err := agentconfig.Home()
 			if err != nil {

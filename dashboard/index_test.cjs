@@ -1660,6 +1660,111 @@ let area = 'run page';
   assert.equal(appHTML, destination, 'late start cannot redraw destination');
   taskRows.pop();
 
+  area = 'task re-entry';
+  const savedTaskRows = taskRows;
+  taskRows = [{id:'re<task>', repo:taskRepo, text:'<draft title>', lane:'Ready for review', activity_at:new Date().toISOString(),
+    issue:null, current_run:{run_id:'current/run', status:'ok', pr_state:'open'}, runs:[]}];
+  const reentryWrites = [];
+  let reentryStatus = 201, releaseReentry;
+  context.fetch = async (url, opts) => {
+    if (opts?.method) {
+      reentryWrites.push({url, payload:JSON.parse(opts.body)});
+      if (reentryStatus === 'pending') return await new Promise(resolve => { releaseReentry = resolve; });
+      return {ok:reentryStatus === 201, status:reentryStatus, text:async () => JSON.stringify({run_id:'new', error:'<refused>'})};
+    }
+    return json(url === '/api/projects' ? [{repo:taskRepo}] : taskRows);
+  };
+  await visit('#/tasks');
+  assert(nodes.get('task-board').innerHTML.includes('onclick="reenterBoardTask(this.dataset.taskId)"'), 'card has Re-enter control');
+  assert(nodes.get('task-board').innerHTML.includes('re&lt;task>'), 're-entry task id escaped');
+  call('reenterBoardTask', 're<task>');
+  assert.equal(nodes.get('task-reentry-title').textContent, 'Re-enter task: <draft title>');
+  nodes.get('task-reentry-input').value = '  revision <draft>  ';
+  const reentryInput = nodes.get('task-reentry-input');
+  await evaluate('tick()'); await settle();
+  assert.equal(nodes.get('task-reentry-input'), reentryInput, 'poll retains re-entry node');
+  assert.equal(reentryInput.value, '  revision <draft>  ', 'poll retains re-entry draft');
+  await call('submitTaskReentry', formEvent);
+  assert.deepEqual(reentryWrites.at(-1), {url:'/api/runs/current%2Frun/revisions', payload:{request:'revision <draft>'}});
+  for (const status of ['fail', 'cancelled', 'lost']) {
+    taskRows[0].lane = 'Blocked';
+    taskRows[0].current_run.status = status;
+    taskRows[0].current_run.recoverable = true;
+    taskRows[0].current_run.pr_state = null;
+    await evaluate('tick()'); await settle();
+    call('reenterBoardTask', 're<task>');
+    nodes.get('task-reentry-input').value = ' guidance ';
+    await call('submitTaskReentry', formEvent);
+    assert.deepEqual(reentryWrites.at(-1), {url:'/api/runs/current%2Frun/recoveries', payload:{guidance:'guidance'}});
+  }
+  for (const [status, pr] of [['fail','closed'], ['ok',null]]) {
+    taskRows[0].current_run.status = status;
+    taskRows[0].current_run.recoverable = status === 'fail';
+    taskRows[0].current_run.pr_state = pr;
+    await evaluate('tick()'); await settle();
+    call('reenterBoardTask', 're<task>');
+    const count = reentryWrites.length;
+    await call('submitTaskReentry', formEvent);
+    assert.equal(reentryWrites.length, count, 'plain fresh run needs request');
+    nodes.get('task-reentry-input').value = ' fresh ';
+    await call('submitTaskReentry', formEvent);
+    assert.deepEqual(reentryWrites.at(-1), {url:'/api/tasks/re%3Ctask%3E/runs', payload:{request:'fresh'}});
+  }
+  taskRows[0].issue = {ref:'42', title:'issue'};
+  await evaluate('tick()'); await settle();
+  call('reenterBoardTask', 're<task>');
+  await call('submitTaskReentry', formEvent);
+  assert.deepEqual(reentryWrites.at(-1).payload, {request:''}, 'issue-backed fresh run may be empty');
+  taskRows[0].current_run.status = 'fail';
+  taskRows[0].current_run.recoverable = true;
+  await evaluate('tick()'); await settle();
+  call('reenterBoardTask', 're<task>');
+  nodes.get('task-reentry-input').value = 'retained guidance';
+  reentryStatus = 400;
+  await call('submitTaskReentry', formEvent);
+  assert.equal(nodes.get('task-reentry-fresh').hidden, true, 'non-conflict does not offer fallback');
+  reentryStatus = 409;
+  const beforeFallback = reentryWrites.length;
+  await call('submitTaskReentry', formEvent);
+  assert.equal(reentryWrites.length, beforeFallback + 1, '409 never automatically starts fresh');
+  assert.equal(nodes.get('task-reentry-fresh').hidden, false);
+  assert.equal(nodes.get('task-reentry-error').textContent, '<refused>', 'refusal is text');
+  assert.equal(nodes.get('task-reentry-input').value, 'retained guidance');
+  call('freshBoardTask');
+  reentryStatus = 201;
+  await call('submitTaskReentry', formEvent);
+  assert.deepEqual(reentryWrites.at(-1), {url:'/api/tasks/re%3Ctask%3E/runs', payload:{request:'retained guidance'}});
+  call('reenterBoardTask', 're<task>');
+  nodes.get('task-reentry-input').value = 'stale draft';
+  taskRows[0].current_run.run_id = 'replacement';
+  await evaluate('tick()'); await settle();
+  const beforeStale = reentryWrites.length;
+  await call('submitTaskReentry', formEvent);
+  assert.equal(reentryWrites.length, beforeStale, 'changed current run does not retarget draft');
+  call('closeTaskReentry');
+  call('reenterBoardTask', 're<task>');
+  nodes.get('task-reentry-input').value = 'pending';
+  reentryStatus = 'pending';
+  const pendingReentry = call('submitTaskReentry', formEvent);
+  await settle();
+  await call('submitTaskReentry', formEvent);
+  assert.equal(reentryWrites.length, beforeStale + 1, 'duplicate re-entry suppressed');
+  await visit('#/nope');
+  const reentryDestination = appHTML;
+  releaseReentry({ok:true, status:201, text:async () => '{"run_id":"late"}'});
+  await pendingReentry; await settle();
+  assert.equal(appHTML, reentryDestination, 'late re-entry cannot redraw navigation');
+  reentryStatus = 201;
+  for (const lane of ['Backlog', 'In progress', 'Done']) {
+    taskRows[0].lane = lane;
+    await visit('#/tasks');
+    assert(!nodes.get('task-board').innerHTML.includes('>Re-enter</button>'), lane + ' cannot re-enter');
+  }
+  taskRows[0].lane = 'Blocked';
+  await visit('#/tasks?archived=1');
+  assert(!nodes.get('task-board').innerHTML.includes('>Re-enter</button>'), 'archived cannot re-enter');
+  taskRows = savedTaskRows;
+
   const archiveRequests = [];
   let archiveRows = taskRows;
   context.fetch = async (url, opts) => {

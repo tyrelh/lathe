@@ -72,6 +72,7 @@ type Actions struct {
 	CreateTask    func(repo, text, issue string) (string, error)
 	EditTask      func(taskID, repo, text, issue string) error
 	StartTask     func(taskID string) (string, error)
+	FreshTaskRun  func(taskID, request string) (string, error)
 	ArchiveTask   func(taskID string) error
 	UnarchiveTask func(taskID string) error
 
@@ -169,6 +170,21 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 	if actions.EditTask != nil {
 		mux.HandleFunc("PATCH /api/tasks/{id}", writeTaskInput(db, actions, true))
 	}
+	if actions.FreshTaskRun != nil {
+		mux.HandleFunc("POST /api/tasks/{id}/runs", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Request string `json:"request"`
+			}
+			if !browserJSON(w, r, &body) {
+				return
+			}
+			id, err := actions.FreshTaskRun(r.PathValue("id"), strings.TrimSpace(body.Request))
+			if taskWriteError(w, err) {
+				return
+			}
+			writeStatus(w, http.StatusCreated, map[string]string{"run_id": id})
+		})
+	}
 	if actions.StartTask != nil {
 		mux.HandleFunc("POST /api/tasks/{id}/start", func(w http.ResponseWriter, r *http.Request) {
 			if !browserJSON(w, r, &struct{}{}) {
@@ -251,11 +267,12 @@ type taskIssueView struct {
 }
 
 type taskRunView struct {
-	ID        string  `json:"run_id"`
-	Iteration int     `json:"iteration"`
-	Status    string  `json:"status"`
-	PRURL     string  `json:"pr_url"`
-	PRState   *string `json:"pr_state"`
+	ID          string  `json:"run_id"`
+	Iteration   int     `json:"iteration"`
+	Status      string  `json:"status"`
+	PRURL       string  `json:"pr_url"`
+	PRState     *string `json:"pr_state"`
+	Recoverable bool    `json:"recoverable"`
 }
 
 type taskView struct {
@@ -291,7 +308,7 @@ func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string, archived
 		if len(runs) > 0 {
 			r := runs[0]
 			url := prURL(r)
-			v.CurrentRun = &taskRunView{r.ID, r.Iteration, r.Status, url, r.PRState}
+			v.CurrentRun = &taskRunView{r.ID, r.Iteration, r.Status, url, r.PRState, trace.Recoverable(r) == nil}
 			v.Activity = r.Activity
 			v.Lane = trace.TaskLane(r.Status, r.PRState, url != "")
 			for _, earlier := range runs[1:] {
