@@ -389,8 +389,7 @@ func ensureManager(dataRoot string) {
 	}
 }
 
-// dashboardRevise and dashboardCancel are the dashboard's other two writes,
-// through the same paths the CLI takes: its own database handle is read-only.
+// dashboardRevise submits a revision through a writer handle.
 func dashboardRevise(runID, request string) (int, error) {
 	dataRoot, db, err := openWriter()
 	if err != nil {
@@ -407,6 +406,24 @@ func dashboardCancel(runID string) (string, error) {
 	}
 	defer db.Close()
 	return db.RequestCancel(runID)
+}
+
+func dashboardArchiveTask(taskID string) error {
+	_, db, err := openWriter()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.ArchiveTask(taskID)
+}
+
+func dashboardUnarchiveTask(taskID string) error {
+	_, db, err := openWriter()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.UnarchiveTask(taskID)
 }
 
 // openWriter opens lathe's data root and database.
@@ -582,6 +599,7 @@ func managerCmd() int {
 	// that needs the filesystem.
 	actions := dashboard.Actions{
 		Submit: prepareAndSubmit, Revise: dashboardRevise, Resume: dashboardResume, Cancel: dashboardCancel,
+		ArchiveTask: dashboardArchiveTask, UnarchiveTask: dashboardUnarchiveTask,
 		SavePrompt: func(key, body, baseHash string) error {
 			home, err := agentconfig.Home()
 			if err != nil {

@@ -1559,6 +1559,54 @@ let area = 'run page';
   assert.equal((nodes.get('task-board').innerHTML.match(/No tasks/g)||[]).length, 5);
   assert.equal(evaluate('done'), false, 'empty board keeps polling');
 
+  const archiveRequests = [];
+  let archiveRows = taskRows;
+  context.fetch = async (url, opts) => {
+    archiveRequests.push({url, opts});
+    if (url === '/api/projects') return json([{repo:taskRepo}]);
+    if (opts?.method === 'POST') { archiveRows = []; return {ok:true, text:async () => JSON.stringify({id:'t1'})}; }
+    return json(archiveRows);
+  };
+  await visit(call('tasksHref', taskRepo, true));
+  assert.equal(nodes.get('task-archived').checked, true);
+  assert(nodes.get('task-board').innerHTML.includes('>Unarchive</button>'));
+  assert(archiveRequests.some(r => r.url === taskURL + '&archived=1'));
+  assert.equal(call('tasksHref', '/other'), '#/tasks?repo=%2Fother&archived=1', 'project selection retains archived mode');
+  await evaluate('tick()'); await settle();
+  assert.equal(archiveRequests.at(-1).url, taskURL + '&archived=1', 'poll retains archived mode');
+  await call('changeTaskArchive', 't1', true, {disabled:false});
+  let write = archiveRequests.find(r => r.opts?.method === 'POST');
+  assert.equal(write.url, '/api/tasks/t1/unarchive');
+  assert.equal(write.opts.body, '{}');
+  assert(!nodes.get('task-board').innerHTML.includes('>Unarchive</button>'), 'success refreshes cards');
+  archiveRows = taskRows;
+  await visit(call('tasksHref', taskRepo, false));
+  assert.equal(nodes.get('task-archived').checked, false);
+  assert(nodes.get('task-board').innerHTML.includes('>Archive</button>'));
+  await call('changeTaskArchive', 't1', false, {disabled:false});
+  assert(archiveRequests.some(r => r.url === '/api/tasks/t1/archive' && r.opts?.body === '{}'));
+  context.fetch = async () => ({ok:false, text:async () => '<archive failed>'});
+  await call('changeTaskArchive', 't1', false, {disabled:false});
+  assert(nodes.get('task-error').textContent.includes('<archive failed>'), 'failure is rendered as text');
+
+  let releaseArchive, archiveWrites = 0;
+  context.fetch = async (url, opts) => {
+    if (opts?.method === 'POST') {
+      archiveWrites++;
+      return await new Promise(resolve => { releaseArchive = resolve; });
+    }
+    return json([]);
+  };
+  const pendingArchive = call('changeTaskArchive', 't1', false, {disabled:false});
+  await settle();
+  await call('changeTaskArchive', 't1', false, {disabled:false});
+  assert.equal(archiveWrites, 1, 'duplicate writes are suppressed');
+  await visit('#/nope');
+  const archiveDestination = appHTML;
+  releaseArchive({ok:true, text:async () => JSON.stringify({id:'t1'})});
+  await pendingArchive; await settle();
+  assert.equal(appHTML, archiveDestination, 'late write cannot redraw another page');
+
   let retryProjects = 0, retryTasks = 0;
   context.fetch = async url => {
     if (url === '/api/projects') {

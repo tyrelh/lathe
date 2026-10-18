@@ -36,11 +36,17 @@ func TestSubmitTasks(t *testing.T) {
 			t.Fatalf("accepted %+v", req)
 		}
 	}
-	if _, err := db.sql.Exec(`UPDATE tasks SET archived_at = 'now' WHERE id = ?`, task.ID); err != nil {
+	if err := db.ArchiveTask(task.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: task.ID}); err == nil {
 		t.Fatal("accepted archived task")
+	}
+	if err := db.UnarchiveTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Submit(Request{Workflow: "build", Repo: "/repo", TaskID: task.ID}); err != nil {
+		t.Fatalf("submit after unarchive: %v", err)
 	}
 	for _, workflow := range []string{"scout", "plan", "implement"} {
 		id, err := db.Submit(Request{Workflow: workflow, Repo: "/repo", TaskID: "missing", Spec: issueSpec("42")})
@@ -54,6 +60,52 @@ func TestSubmitTasks(t *testing.T) {
 	}
 	if tasks, _ := db.Tasks(""); len(tasks) != 1 {
 		t.Fatalf("unexpected tasks: %+v", tasks)
+	}
+}
+
+func TestReviseArchivedTask(t *testing.T) {
+	db := open(t)
+	id := submit(t, db, "build", "/repo")
+	attempt, token := dispatch(t, db, id)
+	if err := db.Complete(id, attempt, token, StatusOK, ""); err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.Get(id)
+	if err != nil || row.TaskID == nil {
+		t.Fatalf("run = %+v, %v", row, err)
+	}
+	if err := db.ArchiveTask(*row.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Revise(id, 0, "revise archived", nil); !errors.Is(err, ErrNotRevisable) {
+		t.Fatalf("revision after archive = %v", err)
+	}
+	row, err = db.Get(id)
+	if err != nil || row.Iteration != 0 || row.Status != StatusOK {
+		t.Fatalf("refused revision changed run: %+v, %v", row, err)
+	}
+	assertCounts(t, db, 1)
+	if err := db.UnarchiveTask(*row.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := db.Revise(id, 0, "revise restored", nil); err != nil || n != 1 {
+		t.Fatalf("revision after unarchive = %d, %v", n, err)
+	}
+}
+
+func TestReviseTasklessRun(t *testing.T) {
+	db := open(t)
+	id := submit(t, db, "plan", "/repo")
+	attempt, token := dispatch(t, db, id)
+	if err := db.Complete(id, attempt, token, StatusOK, ""); err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.Get(id)
+	if err != nil || row.TaskID != nil {
+		t.Fatalf("taskless run = %+v, %v", row, err)
+	}
+	if n, err := db.Revise(id, 0, "revise taskless", nil); err != nil || n != 1 {
+		t.Fatalf("taskless revision = %d, %v", n, err)
 	}
 }
 

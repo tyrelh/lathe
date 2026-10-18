@@ -27,6 +27,45 @@ func recovery(source int) Recovery {
 	return Recovery{Source: source, Kind: KindRecovery, Resolved: "greet", Guidance: "try again", Spec: []byte(`{"workflow":"implement"}`)}
 }
 
+func TestRecoverArchivedTask(t *testing.T) {
+	for _, kind := range []string{KindRecovery, KindRestart} {
+		t.Run(kind, func(t *testing.T) {
+			db := open(t)
+			id := submit(t, db, "build", "/repo")
+			row, err := db.Get(id)
+			if err != nil || row.TaskID == nil {
+				t.Fatalf("run = %+v, %v", row, err)
+			}
+			taskID := *row.TaskID
+			if err := db.ArchiveTask(taskID); err != nil {
+				t.Fatal(err)
+			}
+			rec := recovery(0)
+			rec.Kind = kind
+			if _, err := db.Recover(id, rec); !errors.Is(err, ErrNotRecoverable) {
+				t.Fatalf("recovery after archive = %v", err)
+			}
+			if its, err := db.Iterations(id); err != nil || len(its) != 1 || its[0].Status != StatusCancelled {
+				t.Fatalf("refused recovery changed history: %+v, %v", its, err)
+			}
+			row, err = db.Get(id)
+			if err != nil || row.Iteration != 0 || row.Status != StatusCancelled {
+				t.Fatalf("refused recovery changed run: %+v, %v", row, err)
+			}
+			if err := db.UnarchiveTask(taskID); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := db.Recover(id, rec); err != nil || n != 1 {
+				t.Fatalf("recovery after unarchive = %d, %v", n, err)
+			}
+			row, err = db.Get(id)
+			if err != nil || row.Iteration != 1 || row.Status != StatusQueued {
+				t.Fatalf("recovered run = %+v, %v", row, err)
+			}
+		})
+	}
+}
+
 // Failed, cancelled and lost iterations may be resumed; the run keeps its ID
 // and history, and the new iteration records where it came from.
 func TestRecoverAppendsAnIteration(t *testing.T) {
@@ -34,6 +73,10 @@ func TestRecoverAppendsAnIteration(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			db := open(t)
 			id := failed(t, db, status)
+			before, err := db.Get(id)
+			if err != nil || before.TaskID != nil {
+				t.Fatalf("taskless run = %+v, %v", before, err)
+			}
 			n, err := db.Recover(id, recovery(0))
 			if err != nil || n != 1 {
 				t.Fatalf("recover = %d, %v", n, err)
