@@ -28,6 +28,150 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
+func TestTaskWriteRoutes(t *testing.T) {
+	var writer *trace.DB
+	ro := readOnly(t, func(db *trace.DB, root string) {
+		if _, err := db.Submit(trace.Request{Workflow: "plan", Repo: repo}); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		writer, err = trace.Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { writer.Close() })
+	})
+	actions := Actions{
+		CreateTask: func(repo, text, issue string) (string, error) {
+			return writer.CreateTask(trace.TaskInput{Repo: repo, Text: text, IssueRef: issue})
+		},
+		EditTask: func(id, repo, text, issue string) error {
+			return writer.EditTask(id, trace.TaskInput{Repo: repo, Text: text, IssueRef: issue})
+		},
+		StartTask: func(id string) (string, error) {
+			task, err := writer.GetTask(id)
+			if err != nil {
+				return "", err
+			}
+			return writer.StartTask(trace.Request{TaskID: id, Workflow: "build", Repo: task.Repo, Request: task.Text})
+		},
+	}
+	h := handler(ro, "test", actions, Sources{})
+	write := func(method, path, body string, want int) string {
+		t.Helper()
+		w := browserWrite(h, method, path, Addr, "http://"+Addr, "application/json", body)
+		if w.Code != want {
+			t.Fatalf("%s %s: %d %s, want %d", method, path, w.Code, w.Body.String(), want)
+		}
+		var result map[string]string
+		json.Unmarshal(w.Body.Bytes(), &result)
+		if result["id"] != "" {
+			return result["id"]
+		}
+		return result["run_id"]
+	}
+	payload := `{"repo":` + strconv.Quote(repo) + `,"text":"  request  "}`
+	id := write("POST", "/api/tasks", payload, 201)
+	task, _ := ro.GetTask(id)
+	if task.Text != "request" {
+		t.Fatalf("text not trimmed: %+v", task)
+	}
+	write("PATCH", "/api/tasks/"+id, payload, 200)
+	issueID := write("POST", "/api/tasks", `{"repo":`+strconv.Quote(repo)+`,"issue":" 42 "}`, 201)
+	task, _ = ro.GetTask(issueID)
+	if task.IssueRef == nil || *task.IssueRef != "42" {
+		t.Fatalf("issue not trimmed: %+v", task)
+	}
+	for _, state := range []string{"queued", "terminal", "archived"} {
+		taskID := write("POST", "/api/tasks", payload, 201)
+		if state == "archived" {
+			if err := writer.ArchiveTask(taskID); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			runID := write("POST", "/api/tasks/"+taskID+"/start", "{}", 201)
+			row, _ := ro.Get(runID)
+			if row.TaskID == nil || *row.TaskID != taskID {
+				t.Fatalf("wrong task: %+v", row)
+			}
+			if state == "terminal" {
+				if _, err := writer.RequestCancel(runID); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		write("PATCH", "/api/tasks/"+taskID, payload, 409)
+		write("POST", "/api/tasks/"+taskID+"/start", "{}", 409)
+	}
+	write("PATCH", "/api/tasks/missing", payload, 404)
+	write("POST", "/api/tasks/missing/start", "{}", 404)
+	for _, route := range []struct{ method, path string }{{"POST", "/api/tasks"}, {"PATCH", "/api/tasks/" + id}, {"POST", "/api/tasks/" + id + "/start"}} {
+		assertNoWriteRoute(t, handler(ro, "test", Actions{}, Sources{}), route.method, route.path)
+		for _, tc := range []struct {
+			host, origin, content, body string
+			code                        int
+		} {
+			{Addr, "", "application/json", "{}", 403},
+			{Addr, "http://evil.example", "application/json", "{}", 403},
+			{"evil.example", "http://"+Addr, "application/json", "{}", 403},
+			{Addr, "http://"+Addr, "text/plain", "{}", 403},
+			{Addr, "http://"+Addr, "application/json", "{", 400},
+			{Addr, "http://"+Addr, "application/json", `{"text":"`+strings.Repeat("x", maxWriteBody)+`"}`, 413},
+		} {
+			w := browserWrite(h, route.method, route.path, tc.host, tc.origin, tc.content, tc.body)
+			if w.Code != tc.code {
+				t.Fatalf("protection %s: %d %s", route.path, w.Code, w.Body.String())
+			}
+		}
+	}
+	for _, method := range []string{"POST", "PATCH"} {
+		path := "/api/tasks"
+		if method == "PATCH" {
+			path += "/" + id
+		}
+		for _, body := range []string{`{}`, `{"repo":"/missing","text":"hi"}`, `{"repo":`+strconv.Quote(repo)+`,"text":" ","issue":" "}`, `{"repo":`+strconv.Quote(repo)+`,"text":"hi","issue":"42"}`} {
+			write(method, path, body, 400)
+		}
+	}
+}
+
+func TestTaskActionsIndependent(t *testing.T) {
+	ro := readOnly(t, func(db *trace.DB, _ string) {
+		if _, err := db.Submit(trace.Request{Workflow: "plan", Repo: repo}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for i := range 3 {
+		actions := Actions{}
+		failure := errors.New("write failed")
+		method, path, body := "POST", "/api/tasks", `{"repo":`+strconv.Quote(repo)+`,"text":"request"}`
+		switch i {
+		case 0:
+			actions.CreateTask = func(string, string, string) (string, error) { return "", failure }
+		case 1:
+			method, path = "PATCH", "/api/tasks/id"
+			actions.EditTask = func(string, string, string, string) error { return failure }
+		case 2:
+			path, body = "/api/tasks/id/start", "{}"
+			actions.StartTask = func(string) (string, error) { return "", failure }
+		}
+		h := handler(ro, "test", actions, Sources{})
+		w := browserWrite(h, method, path, Addr, "http://"+Addr, "application/json", body)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), "write failed") {
+			t.Fatalf("failure: %d %s", w.Code, w.Body.String())
+		}
+		if i != 0 {
+			assertNoWriteRoute(t, h, "POST", "/api/tasks")
+		}
+		if i != 1 {
+			assertNoWriteRoute(t, h, "PATCH", "/api/tasks/id")
+		}
+		if i != 2 {
+			assertNoWriteRoute(t, h, "POST", "/api/tasks/id/start")
+		}
+	}
+}
+
 func TestTaskArchiveRoutes(t *testing.T) {
 	for _, status := range []string{"backlog", trace.StatusQueued, trace.StatusStarting, trace.StatusRunning, trace.StatusOK} {
 		t.Run(status, func(t *testing.T) {

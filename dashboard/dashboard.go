@@ -69,6 +69,9 @@ type Actions struct {
 	// Cancel asks a run to stop and returns its status.
 	Cancel func(runID string) (string, error)
 
+	CreateTask    func(repo, text, issue string) (string, error)
+	EditTask      func(taskID, repo, text, issue string) error
+	StartTask     func(taskID string) (string, error)
 	ArchiveTask   func(taskID string) error
 	UnarchiveTask func(taskID string) error
 
@@ -159,6 +162,24 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 	}
 	if actions.Cancel != nil {
 		mux.HandleFunc("POST /api/runs/{id}/cancel", cancelRun(actions.Cancel))
+	}
+	if actions.CreateTask != nil {
+		mux.HandleFunc("POST /api/tasks", writeTaskInput(db, actions, false))
+	}
+	if actions.EditTask != nil {
+		mux.HandleFunc("PATCH /api/tasks/{id}", writeTaskInput(db, actions, true))
+	}
+	if actions.StartTask != nil {
+		mux.HandleFunc("POST /api/tasks/{id}/start", func(w http.ResponseWriter, r *http.Request) {
+			if !browserJSON(w, r, &struct{}{}) {
+				return
+			}
+			id, err := actions.StartTask(r.PathValue("id"))
+			if taskWriteError(w, err) {
+				return
+			}
+			writeStatus(w, http.StatusCreated, map[string]string{"run_id": id})
+		})
 	}
 	if actions.ArchiveTask != nil {
 		mux.HandleFunc("POST /api/tasks/{id}/archive", changeTaskArchive(actions.ArchiveTask))
@@ -441,11 +462,7 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "scout takes a prompt, not an issue")
 			return
 		}
-		if _, err := db.Project(body.Repo); errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusBadRequest, "no recorded project at "+body.Repo)
-			return
-		} else if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		if !recordedProject(w, db, body.Repo) {
 			return
 		}
 		id, err := submit(body.Workflow, body.Repo, prompt, issue)
@@ -507,6 +524,67 @@ func appendIteration(w http.ResponseWriter, r *http.Request, text, emptyMsg stri
 		return
 	}
 	writeStatus(w, http.StatusCreated, map[string]any{"run_id": id, "iteration": n})
+}
+
+// recordedProject reports whether repo has recorded runs, writing 400 when it
+// has none and 500 when the lookup fails.
+func recordedProject(w http.ResponseWriter, db *trace.DB, repo string) bool {
+	if _, err := db.Project(repo); errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "no recorded project at "+repo)
+		return false
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	return true
+}
+
+func taskWriteError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	status := http.StatusBadRequest
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		status = http.StatusNotFound
+	case errors.Is(err, trace.ErrTaskConflict):
+		status = http.StatusConflict
+	}
+	writeError(w, status, err.Error())
+	return true
+}
+
+func writeTaskInput(db *trace.DB, actions Actions, edit bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Repo string `json:"repo"`
+			Text string `json:"text"`
+			Issue string `json:"issue"`
+		}
+		if !browserJSON(w, r, &body) {
+			return
+		}
+		body.Text, body.Issue = strings.TrimSpace(body.Text), strings.TrimSpace(body.Issue)
+		if (body.Text == "") == (body.Issue == "") {
+			writeError(w, http.StatusBadRequest, "enter text or an issue reference, not both")
+			return
+		}
+		if !recordedProject(w, db, body.Repo) {
+			return
+		}
+		id, status := r.PathValue("id"), http.StatusOK
+		var err error
+		if edit {
+			err = actions.EditTask(id, body.Repo, body.Text, body.Issue)
+		} else {
+			id, err = actions.CreateTask(body.Repo, body.Text, body.Issue)
+			status = http.StatusCreated
+		}
+		if taskWriteError(w, err) {
+			return
+		}
+		writeStatus(w, status, map[string]string{"id": id})
+	}
 }
 
 func changeTaskArchive(action func(string) error) http.HandlerFunc {

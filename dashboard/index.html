@@ -1307,15 +1307,70 @@ const taskQuery = (repo, archived) => {
 };
 const tasksHref = (repo, archived = view.page === 'tasks' && view.archived) => '#/tasks' + taskQuery(repo, archived);
 const taskWrites = new Set();
-async function changeTaskArchive(id, archived, button) {
+let taskCards = new Map(), taskEditID = '', taskFormBusy = false, taskFormProjects = false;
+const taskFormFields = ['task-repo', 'task-kind', 'task-input', 'task-save'];
+function editBoardTask(id) {
+  const t = taskCards.get(id);
+  if (!t || view.archived || t.lane !== 'Backlog' || taskWrites.has(id) || taskFormBusy) return;
+  taskEditID = id;
+  $('task-form-title').textContent = 'Edit task';
+  $('task-repo').value = t.repo;
+  $('task-kind').value = t.issue ? 'issue' : 'text';
+  $('task-input').value = t.issue?.ref || t.text;
+  $('task-input').focus();
+}
+function resetTaskForm(force = false) {
+  if (taskFormBusy && !force) return;
+  taskEditID = '';
+  $('task-form-title').textContent = 'New task';
+  $('task-input').value = '';
+}
+async function saveBoardTask(event) {
+  event.preventDefault();
+  const id = taskEditID, key = id || 'new', current = generation;
+  if (taskFormBusy || taskWrites.has(key)) return;
+  const repo = $('task-repo').value, value = $('task-input').value.trim();
+  if (!repo || !value) {
+    $('task-error').textContent = 'Select a project and enter text or an issue reference.';
+    return;
+  }
+  taskWrites.add(key);
+  taskFormBusy = true;
+  for (const field of taskFormFields) $(field).disabled = true;
+  try {
+    const payload = {repo, [$('task-kind').value]: value};
+    const {ok, error} = await send('/api/tasks' + (id ? '/' + encodeURIComponent(id) : ''), payload, id ? 'PATCH' : 'POST');
+    if (current !== generation) return;
+    if (!ok) throw Error(error);
+    resetTaskForm(true);
+    $('task-error').textContent = '';
+    await loadTasks(current);
+  } catch (e) {
+    if (current === generation) $('task-error').textContent = e.message;
+  } finally {
+    taskWrites.delete(key);
+    if (current === generation) {
+      taskFormBusy = false;
+      for (const field of taskFormFields) $(field).disabled = false;
+    }
+  }
+}
+function startBoardTask(id, button) {
+  return taskWrite(id, '/start', button, body => $('task-result').innerHTML = 'Started: ' + runLink(body.run_id));
+}
+function changeTaskArchive(id, archived, button) {
+  return taskWrite(id, archived ? '/unarchive' : '/archive', button);
+}
+async function taskWrite(id, suffix, button, done) {
   if (taskWrites.has(id)) return;
   taskWrites.add(id);
   button.disabled = true;
   const current = generation;
   try {
-    const {ok, error} = await send('/api/tasks/' + encodeURIComponent(id) + (archived ? '/unarchive' : '/archive'), {});
+    const {ok, body, error} = await send('/api/tasks/' + encodeURIComponent(id) + suffix, {});
     if (current !== generation) return;
     if (!ok) throw Error(error);
+    done?.(body);
     await loadTasks(current);
   } catch (e) {
     if (current === generation) $('task-error').textContent = e.message;
@@ -1326,10 +1381,19 @@ async function changeTaskArchive(id, archived, button) {
 }
 const taskLanes = ['Backlog', 'In progress', 'Blocked', 'Ready for review', 'Done'];
 function tasksShell() {
+  taskFormProjects = false;
+  taskFormBusy = false;
+  taskEditID = '';
+  taskCards = new Map();
   return `<div class="page"><div class="card page-summary"><h1>Tasks</h1><label for="task-project">Project</label>
     <select id="task-project" onchange="location.hash=tasksHref(this.value)"><option value="">All projects</option></select>
     <label><input id="task-archived" type="checkbox" onchange="location.hash=tasksHref(view.repo,this.checked)"> Show archived</label>
-    <p id="task-error" role="alert"></p></div>
+    <form id="task-form" onsubmit="saveBoardTask(event)"><h2 id="task-form-title">New task</h2>
+      <label for="task-repo">Project</label><select id="task-repo" required><option value="">Select project</option></select>
+      <label for="task-kind">Request type</label><select id="task-kind"><option value="text">Text</option><option value="issue">Issue reference</option></select>
+      <label for="task-input">Text or issue reference</label><textarea id="task-input" required></textarea>
+      <button id="task-save" type="submit">Save task</button><button type="button" onclick="resetTaskForm()">Cancel edit</button>
+    </form><p id="task-result"></p><p id="task-error" role="alert"></p></div>
     <div id="task-board" class="task-board" tabindex="0" aria-label="Task lanes"></div></div>`;
 }
 function taskCard(t) {
@@ -1338,6 +1402,8 @@ function taskCard(t) {
     <p>${safeHref(issue?.url) ? `<a href="${esc(issue.url)}">Issue</a> · ` : ''}${safeHref(r?.pr_url) ? `<a href="${esc(r.pr_url)}">PR</a> · ` : ''}<span class="dim">${esc(ago(Date.parse(t.activity_at)))}</span></p>
     ${r ? `<p>Current run: ${runLink(r.run_id)}</p>` : ''}
     ${t.runs.length ? `<details><summary>Earlier runs (${t.runs.length})</summary>${t.runs.map(runLink).join('<br>')}</details>` : ''}
+    ${!view.archived && t.lane === 'Backlog' ? `<button data-task-id="${esc(t.id)}" onclick="editBoardTask(this.dataset.taskId)" ${taskWrites.has(t.id) ? 'disabled' : ''}>Edit</button>
+    <button data-task-id="${esc(t.id)}" onclick="startBoardTask(this.dataset.taskId,this)" ${taskWrites.has(t.id) ? 'disabled' : ''}>Start</button>` : ''}
     <button data-task-id="${esc(t.id)}" onclick="changeTaskArchive(this.dataset.taskId,${!!view.archived},this)" ${taskWrites.has(t.id) ? 'disabled' : ''}>${view.archived ? 'Unarchive' : 'Archive'}</button></article>`;
 }
 async function loadTasks(current) {
@@ -1350,6 +1416,12 @@ async function loadTasks(current) {
     projectsLoad, get('/api/tasks' + taskQuery(repo, archived)),
   ]);
   if (current !== generation) return;
+  taskCards = new Map(tasks.map(t => [t.id, t]));
+  if (!taskFormProjects) {
+    swap($('task-repo'), '<option value="">Select project</option>' + projects.map(p => `<option value="${esc(p.repo)}">${esc(p.repo)}</option>`).join(''));
+    $('task-repo').value = projects.some(p => p.repo === repo) ? repo : '';
+    taskFormProjects = true;
+  }
   const repos = [...new Set([...projects.map(p => p.repo), ...tasks.map(t => t.repo), ...(repo ? [repo] : [])])];
   swap($('task-project'), '<option value="">All projects</option>' + repos.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join(''));
   $('task-project').value = repo;

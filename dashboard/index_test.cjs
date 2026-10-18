@@ -1559,6 +1559,107 @@ let area = 'run page';
   assert.equal((nodes.get('task-board').innerHTML.match(/No tasks/g)||[]).length, 5);
   assert.equal(evaluate('done'), false, 'empty board keeps polling');
 
+  area = 'task form and card actions';
+  const formWrites = [];
+  const issueBacklog = {id:'t3', repo:taskRepo, text:'GitHub issue 42', lane:'Backlog', activity_at:new Date().toISOString(),
+    issue:{ref:'42', title:'issue'}, current_run:null, runs:[]};
+  taskRows.push(issueBacklog);
+  context.fetch = async (url, opts) => {
+    if (opts?.method) {
+      formWrites.push({url, opts});
+      return {ok:true, text:async () => JSON.stringify({id:'created', run_id:'started<run>'})};
+    }
+    if (url === '/api/projects') return json([{repo:taskRepo}]);
+    return json(taskRows);
+  };
+  await visit('#/tasks');
+  assert(nodes.get('task-repo').innerHTML.includes('&amp;&quot;&#39;'), 'project options escaped');
+  assert(!nodes.get('task-repo').innerHTML.includes('value="/backlog-only"'), 'only recorded projects in form');
+  board = nodes.get('task-board').innerHTML;
+  assert.equal((board.match(/>Start<\/button>/g)||[]).length, 2, 'only Backlog cards start');
+  assert.equal((board.match(/>Edit<\/button>/g)||[]).length, 2, 'only Backlog cards edit');
+  const formEvent = {preventDefault() {}};
+  nodes.get('task-input').value = '  ';
+  nodes.get('task-repo').value = '';
+  await call('saveBoardTask', formEvent);
+  assert.equal(formWrites.length, 0, 'empty form does not write');
+  nodes.get('task-repo').value = taskRepo;
+  nodes.get('task-kind').value = 'text';
+  nodes.get('task-input').value = '  draft <text>  ';
+  const inputNode = nodes.get('task-input');
+  inputNode.focus();
+  await evaluate('tick()'); await settle();
+  assert.equal(nodes.get('task-input'), inputNode, 'poll preserves form node and focus');
+  assert.equal(inputNode.value, '  draft <text>  ', 'poll preserves draft');
+  await call('saveBoardTask', formEvent);
+  const formWrite = formWrites.at(-1);
+  assert.equal(formWrite.url, '/api/tasks');
+  assert.equal(formWrite.opts.method, 'POST');
+  assert.deepEqual(JSON.parse(formWrite.opts.body), {repo:taskRepo, text:'draft <text>'});
+  assert.equal(nodes.get('task-input').value, '');
+  nodes.get('task-kind').value = 'issue';
+  nodes.get('task-input').value = ' o/r#42 ';
+  await call('saveBoardTask', formEvent);
+  assert.deepEqual(JSON.parse(formWrites.at(-1).opts.body), {repo:taskRepo, issue:'o/r#42'});
+  call('editBoardTask', 't3');
+  assert.equal(nodes.get('task-repo').value, taskRepo);
+  assert.equal(nodes.get('task-kind').value, 'issue');
+  assert.equal(nodes.get('task-input').value, '42', 'issue edit prefills reference');
+  nodes.get('task-input').value = '43';
+  await call('saveBoardTask', formEvent);
+  assert.equal(formWrites.at(-1).url, '/api/tasks/t3');
+  assert.equal(formWrites.at(-1).opts.method, 'PATCH');
+  assert.deepEqual(JSON.parse(formWrites.at(-1).opts.body), {repo:taskRepo, issue:'43'});
+  call('editBoardTask', 't2');
+  assert.equal(nodes.get('task-kind').value, 'text');
+  assert.equal(nodes.get('task-input').value, taskRows[1].text);
+  call('resetTaskForm');
+  await call('startBoardTask', 't3', {disabled:false});
+  assert.equal(formWrites.at(-1).url, '/api/tasks/t3/start');
+  assert.equal(formWrites.at(-1).opts.body, '{}');
+  assert(nodes.get('task-result').innerHTML.includes('started&lt;run>'), 'start result escaped');
+  context.fetch = async () => ({ok:false, text:async () => '<task failed>'});
+  nodes.get('task-input').value = 'retained';
+  nodes.get('task-kind').value = 'text';
+  nodes.get('task-repo').value = taskRepo;
+  await call('saveBoardTask', formEvent);
+  assert.equal(nodes.get('task-error').textContent, '<task failed>', 'error rendered as text');
+  assert.equal(nodes.get('task-input').value, 'retained', 'failed save retains draft');
+  let releaseTaskWrite, pendingTaskWrites = 0;
+  context.fetch = async (url, opts) => {
+    if (opts?.method) {
+      pendingTaskWrites++;
+      return await new Promise(resolve => { releaseTaskWrite = resolve; });
+    }
+    return json(taskRows);
+  };
+  const pendingSave = call('saveBoardTask', formEvent);
+  await settle();
+  await call('saveBoardTask', formEvent);
+  assert.equal(pendingTaskWrites, 1, 'duplicate save suppressed');
+  await visit('#/nope');
+  let destination = appHTML;
+  releaseTaskWrite({ok:true, text:async () => '{"id":"created"}'});
+  await pendingSave; await settle();
+  assert.equal(appHTML, destination, 'late save cannot redraw destination');
+  context.fetch = async url => json(url === '/api/projects' ? [{repo:taskRepo}] : taskRows);
+  await visit('#/tasks');
+  context.fetch = async () => {
+    pendingTaskWrites++;
+    return await new Promise(resolve => { releaseTaskWrite = resolve; });
+  };
+  const beforeStarts = pendingTaskWrites;
+  const pendingStart = call('startBoardTask', 't3', {disabled:false});
+  await settle();
+  await call('startBoardTask', 't3', {disabled:false});
+  assert.equal(pendingTaskWrites, beforeStarts+1, 'duplicate start suppressed');
+  await visit('#/nope');
+  destination = appHTML;
+  releaseTaskWrite({ok:true, text:async () => '{"run_id":"late"}'});
+  await pendingStart; await settle();
+  assert.equal(appHTML, destination, 'late start cannot redraw destination');
+  taskRows.pop();
+
   const archiveRequests = [];
   let archiveRows = taskRows;
   context.fetch = async (url, opts) => {
@@ -1570,6 +1671,8 @@ let area = 'run page';
   await visit(call('tasksHref', taskRepo, true));
   assert.equal(nodes.get('task-archived').checked, true);
   assert(nodes.get('task-board').innerHTML.includes('>Unarchive</button>'));
+  assert(!nodes.get('task-board').innerHTML.includes('>Start</button>'), 'archived cards cannot start');
+  assert(!nodes.get('task-board').innerHTML.includes('>Edit</button>'), 'archived cards cannot edit');
   assert(archiveRequests.some(r => r.url === taskURL + '&archived=1'));
   assert.equal(call('tasksHref', '/other'), '#/tasks?repo=%2Fother&archived=1', 'project selection retains archived mode');
   await evaluate('tick()'); await settle();

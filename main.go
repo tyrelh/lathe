@@ -350,6 +350,15 @@ func reviseCmd(args []string) int {
 // overrides, refusing if repo no longer resolves to the checkout it names. It
 // returns the run ID.
 func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
+	_, db, err := openWriter()
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	return prepareTaskAndSubmit(db, name, repo, prompt, issue, "")
+}
+
+func prepareTaskAndSubmit(db *trace.DB, name, repo, prompt, issue, taskID string) (string, error) {
 	request, issueRef := prompt, ""
 	if issue != "" {
 		var err error
@@ -364,12 +373,91 @@ func prepareAndSubmit(name, repo, prompt, issue string) (string, error) {
 	if req.Repo != repo {
 		return "", fmt.Errorf("%s now resolves to %s", repo, req.Repo)
 	}
+	if taskID != "" {
+		req.Request.TaskID = taskID
+		return db.StartTask(req.Request)
+	}
+	return db.Submit(req.Request)
+}
+
+// dashboardCreateTask records a standalone task through a writer handle.
+func dashboardCreateTask(repo, text, issue string) (string, error) {
 	_, db, err := openWriter()
 	if err != nil {
 		return "", err
 	}
 	defer db.Close()
-	return db.Submit(req.Request)
+	in, err := dashboardTaskInput(repo, text, issue, nil)
+	if err != nil {
+		return "", err
+	}
+	return db.CreateTask(in)
+}
+
+func dashboardEditTask(id, repo, text, issue string) error {
+	_, db, err := openWriter()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	task, err := db.BacklogTask(id)
+	if err != nil {
+		return err
+	}
+	in, err := dashboardTaskInput(repo, text, issue, &task)
+	if err != nil {
+		return err
+	}
+	return db.EditTask(id, in)
+}
+
+func dashboardTaskInput(repo, text, issue string, previous *trace.Task) (trace.TaskInput, error) {
+	in := trace.TaskInput{Repo: repo, Text: text}
+	if issue == "" {
+		return in, nil
+	}
+	var err error
+	in.Text, in.IssueRef, err = issueRequest(issue)
+	if err != nil {
+		return in, err
+	}
+	if previous != nil && previous.Repo == repo && previous.IssueRef != nil && *previous.IssueRef == in.IssueRef {
+		if previous.IssueURL != nil {
+			in.IssueURL = *previous.IssueURL
+		}
+		if previous.IssueTitle != nil {
+			in.IssueTitle = *previous.IssueTitle
+		}
+		if previous.IssueBody != nil {
+			in.IssueBody = *previous.IssueBody
+		}
+		return in, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	snapshot, err := workspace.FetchIssue(ctx, repo, in.IssueRef)
+	if err != nil {
+		return in, err
+	}
+	in.IssueURL, in.IssueTitle, in.IssueBody = snapshot.URL, snapshot.Title, snapshot.Body
+	return in, nil
+}
+
+func dashboardStartTask(id string) (string, error) {
+	_, db, err := openWriter()
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	task, err := db.BacklogTask(id)
+	if err != nil {
+		return "", err
+	}
+	issue, prompt := "", task.Text
+	if task.IssueRef != nil {
+		issue, prompt = *task.IssueRef, ""
+	}
+	return prepareTaskAndSubmit(db, workflow.NameBuild, task.Repo, prompt, issue, id)
 }
 
 // issueRequest is the request recorded for a run of issue raw, and its
@@ -599,6 +687,7 @@ func managerCmd() int {
 	actions := dashboard.Actions{
 		Submit: prepareAndSubmit, Revise: dashboardRevise, Resume: dashboardResume, Cancel: dashboardCancel,
 		ArchiveTask: dashboardArchiveTask, UnarchiveTask: dashboardUnarchiveTask,
+		CreateTask: dashboardCreateTask, EditTask: dashboardEditTask, StartTask: dashboardStartTask,
 		SavePrompt: func(key, body, baseHash string) error {
 			home, err := agentconfig.Home()
 			if err != nil {

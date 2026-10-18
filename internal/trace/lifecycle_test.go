@@ -1,10 +1,147 @@
 package trace
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
 )
+
+func TestStartBacklogTask(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	other, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	id, err := db.CreateTask(TaskInput{Repo: "/repo", Text: "change", IssueRef: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Workflow: "build", TaskID: id, Repo: "/repo", Request: "change", Spec: issueSpec("42")}
+	for _, change := range []func(*Request){
+		func(r *Request) { r.Repo = "/other" },
+		func(r *Request) { r.Request = "stale" },
+		func(r *Request) { r.Spec = issueSpec("43") },
+		func(r *Request) { r.Spec = nil },
+		func(r *Request) { r.Workflow = "plan" },
+	} {
+		stale := req
+		change(&stale)
+		if _, err := db.StartTask(stale); !errors.Is(err, ErrTaskConflict) {
+			t.Fatalf("stale %+v: %v", stale, err)
+		}
+	}
+	missing := req
+	missing.TaskID = "missing"
+	if _, err := db.StartTask(missing); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, err := db.sql.Exec(`CREATE TRIGGER refuse_start BEFORE INSERT ON iterations BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.StartTask(req); err == nil {
+		t.Fatal("start succeeded despite trigger")
+	}
+	runs, _ := db.TaskRuns(id)
+	if len(runs) != 0 {
+		t.Fatal("failed start left a run")
+	}
+	if _, err := db.sql.Exec(`DROP TRIGGER refuse_start`); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for _, writer := range []*DB{db, other} {
+		go func() {
+			_, err := writer.StartTask(req)
+			results <- err
+		}()
+	}
+	wins, conflicts := 0, 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			wins++
+		} else if errors.Is(err, ErrTaskConflict) {
+			conflicts++
+		} else {
+			t.Fatalf("concurrent start: %v", err)
+		}
+	}
+	if wins != 1 || conflicts != 1 {
+		t.Fatalf("wins = %d, conflicts = %d", wins, conflicts)
+	}
+	runs, _ = db.TaskRuns(id)
+	if len(runs) != 1 || runs[0].Workflow != "build" || runs[0].Status != StatusQueued {
+		t.Fatalf("runs = %+v", runs)
+	}
+	setStatus(t, db, runs[0].ID, StatusOK)
+	if _, err := db.StartTask(req); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("terminal start: %v", err)
+	}
+	if _, err := db.Submit(req); err != nil {
+		t.Fatalf("ordinary subsequent submission: %v", err)
+	}
+	archived, _ := db.CreateTask(TaskInput{Repo: "/repo", Text: "change", IssueRef: "42"})
+	if err := db.ArchiveTask(archived); err != nil {
+		t.Fatal(err)
+	}
+	req.TaskID = archived
+	if _, err := db.StartTask(req); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("archived start: %v", err)
+	}
+}
+
+func TestTaskEditRacesStart(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	other, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	id, err := db.CreateTask(TaskInput{Repo: "/repo", Text: "before"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	go func() {
+		results <- other.EditTask(id, TaskInput{Repo: "/repo", Text: "after"})
+	}()
+	go func() {
+		_, err := db.StartTask(Request{Workflow: "build", TaskID: id, Repo: "/repo", Request: "before"})
+		results <- err
+	}()
+	wins, conflicts := 0, 0
+	for range 2 {
+		err := <-results
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, ErrTaskConflict):
+			conflicts++
+		default:
+			t.Fatal(err)
+		}
+	}
+	if wins != 1 || conflicts != 1 {
+		t.Fatalf("wins = %d, conflicts = %d", wins, conflicts)
+	}
+	task, _ := db.GetTask(id)
+	runs, _ := db.TaskRuns(id)
+	if len(runs) == 1 && task.Text != "before" || len(runs) == 0 && task.Text != "after" {
+		t.Fatalf("task and run disagree: %+v, %+v", task, runs)
+	}
+}
 
 func TestSubmitTasks(t *testing.T) {
 	db := open(t)
