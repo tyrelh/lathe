@@ -89,15 +89,7 @@ func TestScopeRequestReplansAndKeepsPartialWork(t *testing.T) {
 	if v.Outcome != outcomeAccepted || len(v.Rounds) != 1 || v.Rounds[0].Round != 0 || v.ScopeRequests != 1 {
 		t.Fatalf("validation: %+v", v)
 	}
-	var implement []string
-	for _, ph := range runPhases(t) {
-		if ph.Name == "implement" {
-			implement = append(implement, ph.Status)
-		}
-	}
-	if strings.Join(implement, ",") != "requested_changes,success" {
-		t.Fatalf("implement phases: %v", implement)
-	}
+	assertPhaseStatuses(t, "implement", "requested_changes,success")
 }
 
 // A build that replans creates its branch once and ships the finished work.
@@ -148,16 +140,21 @@ func TestReplanReversalsPreserveAbandonedWork(t *testing.T) {
 	}
 }
 
-func assertImplementStatuses(t *testing.T, want string) {
+func phaseStatuses(t *testing.T, name string) []string {
 	t.Helper()
 	var statuses []string
 	for _, ph := range runPhases(t) {
-		if ph.Name == "implement" {
+		if ph.Name == name {
 			statuses = append(statuses, ph.Status)
 		}
 	}
-	if strings.Join(statuses, ",") != want {
-		t.Fatalf("implement phases = %v, want %s", statuses, want)
+	return statuses
+}
+
+func assertPhaseStatuses(t *testing.T, name, want string) {
+	t.Helper()
+	if got := strings.Join(phaseStatuses(t, name), ","); got != want {
+		t.Fatalf("%s phases = %s, want %s", name, got, want)
 	}
 }
 
@@ -176,7 +173,7 @@ func TestScopeRequestDuringRepair(t *testing.T) {
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
-	assertImplementStatuses(t, "success,requested_changes,success")
+	assertPhaseStatuses(t, "implement", "success,requested_changes,success")
 	if brief := stubFile(t, stub, "args.planner.1"); !strings.Contains(brief, "GREETING-TOO-LOUD") || !strings.Contains(brief, "during repair") {
 		t.Fatalf("planner not given the outstanding findings: %s", brief)
 	}
@@ -230,7 +227,7 @@ func TestMalformedScopeRequestIsTerminal(t *testing.T) {
 			if p, b := spawnsOf(t, stub, "planner"), spawnsOf(t, stub, "builder"); p != 1 || b != 1 {
 				t.Fatalf("planner %d, builder %d; want no replanning", p, b)
 			}
-			assertImplementStatuses(t, "fail")
+			assertPhaseStatuses(t, "implement", "fail")
 			if req := readScope(t, "1"); req.Outcome != scopeRejected || len(req.Problems) != 1 {
 				t.Fatalf("scope request: %+v", req)
 			}
@@ -251,7 +248,7 @@ func TestThirdScopeRequestFails(t *testing.T) {
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d", code)
 	}
-	assertImplementStatuses(t, "requested_changes,requested_changes,fail")
+	assertPhaseStatuses(t, "implement", "requested_changes,requested_changes,fail")
 	for n, want := range map[string]string{"1": scopeReplanned, "2": scopeReplanned, "3": scopeExhausted} {
 		if req := readScope(t, n); req.Outcome != want {
 			t.Fatalf("scope-%s outcome %s, want %s", n, req.Outcome, want)

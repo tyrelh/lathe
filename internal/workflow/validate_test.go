@@ -387,9 +387,6 @@ func TestValidationRunsWorkersInParallel(t *testing.T) {
 	}
 }
 
-// A revise sends the builder one set of changes, every worker reruns against
-// the repair with the previous decision in front of it, and a scope addition
-// reaches the builder once the gate has refused the protected one.
 func TestInvalidChangeRequestsRemainFailed(t *testing.T) {
 	for _, worker := range []string{"reviewers", "adjudicator"} {
 		t.Run(worker, func(t *testing.T) {
@@ -463,6 +460,9 @@ func TestReviewerRequestedChanges(t *testing.T) {
 	}
 }
 
+// A revise sends the builder one set of changes, every worker reruns against
+// the repair with the previous decision in front of it, and a scope addition
+// reaches the builder once the gate has refused the protected one.
 func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 	t.Parallel()
 	cfg, repo := buildRepo(t)
@@ -478,15 +478,7 @@ func TestAdjudicatorSendsBackAndEveryWorkerReruns(t *testing.T) {
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
-	var adjudications []string
-	for _, ph := range runPhases(t) {
-		if ph.Name == "adjudicate" {
-			adjudications = append(adjudications, ph.Status)
-		}
-	}
-	if strings.Join(adjudications, ",") != "requested_changes,success" {
-		t.Fatalf("adjudications = %v", adjudications)
-	}
+	assertPhaseStatuses(t, "adjudicate", "requested_changes,success")
 	if got := stubFile(t, stub, "args.adjudicator.1"); !strings.Contains(got, `".env" is protected`) {
 		t.Fatalf("protected scope addition was not refused: %s", got)
 	}

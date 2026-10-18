@@ -280,12 +280,7 @@ func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
 			if got := stubFile(t, stub, "args.planner.1"); !strings.Contains(got, "Blocking objections") || !strings.Contains(got, blocker) {
 				t.Fatalf("planner was not told what blocks it: %s", got)
 			}
-			var statuses []string
-			for _, ph := range runPhases(t) {
-				if ph.Name == "review" {
-					statuses = append(statuses, ph.Status)
-				}
-			}
+			statuses := phaseStatuses(t, "review")
 			for i, status := range statuses {
 				want := trace.PhaseRequestedChanges
 				if i == len(statuses)-1 {
