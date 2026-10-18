@@ -138,6 +138,14 @@ func TestPlanReviewLoop(t *testing.T) {
 				}
 				if ph.Status == "fail" {
 					failed++
+					continue
+				}
+				status := trace.PhaseSuccess
+				if ph.Name == "review" && i < 2*(tc.reviews-1) {
+					status = trace.PhaseRequestedChanges
+				}
+				if ph.Status != status || ph.Error != "" {
+					t.Fatalf("phase = %+v, want %s", ph, status)
 				}
 			}
 			if failed != tc.failed {
@@ -271,6 +279,24 @@ func TestBlockingReviewNeverReachesTheBuilder(t *testing.T) {
 			}
 			if got := stubFile(t, stub, "args.planner.1"); !strings.Contains(got, "Blocking objections") || !strings.Contains(got, blocker) {
 				t.Fatalf("planner was not told what blocks it: %s", got)
+			}
+			var statuses []string
+			for _, ph := range runPhases(t) {
+				if ph.Name == "review" {
+					statuses = append(statuses, ph.Status)
+				}
+			}
+			for i, status := range statuses {
+				want := trace.PhaseRequestedChanges
+				if i == len(statuses)-1 {
+					want = trace.PhaseFail
+					if tc.clears {
+						want = trace.PhaseSuccess
+					}
+				}
+				if status != want {
+					t.Fatalf("review statuses = %v", statuses)
+				}
 			}
 			builds := spawnsOf(t, stub, "builder")
 			if tc.clears {

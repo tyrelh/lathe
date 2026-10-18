@@ -39,6 +39,23 @@ func TestDatabasePathsWithURICharactersAreIsolated(t *testing.T) {
 	}
 }
 
+func TestRequestedChangesPhasePersists(t *testing.T) {
+	db := open(t)
+	id := submit(t, db, "build", "/repo")
+	p := NewPhase(id, 1, "review", "plan-reviewer")
+	p.Finish(PhaseRequestedChanges, "")
+	if err := db.PhaseUpsert(p); err != nil {
+		t.Fatal(err)
+	}
+	phases, err := db.Phases(id)
+	if err != nil || len(phases) != 1 {
+		t.Fatalf("phases = %+v, %v", phases, err)
+	}
+	if got := phases[0]; got.Status != PhaseRequestedChanges || got.Error != "" || got.End == "" {
+		t.Fatalf("phase = %+v", got)
+	}
+}
+
 func TestRunReadersPreserveNullableTaskID(t *testing.T) {
 	db := open(t)
 	build := submit(t, db, "build", "/repo")

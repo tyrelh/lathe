@@ -734,8 +734,66 @@ func TestFilesNonEmpty(t *testing.T) {
 	}
 }
 
-// A panic inside a phase still closes its trace honestly, which is the whole
-// point of the closure form.
+func TestPhaseRequestedChanges(t *testing.T) {
+	for _, mode := range []string{"success", "request", "error", "panic", "absorbed"} {
+		t.Run(mode, func(t *testing.T) {
+			r := newRun(t, "")
+			err := r.Phase(Params{Name: "review", Owner: "scout"}, func(h *Handle) error {
+				if mode != "success" {
+					h.RequestChanges()
+				}
+				switch mode {
+				case "error":
+					return errors.New("broken")
+				case "panic":
+					panic("broken")
+				case "absorbed":
+					h.failed = errors.New("broken")
+				}
+				return nil
+			})
+			want := trace.PhaseFail
+			if mode == "success" {
+				want = trace.PhaseSuccess
+			} else if mode == "request" {
+				want = trace.PhaseRequestedChanges
+			}
+			if (err != nil) != (mode == "error" || mode == "panic") {
+				t.Fatalf("error = %v", err)
+			}
+			phases, err := r.db.Phases(r.ID)
+			if err != nil || len(phases) != 1 {
+				t.Fatalf("phases = %+v, %v", phases, err)
+			}
+			ph := phases[0]
+			if ph.Status != want || ph.End == "" || (ph.Error != "") != (want == trace.PhaseFail) {
+				t.Fatalf("phase = %+v, want %s", ph, want)
+			}
+			events, err := r.db.Events(r.ID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ends := 0
+			for _, event := range events {
+				if event.Type == "phase_end" {
+					ends++
+					var payload map[string]string
+					if err := json.Unmarshal(event.Payload, &payload); err != nil || payload["status"] != want {
+						t.Fatalf("phase_end = %s, %v", event.Payload, err)
+					}
+				}
+			}
+			if ends != 1 {
+				t.Fatalf("phase_end count = %d", ends)
+			}
+			if code := r.Finish(true, ""); (code != 0) != (mode == "error" || mode == "panic") {
+				t.Fatalf("finish = %d", code)
+			}
+		})
+	}
+}
+
+// A panic inside a phase still closes its trace honestly.
 func TestPhaseSurvivesAPanic(t *testing.T) {
 	r := newRun(t, "")
 	err := r.Phase(Params{Name: "scout", Owner: "scout"},

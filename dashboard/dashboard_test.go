@@ -705,6 +705,11 @@ func TestRoutes(t *testing.T) {
 	var runID string
 	ro := readOnly(t, func(db *trace.DB, _ string) {
 		runID, _, _ = claimed(t, db, "scout", repo, "where is the parser")
+		completed := trace.NewPhase(runID, 0, "review", "plan-reviewer")
+		completed.Finish(trace.PhaseRequestedChanges, "")
+		if err := db.PhaseUpsert(completed); err != nil {
+			t.Fatal(err)
+		}
 		p := trace.NewPhase(runID, 1, "scout", "scout")
 		if err := db.PhaseUpsert(p); err != nil {
 			t.Fatal(err)
@@ -752,11 +757,14 @@ func TestRoutes(t *testing.T) {
 	if err := json.Unmarshal([]byte(get("/api/runs/"+runID)), &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.Run.Status != "running" || len(d.Phases) != 1 || len(d.Events) != 2 {
+	if d.Run.Status != "running" || len(d.Phases) != 2 || len(d.Events) != 2 {
 		t.Fatalf("run %+v, %d phases, %d events", d.Run, len(d.Phases), len(d.Events))
 	}
-	if d.Phases[0].Status != "fail" {
-		t.Errorf("an unfinished phase should read 'fail', got %q", d.Phases[0].Status)
+	if d.Phases[0].Status != trace.PhaseRequestedChanges || d.Phases[0].Error != "" || d.Phases[0].End == "" {
+		t.Errorf("requested changes phase = %+v", d.Phases[0])
+	}
+	if d.Phases[1].Status != "fail" {
+		t.Errorf("an unfinished phase should read 'fail', got %q", d.Phases[1].Status)
 	}
 
 	// The cursor is the dashboard's whole state: past the last event seen,

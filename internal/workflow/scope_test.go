@@ -95,7 +95,7 @@ func TestScopeRequestReplansAndKeepsPartialWork(t *testing.T) {
 			implement = append(implement, ph.Status)
 		}
 	}
-	if strings.Join(implement, ",") != "fail,success" {
+	if strings.Join(implement, ",") != "requested_changes,success" {
 		t.Fatalf("implement phases: %v", implement)
 	}
 }
@@ -148,9 +148,20 @@ func TestReplanReversalsPreserveAbandonedWork(t *testing.T) {
 	}
 }
 
-// A request during a repair carries the outstanding findings to the planner,
-// which may dismiss one with a reason; fresh validation follows, and rounds
-// count completed implementations.
+func assertImplementStatuses(t *testing.T, want string) {
+	t.Helper()
+	var statuses []string
+	for _, ph := range runPhases(t) {
+		if ph.Name == "implement" {
+			statuses = append(statuses, ph.Status)
+		}
+	}
+	if strings.Join(statuses, ",") != want {
+		t.Fatalf("implement phases = %v, want %s", statuses, want)
+	}
+}
+
+// A repair's scope request carries findings to planning and then revalidates.
 func TestScopeRequestDuringRepair(t *testing.T) {
 	t.Parallel()
 	cfg, repo := buildRepo(t)
@@ -165,6 +176,7 @@ func TestScopeRequestDuringRepair(t *testing.T) {
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
+	assertImplementStatuses(t, "success,requested_changes,success")
 	if brief := stubFile(t, stub, "args.planner.1"); !strings.Contains(brief, "GREETING-TOO-LOUD") || !strings.Contains(brief, "during repair") {
 		t.Fatalf("planner not given the outstanding findings: %s", brief)
 	}
@@ -218,6 +230,7 @@ func TestMalformedScopeRequestIsTerminal(t *testing.T) {
 			if p, b := spawnsOf(t, stub, "planner"), spawnsOf(t, stub, "builder"); p != 1 || b != 1 {
 				t.Fatalf("planner %d, builder %d; want no replanning", p, b)
 			}
+			assertImplementStatuses(t, "fail")
 			if req := readScope(t, "1"); req.Outcome != scopeRejected || len(req.Problems) != 1 {
 				t.Fatalf("scope request: %+v", req)
 			}
@@ -238,6 +251,7 @@ func TestThirdScopeRequestFails(t *testing.T) {
 	if code := execute(t, cfg, "implement", repo, "greet the world"); code != 1 {
 		t.Fatalf("code = %d", code)
 	}
+	assertImplementStatuses(t, "requested_changes,requested_changes,fail")
 	for n, want := range map[string]string{"1": scopeReplanned, "2": scopeReplanned, "3": scopeExhausted} {
 		if req := readScope(t, n); req.Outcome != want {
 			t.Fatalf("scope-%s outcome %s, want %s", n, req.Outcome, want)

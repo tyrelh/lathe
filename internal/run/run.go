@@ -338,6 +338,8 @@ func (r *Run) Phase(p Params, fn func(*Handle) error) (err error) {
 			status, msg = trace.PhaseFail, err.Error()
 		case h.failed != nil:
 			status, msg = trace.PhaseFail, h.failed.Error()
+		case h.requestedChanges:
+			status = trace.PhaseRequestedChanges
 		}
 		if msg != "" {
 			_ = r.event(ph.ID, "error", p.Name, msg)
@@ -553,16 +555,20 @@ func (l *LockedWriter) Write(p []byte) (int, error) {
 // Handle is what a phase body is given: the only way to write to the trace or
 // to call an agent, and both are already scoped to this phase.
 type Handle struct {
-	run    *Run
-	phase  *trace.Phase
-	allow  []string
-	params Params
-	failed error // recorded as a failed phase, but not returned to the caller
+	run              *Run
+	phase            *trace.Phase
+	allow            []string
+	params           Params
+	failed           error // recorded as a failed phase, but not returned to the caller
+	requestedChanges bool
 	// corrections is the correction allowance Call draws on. Nil is the usual
 	// maxCorrections per call; a group worker shares one allowance across its
 	// retries, so retries and corrections add rather than multiply.
 	corrections *int
 }
+
+// RequestChanges marks a completed phase as requesting changes unless it fails.
+func (h *Handle) RequestChanges() { h.requestedChanges = true }
 
 // SessionID is stable across correction turns and graph re-entries.
 func (h *Handle) SessionID() string {

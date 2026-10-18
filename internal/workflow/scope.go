@@ -151,7 +151,7 @@ func (c *code) blocked(e *run.Entry, r *run.Run, s *ScopeError) (string, error) 
 		return "", fmt.Errorf("scope: the builder asked for files the plan does not allow (%s) after %d scope send-backs were spent; nothing was published, and the partial work is kept%s%s",
 			strings.Join(req.Needed, ", "), maxScopeSendBacks, patchNote(r), resumeHint(r))
 	}
-	e.Failed(s)
+	e.RequestChanges()
 	c.scope.pending, c.scope.brief = req, true
 	return "plan", nil
 }

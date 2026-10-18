@@ -495,6 +495,22 @@ for (const status of ['success', 'ok']) {
   assert(g.includes('t · ' + status + '"'), status + ' keeps its accessible status');
   assert(g.includes('Status: ' + status), status + ' keeps its tooltip status');
 }
+for (const [name, owner] of [['review', 'plan-reviewer'],
+  ...['general', 'adversarial', 'security', 'slop'].map(role => ['code-review-' + role, 'code-review-' + role]),
+  ['adjudicate', 'adjudicator'], ['implement', 'builder']]) {
+  for (const status of ['requested_changes', 'success']) {
+    const p = ph(1, name, T(0), T(9), {status, owner});
+    const label = status === 'requested_changes' ? 'Requested changes' : 'success';
+    const g = call('gantt', settled, [p], 0);
+    assert(g.includes('class="block ok"'), g);
+    assert(!g.includes('class="block fail"'), g);
+    assert(g.includes(`aria-label="#1 ${name} · ${label}"`), g);
+    assert(g.includes('Status: ' + label), g);
+    assert(g.includes(`<span class="piece" aria-hidden="true">${status === 'requested_changes' ? '📝' : ''}</span>`), g);
+    const details = call('phaseCard', p, settled, 0);
+    assert(details.includes(`<span class="ok">${label}</span>`), details);
+  }
+}
 const card = call('phaseCard', open, cut, ms(900));
 assert(card.includes('interrupted') && card.includes('40s · bounded by the run’s end') && card.includes('Not recorded'), card);
 assert(call('gantt', settled, [ph(1,'test',T(0),T(9),{status:'fail'})], 0).includes('test · fail'), 'finished failures keep their status');
