@@ -462,11 +462,7 @@ func submitRun(db *trace.DB, submit Submit) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "scout takes a prompt, not an issue")
 			return
 		}
-		if _, err := db.Project(body.Repo); errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusBadRequest, "no recorded project at "+body.Repo)
-			return
-		} else if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		if !recordedProject(w, db, body.Repo) {
 			return
 		}
 		id, err := submit(body.Workflow, body.Repo, prompt, issue)
@@ -530,6 +526,19 @@ func appendIteration(w http.ResponseWriter, r *http.Request, text, emptyMsg stri
 	writeStatus(w, http.StatusCreated, map[string]any{"run_id": id, "iteration": n})
 }
 
+// recordedProject reports whether repo has recorded runs, writing 400 when it
+// has none and 500 when the lookup fails.
+func recordedProject(w http.ResponseWriter, db *trace.DB, repo string) bool {
+	if _, err := db.Project(repo); errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "no recorded project at "+repo)
+		return false
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	return true
+}
+
 func taskWriteError(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false
@@ -560,12 +569,7 @@ func writeTaskInput(db *trace.DB, actions Actions, edit bool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "enter text or an issue reference, not both")
 			return
 		}
-		if _, err := db.Project(body.Repo); err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, sql.ErrNoRows) {
-				status = http.StatusBadRequest
-			}
-			writeError(w, status, "no recorded project at "+body.Repo)
+		if !recordedProject(w, db, body.Repo) {
 			return
 		}
 		id, status := r.PathValue("id"), http.StatusOK

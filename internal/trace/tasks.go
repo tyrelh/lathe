@@ -214,12 +214,19 @@ func backlogTask(tx *sql.Tx, id string) (Task, error) {
 	if _, err := tx.Exec(`UPDATE tasks SET id = id WHERE id = ?`, id); err != nil {
 		return Task{}, err
 	}
-	task, err := getTask(tx, id)
+	return eligibleTask(tx, id)
+}
+
+// BacklogTask returns an unarchived task with no runs, or ErrTaskConflict.
+func (d *DB) BacklogTask(id string) (Task, error) { return eligibleTask(d.sql, id) }
+
+func eligibleTask(q queryer, id string) (Task, error) {
+	task, err := getTask(q, id)
 	if err != nil {
 		return Task{}, err
 	}
 	var runs int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM runs WHERE task_id = ?`, id).Scan(&runs); err != nil {
+	if err := q.QueryRow(`SELECT COUNT(*) FROM runs WHERE task_id = ?`, id).Scan(&runs); err != nil {
 		return Task{}, err
 	}
 	if task.ArchivedAt != nil || runs != 0 {

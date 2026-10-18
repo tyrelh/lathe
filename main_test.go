@@ -53,9 +53,6 @@ func TestDashboardTaskWrites(t *testing.T) {
 		data, _ := os.ReadFile(log)
 		return strings.Count(string(data), "fetch\n")
 	}
-	if _, err := dashboardCreateTask("/unrecorded", "text", ""); err == nil {
-		t.Fatal("accepted unrecorded repo")
-	}
 	id, err := dashboardCreateTask(repo, "", "o/r#42")
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +79,7 @@ func TestDashboardTaskWrites(t *testing.T) {
 	if fetches() != 3 {
 		t.Fatal("repository change did not fetch numeric reference")
 	}
-	if err := dashboardEditTask(id, other, "  plain text  ", ""); err != nil {
+	if err := dashboardEditTask(id, other, "plain text", ""); err != nil {
 		t.Fatal(err)
 	}
 	task, _ = db.GetTask(id)

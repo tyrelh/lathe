@@ -66,7 +66,13 @@ type Request struct {
 
 // Submit records a queued run and returns its ID.
 func (d *DB) Submit(r Request) (string, error) {
-	return d.submit(r, false)
+	return d.submit(r, func(tx *sql.Tx) (Task, error) {
+		task, err := getTask(tx, r.TaskID)
+		if err != nil {
+			return Task{}, fmt.Errorf("attach task: %w", err)
+		}
+		return task, nil
+	})
 }
 
 // StartTask atomically submits a prepared build for an unchanged Backlog task.
@@ -74,39 +80,37 @@ func (d *DB) StartTask(r Request) (string, error) {
 	if r.Workflow != "build" || r.TaskID == "" {
 		return "", ErrTaskConflict
 	}
-	return d.submit(r, true)
-}
-
-func (d *DB) submit(r Request, backlog bool) (string, error) {
-	tx, err := d.sql.Begin()
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
-	var task Task
-	if backlog {
-		task, err = backlogTask(tx, r.TaskID)
+	return d.submit(r, func(tx *sql.Tx) (Task, error) {
+		task, err := backlogTask(tx, r.TaskID)
 		if err != nil {
-			return "", err
+			return Task{}, err
 		}
 		issue := ""
 		if task.IssueRef != nil {
 			issue = *task.IssueRef
 		}
 		if task.Repo != r.Repo || task.Text != r.Request || issue != specIssue(r.Spec) {
-			return "", ErrTaskConflict
+			return Task{}, ErrTaskConflict
 		}
+		return task, nil
+	})
+}
+
+// submit records a queued run, loading an attached build task through load.
+func (d *DB) submit(r Request, load func(*sql.Tx) (Task, error)) (string, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return "", err
 	}
+	defer tx.Rollback()
+
 	id, at := NewRunID(r.Workflow), nowUTC()
 	var taskID any
 	if r.Workflow == "build" {
 		if r.TaskID != "" {
-			if !backlog {
-				task, err = getTask(tx, r.TaskID)
-				if err != nil {
-					return "", fmt.Errorf("attach task: %w", err)
-				}
+			task, err := load(tx)
+			if err != nil {
+				return "", err
 			}
 			if task.ArchivedAt != nil {
 				return "", fmt.Errorf("task %s is archived", r.TaskID)

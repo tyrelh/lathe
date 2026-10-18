@@ -387,7 +387,7 @@ func dashboardCreateTask(repo, text, issue string) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	in, err := dashboardTaskInput(db, repo, text, issue, nil)
+	in, err := dashboardTaskInput(repo, text, issue, nil)
 	if err != nil {
 		return "", err
 	}
@@ -400,33 +400,19 @@ func dashboardEditTask(id, repo, text, issue string) error {
 		return err
 	}
 	defer db.Close()
-	task, err := db.GetTask(id)
+	task, err := db.BacklogTask(id)
 	if err != nil {
 		return err
 	}
-	runs, err := db.TaskRuns(id)
-	if err != nil {
-		return err
-	}
-	if task.ArchivedAt != nil || len(runs) != 0 {
-		return trace.ErrTaskConflict
-	}
-	in, err := dashboardTaskInput(db, repo, text, issue, &task)
+	in, err := dashboardTaskInput(repo, text, issue, &task)
 	if err != nil {
 		return err
 	}
 	return db.EditTask(id, in)
 }
 
-func dashboardTaskInput(db *trace.DB, repo, text, issue string, previous *trace.Task) (trace.TaskInput, error) {
-	in := trace.TaskInput{Repo: repo, Text: strings.TrimSpace(text)}
-	issue = strings.TrimSpace(issue)
-	if (in.Text == "") == (issue == "") {
-		return in, fmt.Errorf("enter text or an issue reference, not both")
-	}
-	if _, err := db.Project(repo); err != nil {
-		return in, err
-	}
+func dashboardTaskInput(repo, text, issue string, previous *trace.Task) (trace.TaskInput, error) {
+	in := trace.TaskInput{Repo: repo, Text: text}
 	if issue == "" {
 		return in, nil
 	}
@@ -463,16 +449,9 @@ func dashboardStartTask(id string) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	task, err := db.GetTask(id)
+	task, err := db.BacklogTask(id)
 	if err != nil {
 		return "", err
-	}
-	runs, err := db.TaskRuns(id)
-	if err != nil {
-		return "", err
-	}
-	if task.ArchivedAt != nil || len(runs) != 0 {
-		return "", trace.ErrTaskConflict
 	}
 	issue, prompt := "", task.Text
 	if task.IssueRef != nil {

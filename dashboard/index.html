@@ -1308,6 +1308,7 @@ const taskQuery = (repo, archived) => {
 const tasksHref = (repo, archived = view.page === 'tasks' && view.archived) => '#/tasks' + taskQuery(repo, archived);
 const taskWrites = new Set();
 let taskCards = new Map(), taskEditID = '', taskFormBusy = false, taskFormProjects = false;
+const taskFormFields = ['task-repo', 'task-kind', 'task-input', 'task-save'];
 function editBoardTask(id) {
   const t = taskCards.get(id);
   if (!t || view.archived || t.lane !== 'Backlog' || taskWrites.has(id) || taskFormBusy) return;
@@ -1335,7 +1336,7 @@ async function saveBoardTask(event) {
   }
   taskWrites.add(key);
   taskFormBusy = true;
-  for (const field of ['task-repo', 'task-kind', 'task-input', 'task-save']) $(field).disabled = true;
+  for (const field of taskFormFields) $(field).disabled = true;
   try {
     const payload = {repo, [$('task-kind').value]: value};
     const {ok, error} = await send('/api/tasks' + (id ? '/' + encodeURIComponent(id) : ''), payload, id ? 'PATCH' : 'POST');
@@ -1350,37 +1351,26 @@ async function saveBoardTask(event) {
     taskWrites.delete(key);
     if (current === generation) {
       taskFormBusy = false;
-      for (const field of ['task-repo', 'task-kind', 'task-input', 'task-save']) $(field).disabled = false;
+      for (const field of taskFormFields) $(field).disabled = false;
     }
   }
 }
-async function startBoardTask(id, button) {
-  if (taskWrites.has(id)) return;
-  const current = generation;
-  taskWrites.add(id);
-  button.disabled = true;
-  try {
-    const {ok, body, error} = await send('/api/tasks/' + encodeURIComponent(id) + '/start', {});
-    if (current !== generation) return;
-    if (!ok) throw Error(error);
-    $('task-result').innerHTML = 'Started: ' + runLink(body.run_id);
-    await loadTasks(current);
-  } catch (e) {
-    if (current === generation) $('task-error').textContent = e.message;
-  } finally {
-    taskWrites.delete(id);
-    if (current === generation) button.disabled = false;
-  }
+function startBoardTask(id, button) {
+  return taskWrite(id, '/start', button, body => $('task-result').innerHTML = 'Started: ' + runLink(body.run_id));
 }
-async function changeTaskArchive(id, archived, button) {
+function changeTaskArchive(id, archived, button) {
+  return taskWrite(id, archived ? '/unarchive' : '/archive', button);
+}
+async function taskWrite(id, suffix, button, done) {
   if (taskWrites.has(id)) return;
   taskWrites.add(id);
   button.disabled = true;
   const current = generation;
   try {
-    const {ok, error} = await send('/api/tasks/' + encodeURIComponent(id) + (archived ? '/unarchive' : '/archive'), {});
+    const {ok, body, error} = await send('/api/tasks/' + encodeURIComponent(id) + suffix, {});
     if (current !== generation) return;
     if (!ok) throw Error(error);
+    done?.(body);
     await loadTasks(current);
   } catch (e) {
     if (current === generation) $('task-error').textContent = e.message;
