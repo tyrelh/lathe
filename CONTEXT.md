@@ -8,15 +8,15 @@ Lathe runs bounded agent workflows against a repository and records their work f
 One execution of a workflow for an engineer's request against a repository.
 
 **Task**:
-An engineer's tracked unit of work toward one change in one repository, shown on the Tasks board. It has at most one current build run, which may be replaced by a fresh one while earlier runs stay as its history, and at most one linked issue. Every build run belongs to a task. Its pull request is always the one its current run owns.
+An engineer's tracked unit of work toward one change in one repository, shown on the Tasks board. It has at most one current build run (the newest submitted build), while earlier runs stay as its history, and at most one linked issue. Every newly submitted build belongs to a task. The manager continuously backfills taskless legacy builds after completed pull request polling passes, including empty passes, only when their latest iteration is nonterminal or their recorded pull request state is open. Terminal legacy builds with unknown, closed or merged pull request state remain taskless. A task's pull request is always the one its current run owns.
 _Avoid_: ticket, card, work item
 
 **Lane**:
-Where a task stands: Backlog, In progress, Ready for review, Blocked or Done. A lane is derived from the task's current run and its pull request; the only lane an engineer chooses is In progress, by starting or re-entering the run.
+Where a task stands, derived in precedence order: no current run → Backlog; recorded merged pull request → Done; latest iteration queued, starting or running → In progress; recorded closed pull request → Blocked; successful latest iteration with a recorded pull request URL → Ready for review; otherwise → Blocked. Recorded merged and closed states are final and no longer polled, even if GitHub later reopens the pull request; open is not final. The only lane an engineer chooses is In progress, by starting or re-entering the run.
 _Avoid_: status, column
 
 **Issue**:
-An item in an external tracker that a task is created from, GitHub today. The task keeps its tracker, reference and the title and body seen at creation; lathe never writes back to it.
+An item in an external tracker linked to a task, GitHub today. Board creation fetches a snapshot of its URL, title and body; automatically created or backfilled tasks may initially hold only the tracker and reference. Issue resolution fills missing snapshot fields while retaining existing nonempty fields. Backlog edits can replace or remove the issue link. Lathe never writes back to the tracker.
 _Avoid_: ticket, task (for the tracker's item)
 
 **Iteration**:
