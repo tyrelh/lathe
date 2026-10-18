@@ -4,6 +4,15 @@
 
 Comments should be concise. Function documentation comments should only talk about function i/o and relevant side effects. Should not explain context outside the function.
 
+## Formatting
+
+Go code must be gofmt-clean. CI checks it separately from the tests.
+
+```sh
+make fmt      # lists unformatted files and fails if any
+gofmt -w .    # fixes them
+```
+
 ## Tests
 
 Run the suite from the repository root. It needs Go 1.27; Node is optional, and the guard tests skip without it.
