@@ -3,7 +3,7 @@ BIN := $(HOME)/.local/bin/lathe
 # report `dev`, which never refreshes existing seeded files in ~/.lathe.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build release install test
+.PHONY: build release install test fmt
 
 build:
 	go build -o $(BIN) .
@@ -16,3 +16,6 @@ install: build
 
 test:
 	go test ./...
+
+fmt:
+	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi

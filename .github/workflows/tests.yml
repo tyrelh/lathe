@@ -33,5 +33,8 @@ jobs:
           node build.mjs
           git diff --exit-code -- defuddle.mjs
 
+      - name: Check formatting
+        run: make fmt
+
       - name: Run tests
         run: make test
