@@ -1758,7 +1758,7 @@ const text = (p, indent) => p == null ? '' : typeof p === 'string' ? p : JSON.st
 function runShell() {
   return `<div class="page">
       <section class="card page-summary run-project"><div class="run-heading">
-        <a href="#/runs">&larr; all runs</a><h2 id="project-title" class="one-line"></h2>
+        <a id="run-project-back">&larr; project</a><h2 id="project-title" class="one-line"></h2>
         <div class="actions"><button type="button" onclick="readRun(this)">Full request &amp; details</button>
           <button class="more" id="run-cancel" type="button" onclick="cancelRun()" hidden>Cancel</button></div>
         </div><p id="head"></p>
@@ -1849,6 +1849,7 @@ async function loadRun(current) {
 // d offers.
 function renderRunHeader(d) {
   const r = d.run;
+  $('run-project-back').setAttribute('href', projectHref(r.repo || ''));
   $('project-title').innerHTML = esc(r.repo || 'unknown repo') + (r.task_id ? ` · <a href="${esc(tasksHref(r.repo))}">Tasks</a>` : '');
   $('head').innerHTML = esc(r.request);
   $('run-total').textContent = money(r.cost);
