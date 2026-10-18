@@ -574,8 +574,8 @@ func taskWriteError(w http.ResponseWriter, err error) bool {
 func writeTaskInput(db *trace.DB, actions Actions, edit bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Repo string `json:"repo"`
-			Text string `json:"text"`
+			Repo  string `json:"repo"`
+			Text  string `json:"text"`
 			Issue string `json:"issue"`
 		}
 		if !browserJSON(w, r, &body) {

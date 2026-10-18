@@ -269,4 +269,3 @@ func outstandingOf(v *Validation, dismissals []Dismissal) []Finding {
 	}
 	return out
 }
-

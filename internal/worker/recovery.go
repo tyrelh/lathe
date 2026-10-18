@@ -44,7 +44,7 @@ type RecoverySpec struct {
 // commit the source delivered on top of base, which patch includes: only
 // what patch holds beyond it may be restored.
 type owned struct {
-	pub                          *run.Publication
+	pub                            *run.Publication
 	base, patch, digest, published string
 }
 

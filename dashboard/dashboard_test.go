@@ -226,13 +226,13 @@ func TestTaskWriteRoutes(t *testing.T) {
 		for _, tc := range []struct {
 			host, origin, content, body string
 			code                        int
-		} {
+		}{
 			{Addr, "", "application/json", "{}", 403},
 			{Addr, "http://evil.example", "application/json", "{}", 403},
-			{"evil.example", "http://"+Addr, "application/json", "{}", 403},
-			{Addr, "http://"+Addr, "text/plain", "{}", 403},
-			{Addr, "http://"+Addr, "application/json", "{", 400},
-			{Addr, "http://"+Addr, "application/json", `{"text":"`+strings.Repeat("x", maxWriteBody)+`"}`, 413},
+			{"evil.example", "http://" + Addr, "application/json", "{}", 403},
+			{Addr, "http://" + Addr, "text/plain", "{}", 403},
+			{Addr, "http://" + Addr, "application/json", "{", 400},
+			{Addr, "http://" + Addr, "application/json", `{"text":"` + strings.Repeat("x", maxWriteBody) + `"}`, 413},
 		} {
 			w := browserWrite(h, route.method, route.path, tc.host, tc.origin, tc.content, tc.body)
 			if w.Code != tc.code {
@@ -245,7 +245,7 @@ func TestTaskWriteRoutes(t *testing.T) {
 		if method == "PATCH" {
 			path += "/" + id
 		}
-		for _, body := range []string{`{}`, `{"repo":"/missing","text":"hi"}`, `{"repo":`+strconv.Quote(repo)+`,"text":" ","issue":" "}`, `{"repo":`+strconv.Quote(repo)+`,"text":"hi","issue":"42"}`} {
+		for _, body := range []string{`{}`, `{"repo":"/missing","text":"hi"}`, `{"repo":` + strconv.Quote(repo) + `,"text":" ","issue":" "}`, `{"repo":` + strconv.Quote(repo) + `,"text":"hi","issue":"42"}`} {
 			write(method, path, body, 400)
 		}
 	}
@@ -337,14 +337,14 @@ func TestTaskArchiveRoutes(t *testing.T) {
 			}
 			before := list("", 1)[0].Lane
 			for _, action := range []string{"archive", "unarchive"} {
-				path := "/api/tasks/"+taskID+"/"+action
+				path := "/api/tasks/" + taskID + "/" + action
 				for _, tc := range []struct {
 					origin, content, body string
 					code                  int
-				} {
+				}{
 					{"", "application/json", "{}", 403},
-					{"http://"+Addr, "text/plain", "{}", 403},
-					{"http://"+Addr, "application/json", "{", 400},
+					{"http://" + Addr, "text/plain", "{}", 403},
+					{"http://" + Addr, "application/json", "{", 400},
 				} {
 					if w := browserWrite(h, "POST", path, Addr, tc.origin, tc.content, tc.body); w.Code != tc.code {
 						t.Fatalf("write protection: %d %s", w.Code, w.Body.String())
