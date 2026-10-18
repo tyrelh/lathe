@@ -72,6 +72,7 @@ type Actions struct {
 	CreateTask    func(repo, text, issue string) (string, error)
 	EditTask      func(taskID, repo, text, issue string) error
 	StartTask     func(taskID string) (string, error)
+	FreshTaskRun  func(taskID, request string) (string, error)
 	ArchiveTask   func(taskID string) error
 	UnarchiveTask func(taskID string) error
 
@@ -168,6 +169,21 @@ func handler(db *trace.DB, version string, actions Actions, sources Sources) htt
 	}
 	if actions.EditTask != nil {
 		mux.HandleFunc("PATCH /api/tasks/{id}", writeTaskInput(db, actions, true))
+	}
+	if actions.FreshTaskRun != nil {
+		mux.HandleFunc("POST /api/tasks/{id}/runs", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Request string `json:"request"`
+			}
+			if !browserJSON(w, r, &body) {
+				return
+			}
+			id, err := actions.FreshTaskRun(r.PathValue("id"), strings.TrimSpace(body.Request))
+			if taskWriteError(w, err) {
+				return
+			}
+			writeStatus(w, http.StatusCreated, map[string]string{"run_id": id})
+		})
 	}
 	if actions.StartTask != nil {
 		mux.HandleFunc("POST /api/tasks/{id}/start", func(w http.ResponseWriter, r *http.Request) {

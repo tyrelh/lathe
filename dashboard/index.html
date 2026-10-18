@@ -1379,8 +1379,92 @@ async function taskWrite(id, suffix, button, done) {
     if (current === generation) button.disabled = false;
   }
 }
+let taskReentry = null;
+function taskReentryMode(t) {
+  if (t.lane === 'Ready for review') return 'revision';
+  const r = t.current_run;
+  return ['fail', 'cancelled', 'lost'].includes(r?.status) && r?.pr_state !== 'closed' ? 'recovery' : 'fresh';
+}
+function reenterBoardTask(id) {
+  const t = taskCards.get(id);
+  if (!t || view.archived || t.archived_at || !['Blocked', 'Ready for review'].includes(t.lane) || taskWrites.has(id) || taskReentry?.busy) return;
+  if (taskReentry && $('task-reentry-input').value && !confirm('Discard this re-entry draft?')) return;
+  taskReentry = {id, runID: t.current_run.run_id, mode: taskReentryMode(t), issue: !!t.issue};
+  $('task-reentry').hidden = false;
+  $('task-reentry-title').textContent = 'Re-enter task: ' + (t.issue?.title || t.text || id);
+  $('task-reentry-input').value = '';
+  $('task-reentry-error').textContent = '';
+  $('task-reentry-fresh').hidden = true;
+  drawTaskReentry();
+  $('task-reentry-input').focus();
+}
+function drawTaskReentry() {
+  const d = taskReentry;
+  $('task-reentry-submit').textContent = {revision: 'Submit revision', recovery: 'Recover run', fresh: 'Start fresh run'}[d.mode];
+  $('task-reentry-input').required = d.mode !== 'fresh' || !d.issue;
+  $('task-reentry-help').textContent = d.mode === 'fresh' && d.issue ? 'Leave blank to use the task issue.' : 'Describe the change or guidance for this run.';
+}
+function freshBoardTask() {
+  if (!taskReentry || taskReentry.busy || !taskReentry.fallback) return;
+  taskReentry.mode = 'fresh';
+  $('task-reentry-fresh').hidden = true;
+  drawTaskReentry();
+}
+function closeTaskReentry() {
+  if (taskReentry?.busy) return;
+  taskReentry = null;
+  $('task-reentry').hidden = true;
+}
+async function submitTaskReentry(event) {
+  event.preventDefault();
+  const d = taskReentry, current = generation;
+  if (!d || d.busy || taskWrites.has(d.id)) return;
+  const t = taskCards.get(d.id), request = $('task-reentry-input').value.trim();
+  if (!t || t.current_run?.run_id !== d.runID || view.archived || t.archived_at ||
+      (d.mode === 'revision' ? t.lane !== 'Ready for review' : t.lane !== 'Blocked')) {
+    $('task-reentry-error').textContent = 'The task changed. Close this form and re-open Re-enter to choose the current run.';
+    return;
+  }
+  if (!request && (d.mode !== 'fresh' || !d.issue)) {
+    $('task-reentry-error').textContent = 'Enter a request or guidance.';
+    return;
+  }
+  d.busy = true;
+  taskWrites.add(d.id);
+  $('task-reentry-submit').disabled = true;
+  $('task-reentry-input').disabled = true;
+  $('task-reentry-fresh').disabled = true;
+  try {
+    const url = d.mode === 'fresh' ? '/api/tasks/' + encodeURIComponent(d.id) + '/runs' :
+      '/api/runs/' + encodeURIComponent(d.runID) + (d.mode === 'revision' ? '/revisions' : '/recoveries');
+    const reply = await send(url, d.mode === 'recovery' ? {guidance: request} : {request});
+    if (current !== generation || taskReentry !== d) return;
+    if (!reply.ok) {
+      $('task-reentry-error').textContent = reply.error;
+      if (d.mode === 'recovery' && reply.status === 409) {
+        d.fallback = true;
+        $('task-reentry-fresh').hidden = false;
+      }
+      return;
+    }
+    $('task-reentry').hidden = true;
+    taskReentry = null;
+    await loadTasks(current);
+  } catch (e) {
+    if (current === generation && taskReentry === d) $('task-reentry-error').textContent = e.message;
+  } finally {
+    taskWrites.delete(d.id);
+    d.busy = false;
+    if (current === generation) {
+      $('task-reentry-submit').disabled = false;
+      $('task-reentry-input').disabled = false;
+      $('task-reentry-fresh').disabled = false;
+    }
+  }
+}
 const taskLanes = ['Backlog', 'In progress', 'Blocked', 'Ready for review', 'Done'];
 function tasksShell() {
+  taskReentry = null;
   taskFormProjects = false;
   taskFormBusy = false;
   taskEditID = '';
@@ -1393,6 +1477,13 @@ function tasksShell() {
       <label for="task-kind">Request type</label><select id="task-kind"><option value="text">Text</option><option value="issue">Issue reference</option></select>
       <label for="task-input">Text or issue reference</label><textarea id="task-input" required></textarea>
       <button id="task-save" type="submit">Save task</button><button type="button" onclick="resetTaskForm()">Cancel edit</button>
+    </form>
+    <form id="task-reentry" hidden onsubmit="submitTaskReentry(event)">
+      <h2 id="task-reentry-title">Re-enter task</h2><p id="task-reentry-help"></p>
+      <label for="task-reentry-input">Request or guidance</label><textarea id="task-reentry-input"></textarea>
+      <button id="task-reentry-submit" type="submit">Re-enter</button>
+      <button id="task-reentry-fresh" type="button" hidden onclick="freshBoardTask()">Use a fresh run instead</button>
+      <button type="button" onclick="closeTaskReentry()">Cancel</button><p id="task-reentry-error" role="alert"></p>
     </form><p id="task-result"></p><p id="task-error" role="alert"></p></div>
     <div id="task-board" class="task-board" tabindex="0" aria-label="Task lanes"></div></div>`;
 }
@@ -1404,6 +1495,7 @@ function taskCard(t) {
     ${t.runs.length ? `<details><summary>Earlier runs (${t.runs.length})</summary>${t.runs.map(runLink).join('<br>')}</details>` : ''}
     ${!view.archived && t.lane === 'Backlog' ? `<button data-task-id="${esc(t.id)}" onclick="editBoardTask(this.dataset.taskId)" ${taskWrites.has(t.id) ? 'disabled' : ''}>Edit</button>
     <button data-task-id="${esc(t.id)}" onclick="startBoardTask(this.dataset.taskId,this)" ${taskWrites.has(t.id) ? 'disabled' : ''}>Start</button>` : ''}
+    ${!view.archived && !t.archived_at && ['Ready for review', 'Blocked'].includes(t.lane) ? `<button data-task-id="${esc(t.id)}" onclick="reenterBoardTask(this.dataset.taskId)" ${taskWrites.has(t.id) ? 'disabled' : ''}>Re-enter</button>` : ''}
     <button data-task-id="${esc(t.id)}" onclick="changeTaskArchive(this.dataset.taskId,${!!view.archived},this)" ${taskWrites.has(t.id) ? 'disabled' : ''}>${view.archived ? 'Unarchive' : 'Archive'}</button></article>`;
 }
 async function loadTasks(current) {

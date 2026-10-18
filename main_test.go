@@ -140,6 +140,65 @@ func TestDashboardTaskWrites(t *testing.T) {
 	if row.TaskID == nil || *row.TaskID != id || row.Request != "plain text" || row.Workflow != "build" {
 		t.Fatalf("plain run = %+v", row)
 	}
+	if _, err := db.RequestCancel(plainRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dashboardFreshTaskRun(id, "  "); err == nil {
+		t.Fatal("accepted empty request without issue")
+	}
+	fresh, err := dashboardFreshTaskRun(id, "  revised prompt  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.Get(fresh)
+	if row.TaskID == nil || *row.TaskID != id || row.Request != "revised prompt" {
+		t.Fatalf("fresh prompt = %+v", row)
+	}
+	for _, prompt := range []string{"", "  override issue  "} {
+		runs, _ := db.TaskRuns(issueID)
+		if _, err := db.RequestCancel(runs[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := db.GetTask(issueID)
+		fresh, err := dashboardFreshTaskRun(issueID, prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, _ := db.Get(fresh)
+		var spec worker.Spec
+		if err := json.Unmarshal(row.Spec, &spec); err != nil {
+			t.Fatal(err)
+		}
+		wantRequest, wantIssue := "GitHub issue 42", "42"
+		if prompt != "" {
+			wantRequest, wantIssue = "override issue", ""
+		}
+		if row.TaskID == nil || *row.TaskID != issueID || row.Request != wantRequest || spec.Issue != wantIssue {
+			t.Fatalf("fresh issue = %+v, spec = %+v", row, spec)
+		}
+		after, _ := db.GetTask(issueID)
+		if !reflect.DeepEqual(before, after) {
+			t.Fatal("fresh submission changed issue provenance")
+		}
+	}
+	badID, err := db.CreateTask(trace.TaskInput{Repo: filepath.Join(home, "missing"), Text: "bad checkout"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	badRun, err := db.Submit(trace.Request{Workflow: "build", TaskID: badID, Repo: filepath.Join(home, "missing")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.RequestCancel(badRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dashboardFreshTaskRun(badID, "try again"); err == nil {
+		t.Fatal("accepted missing checkout")
+	}
+	runs, _ := db.TaskRuns(badID)
+	if len(runs) != 1 {
+		t.Fatal("preparation failure left a run")
+	}
 }
 
 func TestPrepareTaskAndSubmitUsesWriter(t *testing.T) {

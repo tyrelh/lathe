@@ -96,6 +96,41 @@ func (d *DB) StartTask(r Request) (string, error) {
 	})
 }
 
+// FreshTaskRun submits a build only for an unarchived Blocked task.
+func (d *DB) FreshTaskRun(r Request, hasPR func(Row) bool) (string, error) {
+	if r.Workflow != "build" || r.TaskID == "" {
+		return "", ErrTaskConflict
+	}
+	return d.submit(r, func(tx *sql.Tx) (Task, error) {
+		if _, err := tx.Exec(`UPDATE tasks SET id = id WHERE id = ?`, r.TaskID); err != nil {
+			return Task{}, err
+		}
+		task, err := getTask(tx, r.TaskID)
+		if err != nil {
+			return Task{}, err
+		}
+		if task.ArchivedAt != nil {
+			return Task{}, ErrTaskConflict
+		}
+		rows, err := tx.Query(runColumns+` FROM runs WHERE task_id = ? ORDER BY submitted_at DESC, run_id DESC LIMIT 1`, r.TaskID)
+		if err != nil {
+			return Task{}, err
+		}
+		runs, err := scanRows(rows)
+		if err != nil {
+			return Task{}, err
+		}
+		if len(runs) == 0 {
+			return Task{}, ErrTaskConflict
+		}
+		run := runs[0]
+		if TaskLane(run.Status, run.PRState, hasPR != nil && hasPR(run)) != LaneBlocked {
+			return Task{}, ErrTaskConflict
+		}
+		return task, nil
+	})
+}
+
 // submit records a queued run, loading an attached build task through load.
 func (d *DB) submit(r Request, load func(*sql.Tx) (Task, error)) (string, error) {
 	tx, err := d.sql.Begin()
@@ -120,6 +155,18 @@ func (d *DB) submit(r Request, load func(*sql.Tx) (Task, error)) (string, error)
 			}
 			if issue := specIssue(r.Spec); issue != "" && (task.IssueRef == nil || !issueRefsMatch(*task.IssueRef, issue)) {
 				return "", fmt.Errorf("issue conflicts with task %s", r.TaskID)
+			}
+			// Keep attached submissions strictly ordered at whole-second precision.
+			var previous sql.NullString
+			if err := tx.QueryRow(`SELECT MAX(submitted_at) FROM runs WHERE task_id = ?`, r.TaskID).Scan(&previous); err != nil {
+				return "", err
+			}
+			if previous.Valid && previous.String >= at {
+				last, err := time.Parse(time.RFC3339, previous.String)
+				if err != nil {
+					return "", err
+				}
+				at = last.Add(time.Second).UTC().Format(time.RFC3339)
 			}
 			taskID = r.TaskID
 		} else {

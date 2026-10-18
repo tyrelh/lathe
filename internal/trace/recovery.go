@@ -56,6 +56,17 @@ func (d *DB) Recover(runID string, rec Recovery) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	var superseded bool
+	if err := tx.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM runs r WHERE r.run_id = ? AND r.task_id IS NOT NULL
+		AND r.run_id != (SELECT run_id FROM runs WHERE task_id = r.task_id
+		ORDER BY submitted_at DESC, run_id DESC LIMIT 1)
+	)`, runID).Scan(&superseded); err != nil {
+		return 0, err
+	}
+	if superseded {
+		return 0, fmt.Errorf("%w: its task has a newer run; inspect the task before retrying", ErrNotRecoverable)
+	}
 	if n != rec.Source {
 		return 0, fmt.Errorf("%w: iteration %d was submitted after iteration %d was inspected; inspect the run before retrying", ErrNotRecoverable, n, rec.Source)
 	}

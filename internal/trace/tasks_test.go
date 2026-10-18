@@ -9,6 +9,52 @@ import (
 	"testing"
 )
 
+func TestFreshTaskRunAttachment(t *testing.T) {
+	db := open(t)
+	id, err := db.CreateTask(TaskInput{Repo: "/repo", Text: "original", IssueRef: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := Request{TaskID: id, Workflow: "build", Repo: "/repo", Request: "new", Spec: issueSpec("42")}
+	if _, err := db.FreshTaskRun(req, nil); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("Backlog: %v", err)
+	}
+	missing := req
+	missing.TaskID = "missing"
+	if _, err := db.FreshTaskRun(missing, nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing: %v", err)
+	}
+	old, err := db.Submit(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, db, old, StatusFail)
+	before, _ := db.GetTask(id)
+	for _, change := range []func(*Request){
+		func(r *Request) { r.Repo = "/other" },
+		func(r *Request) { r.Spec = issueSpec("43") },
+	} {
+		bad := req
+		change(&bad)
+		if _, err := db.FreshTaskRun(bad, nil); err == nil {
+			t.Fatal("accepted conflicting attachment")
+		}
+	}
+	if _, err := db.FreshTaskRun(req, nil); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := db.GetTask(id)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("changed task metadata")
+	}
+	if err := db.ArchiveTask(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.FreshTaskRun(req, nil); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("archived: %v", err)
+	}
+}
+
 func TestStandaloneTaskWrites(t *testing.T) {
 	db := open(t)
 	in := TaskInput{Repo: "/repo", Text: "GitHub issue 42", IssueRef: "42", IssueURL: "https://github.com/o/r/issues/42", IssueTitle: "title", IssueBody: ""}

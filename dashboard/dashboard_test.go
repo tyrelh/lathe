@@ -28,6 +28,124 @@ import (
 	"github.com/tyrelh/lathe/internal/worker"
 )
 
+func TestFreshTaskRunRoute(t *testing.T) {
+	for _, state := range []string{"blocked", "Backlog", "In progress", "Ready for review", "Done", "archived", "missing"} {
+		t.Run(state, func(t *testing.T) {
+			var writer *trace.DB
+			var taskID, old string
+			ro := readOnly(t, func(db *trace.DB, root string) {
+				var err error
+				writer, err = trace.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { writer.Close() })
+				taskID, err = db.CreateTask(trace.TaskInput{Repo: repo, Text: "original"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state == "Backlog" {
+					return
+				}
+				old, err = db.Submit(trace.Request{TaskID: taskID, Repo: repo, Workflow: "build", Request: "original"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state != "In progress" {
+					if _, err := db.RequestCancel(old); err != nil {
+						t.Fatal(err)
+					}
+				}
+				s, err := sql.Open("sqlite", filepath.Join(root, "lathe.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				if state == "Ready for review" || state == "Done" {
+					pr := "open"
+					if state == "Done" {
+						pr = "merged"
+					}
+					if _, err := s.Exec(`UPDATE runs SET status='ok', pr_state=? WHERE run_id=?`, pr, old); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if state == "archived" {
+					if err := db.ArchiveTask(taskID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			if state == "missing" {
+				taskID = "missing"
+			}
+			action := func(id, request string) (string, error) {
+				return writer.FreshTaskRun(trace.Request{TaskID: id, Workflow: "build", Repo: repo, Request: request}, func(trace.Row) bool { return true })
+			}
+			h := handler(ro, "test", Actions{FreshTaskRun: action}, Sources{PRURL: func(trace.Row) string { return "https://github.com/o/r/pull/1" }})
+			path := "/api/tasks/" + taskID + "/runs"
+			want := 409
+			if state == "blocked" {
+				want = 201
+			}
+			if state == "missing" {
+				want = 404
+			}
+			w := browserWrite(h, "POST", path, Addr, "http://"+Addr, "application/json", `{"request":"  fresh request  "}`)
+			if w.Code != want {
+				t.Fatalf("%d %s, want %d", w.Code, w.Body.String(), want)
+			}
+			if want == 201 {
+				var reply map[string]string
+				if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+					t.Fatal(err)
+				}
+				w = httptest.NewRecorder()
+				h.ServeHTTP(w, local("GET", "/api/tasks", nil))
+				var tasks []taskView
+				if err := json.Unmarshal(w.Body.Bytes(), &tasks); err != nil {
+					t.Fatal(err)
+				}
+				if len(tasks) != 1 || tasks[0].CurrentRun.ID != reply["run_id"] || !reflect.DeepEqual(tasks[0].Runs, []string{old}) {
+					t.Fatalf("tasks = %+v", tasks)
+				}
+				row, _ := ro.Get(reply["run_id"])
+				if row.Request != "fresh request" {
+					t.Fatalf("request = %q", row.Request)
+				}
+			}
+			assertNoWriteRoute(t, handler(ro, "test", Actions{}, Sources{}), "POST", path)
+			for _, tc := range []struct {
+				origin, content, body string
+				code                  int
+			} {
+				{"", "application/json", "{}", 403}, {"http://evil.example", "application/json", "{}", 403},
+				{"http://" + Addr, "text/plain", "{}", 403}, {"http://" + Addr, "application/json", "{", 400},
+			} {
+				w := browserWrite(h, "POST", path, Addr, tc.origin, tc.content, tc.body)
+				if w.Code != tc.code {
+					t.Fatalf("protection: %d", w.Code)
+				}
+			}
+		})
+	}
+	ro := readOnly(t, nil)
+	for _, request := range []string{`{}`, `{"request":"  "}`} {
+		called := false
+		h := handler(ro, "test", Actions{FreshTaskRun: func(id, text string) (string, error) {
+			called = true
+			if text != "" {
+				t.Fatalf("not trimmed: %q", text)
+			}
+			return "", errors.New("preparation failed")
+		}}, Sources{})
+		w := browserWrite(h, "POST", "/api/tasks/id/runs", Addr, "http://"+Addr, "application/json", request)
+		if !called || w.Code != 400 {
+			t.Fatalf("action error: %d %s", w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestTaskWriteRoutes(t *testing.T) {
 	var writer *trace.DB
 	ro := readOnly(t, func(db *trace.DB, root string) {

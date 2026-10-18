@@ -27,6 +27,46 @@ func recovery(source int) Recovery {
 	return Recovery{Source: source, Kind: KindRecovery, Resolved: "greet", Guidance: "try again", Spec: []byte(`{"workflow":"implement"}`)}
 }
 
+func TestRecoverSupersededTaskRun(t *testing.T) {
+	for _, kind := range []string{KindRecovery, KindRestart} {
+		t.Run(kind, func(t *testing.T) {
+			db := open(t)
+			old := submit(t, db, "build", "/repo")
+			attempt, token := dispatch(t, db, old)
+			if err := db.Complete(old, attempt, token, StatusFail, "it broke"); err != nil {
+				t.Fatal(err)
+			}
+			before, err := db.Get(old)
+			if err != nil || before.TaskID == nil {
+				t.Fatalf("failed run = %+v, %v", before, err)
+			}
+			fresh, err := db.FreshTaskRun(Request{
+				TaskID: *before.TaskID, Workflow: "build", Repo: "/repo", Request: "start again",
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := recovery(before.Iteration)
+			rec.Kind = kind
+			if _, err := db.Recover(old, rec); !errors.Is(err, ErrNotRecoverable) {
+				t.Fatalf("recovery after fresh submission = %v", err)
+			}
+			its, err := db.Iterations(old)
+			if err != nil || len(its) != 1 || its[0].Status != StatusFail {
+				t.Fatalf("refused recovery changed history: %+v, %v", its, err)
+			}
+			row, err := db.Get(old)
+			if err != nil || row.Iteration != before.Iteration || row.Status != StatusFail {
+				t.Fatalf("refused recovery changed run: %+v, %v", row, err)
+			}
+			queued, err := db.Queued()
+			if err != nil || len(queued) != 1 || queued[0].ID != fresh {
+				t.Fatalf("queued runs = %+v, %v", queued, err)
+			}
+		})
+	}
+}
+
 func TestRecoverArchivedTask(t *testing.T) {
 	for _, kind := range []string{KindRecovery, KindRestart} {
 		t.Run(kind, func(t *testing.T) {
