@@ -152,6 +152,82 @@ func (d *DB) UnarchiveTask(id string) error {
 	return err
 }
 
+// ErrTaskConflict means a task is no longer eligible for a Backlog write.
+var ErrTaskConflict = errors.New("task is not in Backlog or changed during preparation")
+
+// TaskInput is a task's request and optional complete issue snapshot.
+type TaskInput struct {
+	Repo       string
+	Text       string
+	IssueRef   string
+	IssueURL   string
+	IssueTitle string
+	IssueBody  string
+}
+
+// CreateTask records a task without a run.
+func (d *DB) CreateTask(in TaskInput) (string, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := insertTask(tx, in.Repo, in.Text, in.IssueRef, nowUTC())
+	if err != nil {
+		return "", err
+	}
+	if err := writeTask(tx, id, in); err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+// EditTask replaces the input of an unarchived task with no runs.
+func (d *DB) EditTask(id string, in TaskInput) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := backlogTask(tx, id); err != nil {
+		return err
+	}
+	if err := writeTask(tx, id, in); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func writeTask(tx *sql.Tx, id string, in TaskInput) error {
+	var tracker, ref, url, title, body any
+	if in.IssueRef != "" {
+		tracker, ref, url, title, body = "github", in.IssueRef, in.IssueURL, in.IssueTitle, in.IssueBody
+	}
+	_, err := tx.Exec(`UPDATE tasks SET repo = ?, text = ?, tracker = ?, issue_ref = ?,
+	 issue_url = ?, issue_title = ?, issue_body = ?, updated_at = ? WHERE id = ?`,
+		in.Repo, in.Text, tracker, ref, url, title, body, nowUTC(), id)
+	return err
+}
+
+func backlogTask(tx *sql.Tx, id string) (Task, error) {
+	// Acquire the writer lock before reading eligibility.
+	if _, err := tx.Exec(`UPDATE tasks SET id = id WHERE id = ?`, id); err != nil {
+		return Task{}, err
+	}
+	task, err := getTask(tx, id)
+	if err != nil {
+		return Task{}, err
+	}
+	var runs int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM runs WHERE task_id = ?`, id).Scan(&runs); err != nil {
+		return Task{}, err
+	}
+	if task.ArchivedAt != nil || runs != 0 {
+		return Task{}, ErrTaskConflict
+	}
+	return task, nil
+}
+
 func insertTask(tx *sql.Tx, repo, text, issue, at string) (string, error) {
 	id := "task_" + randomHex(12)
 	var tracker any

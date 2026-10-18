@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,184 @@ import (
 	"github.com/tyrelh/lathe/internal/trace"
 	"github.com/tyrelh/lathe/internal/worker"
 )
+
+func TestDashboardTaskWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	repo, err := filepath.EvalSymlinks(gitRepo(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := filepath.EvalSymlinks(gitRepo(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, db, err := openWriter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, project := range []string{repo, other} {
+		if _, err := db.Submit(trace.Request{Workflow: "plan", Repo: project}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub := t.TempDir()
+	log := filepath.Join(stub, "fetches")
+	gh := filepath.Join(stub, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho fetch >> '"+log+"'\nprintf '%s' '{\"number\":42,\"title\":\"title\",\"body\":\"body\",\"url\":\"https://github.com/o/r/issues/42\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fetches := func() int {
+		t.Helper()
+		data, _ := os.ReadFile(log)
+		return strings.Count(string(data), "fetch\n")
+	}
+	if _, err := dashboardCreateTask("/unrecorded", "text", ""); err == nil {
+		t.Fatal("accepted unrecorded repo")
+	}
+	id, err := dashboardCreateTask(repo, "", "o/r#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _ := db.GetTask(id)
+	if task.Text != "GitHub issue https://github.com/o/r/issues/42" || task.IssueRef == nil || *task.IssueRef != "https://github.com/o/r/issues/42" || task.IssueTitle == nil || *task.IssueTitle != "title" || task.IssueBody == nil || *task.IssueBody != "body" || fetches() != 1 {
+		t.Fatalf("issue task = %+v, fetches = %d", task, fetches())
+	}
+	if err := dashboardEditTask(id, repo, "", "https://github.com/o/r/issues/42"); err != nil {
+		t.Fatal(err)
+	}
+	if fetches() != 1 {
+		t.Fatal("unchanged reference fetched again")
+	}
+	if err := dashboardEditTask(id, repo, "", "42"); err != nil {
+		t.Fatal(err)
+	}
+	if fetches() != 2 {
+		t.Fatal("changed reference did not fetch")
+	}
+	if err := dashboardEditTask(id, other, "", "42"); err != nil {
+		t.Fatal(err)
+	}
+	if fetches() != 3 {
+		t.Fatal("repository change did not fetch numeric reference")
+	}
+	if err := dashboardEditTask(id, other, "  plain text  ", ""); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = db.GetTask(id)
+	if task.Text != "plain text" || task.IssueRef != nil || task.IssueURL != nil || task.IssueTitle != nil || task.IssueBody != nil || task.Tracker != nil {
+		t.Fatalf("plain task = %+v", task)
+	}
+	before := task
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho failed >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := dashboardEditTask(id, other, "", "43"); err == nil {
+		t.Fatal("fetch failure accepted")
+	}
+	after, _ := db.GetTask(id)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("failed fetch changed task")
+	}
+	tasks, _ := db.Tasks("")
+	if _, err := dashboardCreateTask(repo, "", "43"); err == nil {
+		t.Fatal("failed create accepted")
+	}
+	remaining, _ := db.Tasks("")
+	if len(remaining) != len(tasks) {
+		t.Fatal("failed create left task")
+	}
+	// Starting uses the stored reference, without fetching through gh here.
+	issueID, err := db.CreateTask(trace.TaskInput{Repo: repo, Text: "GitHub issue 42", IssueRef: "42", IssueURL: "https://github.com/o/r/issues/42", IssueTitle: "stored", IssueBody: "stored body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := dashboardStartTask(issueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := db.Get(runID)
+	if row.TaskID == nil || *row.TaskID != issueID || row.Workflow != "build" || row.Request != "GitHub issue 42" {
+		t.Fatalf("started run = %+v", row)
+	}
+	iterations, err := db.Iterations(runID)
+	if err != nil || len(iterations) != 1 {
+		t.Fatalf("iterations = %+v, %v", iterations, err)
+	}
+	var spec worker.Spec
+	if err := json.Unmarshal(iterations[0].Spec, &spec); err != nil || spec.Issue != "42" {
+		t.Fatalf("spec = %+v, %v", spec, err)
+	}
+	if _, err := dashboardStartTask(issueID); !errors.Is(err, trace.ErrTaskConflict) {
+		t.Fatalf("duplicate start: %v", err)
+	}
+	if err := dashboardEditTask(issueID, repo, "no", ""); !errors.Is(err, trace.ErrTaskConflict) {
+		t.Fatalf("edit started: %v", err)
+	}
+	plainRun, err := dashboardStartTask(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.Get(plainRun)
+	if row.TaskID == nil || *row.TaskID != id || row.Request != "plain text" || row.Workflow != "build" {
+		t.Fatalf("plain run = %+v", row)
+	}
+}
+
+func TestPrepareTaskAndSubmitUsesWriter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo, err := filepath.EvalSymlinks(gitRepo(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := trace.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_DATA_HOME", blocked)
+	id, err := db.CreateTask(trace.TaskInput{Repo: repo, Text: "GitHub issue 42", IssueRef: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := prepareTaskAndSubmit(db, "build", repo, "", "42", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.Get(runID)
+	if err != nil || row.TaskID == nil || *row.TaskID != id || row.Workflow != "build" {
+		t.Fatalf("started run = %+v, %v", row, err)
+	}
+	var spec worker.Spec
+	if err := json.Unmarshal(row.Spec, &spec); err != nil || spec.Issue != "42" {
+		t.Fatalf("spec = %+v, %v", spec, err)
+	}
+	if _, err := prepareTaskAndSubmit(db, "build", repo, "", "42", id); !errors.Is(err, trace.ErrTaskConflict) {
+		t.Fatalf("duplicate start: %v", err)
+	}
+	subdir := filepath.Join(repo, "subdir")
+	if err := os.Mkdir(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := db.CreateTask(trace.TaskInput{Repo: subdir, Text: "change"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareTaskAndSubmit(db, "build", subdir, "change", "", moved); err == nil || !strings.Contains(err.Error(), "now resolves to") {
+		t.Fatalf("checkout identity: %v", err)
+	}
+	runs, err := db.TaskRuns(moved)
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("failed preparation left runs = %+v, %v", runs, err)
+	}
+}
 
 func TestDashboardArchiveTask(t *testing.T) {
 	home := t.TempDir()

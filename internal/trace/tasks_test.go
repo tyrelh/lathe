@@ -9,6 +9,85 @@ import (
 	"testing"
 )
 
+func TestStandaloneTaskWrites(t *testing.T) {
+	db := open(t)
+	in := TaskInput{Repo: "/repo", Text: "GitHub issue 42", IssueRef: "42", IssueURL: "https://github.com/o/r/issues/42", IssueTitle: "title", IssueBody: ""}
+	id, err := db.CreateTask(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := db.GetTask(id)
+	if err != nil || task.CreatedAt == "" || task.UpdatedAt == "" || task.IssueBody == nil || *task.IssueBody != "" || task.IssueTitle == nil || *task.IssueTitle != "title" {
+		t.Fatalf("created task = %+v, %v", task, err)
+	}
+	runs, err := db.TaskRuns(id)
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("standalone runs = %v, %v", runs, err)
+	}
+	created := task.CreatedAt
+	if _, err := db.sql.Exec(`UPDATE tasks SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	in.IssueRef, in.IssueURL, in.IssueTitle, in.IssueBody = "43", "https://github.com/o/r/issues/43", "replacement", "body"
+	if err := db.EditTask(id, in); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = db.GetTask(id)
+	if *task.IssueRef != "43" || *task.IssueBody != "body" || task.CreatedAt != created || task.UpdatedAt == "2000-01-01T00:00:00Z" {
+		t.Fatalf("replacement = %+v", task)
+	}
+	if err := db.EditTask(id, TaskInput{Repo: "/other", Text: "plain"}); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = db.GetTask(id)
+	if task.Tracker != nil || task.IssueRef != nil || task.IssueURL != nil || task.IssueTitle != nil || task.IssueBody != nil || task.Text != "plain" || task.Repo != "/other" {
+		t.Fatalf("text replacement = %+v", task)
+	}
+	if err := db.EditTask("missing", in); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing: %v", err)
+	}
+	if err := db.ArchiveTask(id); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := db.GetTask(id)
+	if err := db.EditTask(id, in); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("archived: %v", err)
+	}
+	after, _ := db.GetTask(id)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("refused edit changed task")
+	}
+	for _, status := range []string{StatusQueued, StatusOK, StatusFail, StatusCancelled, StatusLost} {
+		run := submit(t, db, "build", "/repo")
+		row, _ := db.Get(run)
+		setStatus(t, db, run, status)
+		if err := db.EditTask(*row.TaskID, in); !errors.Is(err, ErrTaskConflict) {
+			t.Fatalf("%s: %v", status, err)
+		}
+	}
+}
+
+func TestTaskWriteRollback(t *testing.T) {
+	db := open(t)
+	id, err := db.CreateTask(TaskInput{Repo: "/repo", Text: "before"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`CREATE TRIGGER refuse_task_update BEFORE UPDATE ON tasks BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EditTask(id, TaskInput{Repo: "/repo", Text: "after"}); err == nil {
+		t.Fatal("edit succeeded")
+	}
+	if _, err := db.CreateTask(TaskInput{Repo: "/repo", Text: "new"}); err == nil {
+		t.Fatal("create succeeded")
+	}
+	tasks, err := db.Tasks("")
+	if err != nil || len(tasks) != 1 || tasks[0].Text != "before" {
+		t.Fatalf("rollback: %+v, %v", tasks, err)
+	}
+}
+
 func TestArchiveTask(t *testing.T) {
 	for _, status := range []string{"backlog", StatusQueued, StatusStarting, StatusRunning, StatusOK, StatusFail} {
 		t.Run(status, func(t *testing.T) {
