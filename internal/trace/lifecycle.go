@@ -105,30 +105,35 @@ func (d *DB) FreshTaskRun(r Request, hasPR func(Row) bool) (string, error) {
 		if _, err := tx.Exec(`UPDATE tasks SET id = id WHERE id = ?`, r.TaskID); err != nil {
 			return Task{}, err
 		}
-		task, err := getTask(tx, r.TaskID)
-		if err != nil {
-			return Task{}, err
-		}
-		if task.ArchivedAt != nil {
-			return Task{}, ErrTaskConflict
-		}
-		rows, err := tx.Query(runColumns+` FROM runs WHERE task_id = ? ORDER BY submitted_at DESC, run_id DESC LIMIT 1`, r.TaskID)
-		if err != nil {
-			return Task{}, err
-		}
-		runs, err := scanRows(rows)
-		if err != nil {
-			return Task{}, err
-		}
-		if len(runs) == 0 {
-			return Task{}, ErrTaskConflict
-		}
-		run := runs[0]
-		if TaskLane(run.Status, run.PRState, hasPR != nil && hasPR(run)) != LaneBlocked {
-			return Task{}, ErrTaskConflict
-		}
-		return task, nil
+		return blockedTask(tx, r.TaskID, hasPR)
 	})
+}
+
+// BlockedTask returns an unarchived task whose latest run is Blocked, or ErrTaskConflict.
+func (d *DB) BlockedTask(id string, hasPR func(Row) bool) (Task, error) {
+	return blockedTask(d.sql, id, hasPR)
+}
+
+func blockedTask(q queryer, id string, hasPR func(Row) bool) (Task, error) {
+	task, err := getTask(q, id)
+	if err != nil {
+		return Task{}, err
+	}
+	if task.ArchivedAt != nil {
+		return Task{}, ErrTaskConflict
+	}
+	rows, err := q.Query(runColumns+` FROM runs WHERE task_id = ? ORDER BY submitted_at DESC, run_id DESC LIMIT 1`, id)
+	if err != nil {
+		return Task{}, err
+	}
+	runs, err := scanRows(rows)
+	if err != nil {
+		return Task{}, err
+	}
+	if len(runs) == 0 || TaskLane(runs[0].Status, runs[0].PRState, hasPR != nil && hasPR(runs[0])) != LaneBlocked {
+		return Task{}, ErrTaskConflict
+	}
+	return task, nil
 }
 
 // submit records a queued run, loading an attached build task through load.

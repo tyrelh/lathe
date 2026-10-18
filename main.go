@@ -474,21 +474,11 @@ func dashboardFreshTaskRun(id, request string) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	task, err := db.GetTask(id)
+	hasPR := func(row trace.Row) bool { return worker.RecordedPRURL(dataRoot, row) != "" }
+	task, err := db.BlockedTask(id, hasPR)
 	if err != nil {
 		return "", err
 	}
-	if task.ArchivedAt != nil {
-		return "", trace.ErrTaskConflict
-	}
-	runs, err := db.TaskRuns(id)
-	if err != nil {
-		return "", err
-	}
-	if len(runs) == 0 || trace.TaskLane(runs[0].Status, runs[0].PRState, worker.RecordedPRURL(dataRoot, runs[0]) != "") != trace.LaneBlocked {
-		return "", trace.ErrTaskConflict
-	}
-	request = strings.TrimSpace(request)
 	issue := ""
 	if request == "" {
 		if task.IssueRef == nil || *task.IssueRef == "" {
@@ -501,9 +491,7 @@ func dashboardFreshTaskRun(id, request string) (string, error) {
 		return "", err
 	}
 	req.TaskID = id
-	return db.FreshTaskRun(req, func(row trace.Row) bool {
-		return worker.RecordedPRURL(dataRoot, row) != ""
-	})
+	return db.FreshTaskRun(req, hasPR)
 }
 
 // issueRequest is the request recorded for a run of issue raw, and its

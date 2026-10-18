@@ -1383,7 +1383,7 @@ let taskReentry = null;
 function taskReentryMode(t) {
   if (t.lane === 'Ready for review') return 'revision';
   const r = t.current_run;
-  return ['fail', 'cancelled', 'lost'].includes(r?.status) && r?.pr_state !== 'closed' ? 'recovery' : 'fresh';
+  return r?.recoverable && r.pr_state !== 'closed' ? 'recovery' : 'fresh';
 }
 function reenterBoardTask(id) {
   const t = taskCards.get(id);
@@ -1415,6 +1415,7 @@ function closeTaskReentry() {
   taskReentry = null;
   $('task-reentry').hidden = true;
 }
+function setReentryBusy(busy) { for (const id of ['task-reentry-submit', 'task-reentry-input', 'task-reentry-fresh']) $(id).disabled = busy; }
 async function submitTaskReentry(event) {
   event.preventDefault();
   const d = taskReentry, current = generation;
@@ -1431,9 +1432,7 @@ async function submitTaskReentry(event) {
   }
   d.busy = true;
   taskWrites.add(d.id);
-  $('task-reentry-submit').disabled = true;
-  $('task-reentry-input').disabled = true;
-  $('task-reentry-fresh').disabled = true;
+  setReentryBusy(true);
   try {
     const url = d.mode === 'fresh' ? '/api/tasks/' + encodeURIComponent(d.id) + '/runs' :
       '/api/runs/' + encodeURIComponent(d.runID) + (d.mode === 'revision' ? '/revisions' : '/recoveries');
@@ -1455,11 +1454,7 @@ async function submitTaskReentry(event) {
   } finally {
     taskWrites.delete(d.id);
     d.busy = false;
-    if (current === generation) {
-      $('task-reentry-submit').disabled = false;
-      $('task-reentry-input').disabled = false;
-      $('task-reentry-fresh').disabled = false;
-    }
+    if (current === generation) setReentryBusy(false);
   }
 }
 const taskLanes = ['Backlog', 'In progress', 'Blocked', 'Ready for review', 'Done'];

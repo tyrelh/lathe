@@ -29,8 +29,12 @@ import (
 )
 
 func TestFreshTaskRunRoute(t *testing.T) {
-	for _, state := range []string{"blocked", "Backlog", "In progress", "Ready for review", "Done", "archived", "missing"} {
-		t.Run(state, func(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  int
+	}{{"blocked", 201}, {"Backlog", 409}, {"In progress", 409}, {"Ready for review", 409}, {"Done", 409}, {"archived", 409}, {"missing", 404}} {
+		t.Run(tc.state, func(t *testing.T) {
+			state := tc.state
 			var writer *trace.DB
 			var taskID, old string
 			ro := readOnly(t, func(db *trace.DB, root string) {
@@ -84,18 +88,11 @@ func TestFreshTaskRunRoute(t *testing.T) {
 			}
 			h := handler(ro, "test", Actions{FreshTaskRun: action}, Sources{PRURL: func(trace.Row) string { return "https://github.com/o/r/pull/1" }})
 			path := "/api/tasks/" + taskID + "/runs"
-			want := 409
-			if state == "blocked" {
-				want = 201
-			}
-			if state == "missing" {
-				want = 404
-			}
 			w := browserWrite(h, "POST", path, Addr, "http://"+Addr, "application/json", `{"request":"  fresh request  "}`)
-			if w.Code != want {
-				t.Fatalf("%d %s, want %d", w.Code, w.Body.String(), want)
+			if w.Code != tc.want {
+				t.Fatalf("%d %s, want %d", w.Code, w.Body.String(), tc.want)
 			}
-			if want == 201 {
+			if tc.want == 201 {
 				var reply map[string]string
 				if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
 					t.Fatal(err)
@@ -114,22 +111,23 @@ func TestFreshTaskRunRoute(t *testing.T) {
 					t.Fatalf("request = %q", row.Request)
 				}
 			}
-			assertNoWriteRoute(t, handler(ro, "test", Actions{}, Sources{}), "POST", path)
-			for _, tc := range []struct {
-				origin, content, body string
-				code                  int
-			} {
-				{"", "application/json", "{}", 403}, {"http://evil.example", "application/json", "{}", 403},
-				{"http://" + Addr, "text/plain", "{}", 403}, {"http://" + Addr, "application/json", "{", 400},
-			} {
-				w := browserWrite(h, "POST", path, Addr, tc.origin, tc.content, tc.body)
-				if w.Code != tc.code {
-					t.Fatalf("protection: %d", w.Code)
-				}
-			}
 		})
 	}
 	ro := readOnly(t, nil)
+	assertNoWriteRoute(t, handler(ro, "test", Actions{}, Sources{}), "POST", "/api/tasks/id/runs")
+	h := handler(ro, "test", Actions{FreshTaskRun: func(string, string) (string, error) { return "", nil }}, Sources{})
+	for _, tc := range []struct {
+		origin, content, body string
+		code                  int
+	}{
+		{"", "application/json", "{}", 403}, {"http://evil.example", "application/json", "{}", 403},
+		{"http://" + Addr, "text/plain", "{}", 403}, {"http://" + Addr, "application/json", "{", 400},
+	} {
+		w := browserWrite(h, "POST", "/api/tasks/id/runs", Addr, tc.origin, tc.content, tc.body)
+		if w.Code != tc.code {
+			t.Fatalf("protection: %d", w.Code)
+		}
+	}
 	for _, request := range []string{`{}`, `{"request":"  "}`} {
 		called := false
 		h := handler(ro, "test", Actions{FreshTaskRun: func(id, text string) (string, error) {

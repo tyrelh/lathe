@@ -267,11 +267,12 @@ type taskIssueView struct {
 }
 
 type taskRunView struct {
-	ID        string  `json:"run_id"`
-	Iteration int     `json:"iteration"`
-	Status    string  `json:"status"`
-	PRURL     string  `json:"pr_url"`
-	PRState   *string `json:"pr_state"`
+	ID          string  `json:"run_id"`
+	Iteration   int     `json:"iteration"`
+	Status      string  `json:"status"`
+	PRURL       string  `json:"pr_url"`
+	PRState     *string `json:"pr_state"`
+	Recoverable bool    `json:"recoverable"`
 }
 
 type taskView struct {
@@ -307,7 +308,7 @@ func taskViews(db *trace.DB, prURL func(trace.Row) string, repo string, archived
 		if len(runs) > 0 {
 			r := runs[0]
 			url := prURL(r)
-			v.CurrentRun = &taskRunView{r.ID, r.Iteration, r.Status, url, r.PRState}
+			v.CurrentRun = &taskRunView{r.ID, r.Iteration, r.Status, url, r.PRState, trace.Recoverable(r) == nil}
 			v.Activity = r.Activity
 			v.Lane = trace.TaskLane(r.Status, r.PRState, url != "")
 			for _, earlier := range runs[1:] {

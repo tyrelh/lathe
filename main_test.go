@@ -143,10 +143,10 @@ func TestDashboardTaskWrites(t *testing.T) {
 	if _, err := db.RequestCancel(plainRun); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dashboardFreshTaskRun(id, "  "); err == nil {
+	if _, err := dashboardFreshTaskRun(id, ""); err == nil {
 		t.Fatal("accepted empty request without issue")
 	}
-	fresh, err := dashboardFreshTaskRun(id, "  revised prompt  ")
+	fresh, err := dashboardFreshTaskRun(id, "revised prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestDashboardTaskWrites(t *testing.T) {
 	if row.TaskID == nil || *row.TaskID != id || row.Request != "revised prompt" {
 		t.Fatalf("fresh prompt = %+v", row)
 	}
-	for _, prompt := range []string{"", "  override issue  "} {
+	for _, prompt := range []string{"", "override issue"} {
 		runs, _ := db.TaskRuns(issueID)
 		if _, err := db.RequestCancel(runs[0].ID); err != nil {
 			t.Fatal(err)

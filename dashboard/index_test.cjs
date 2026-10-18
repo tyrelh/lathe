@@ -1689,6 +1689,7 @@ let area = 'run page';
   for (const status of ['fail', 'cancelled', 'lost']) {
     taskRows[0].lane = 'Blocked';
     taskRows[0].current_run.status = status;
+    taskRows[0].current_run.recoverable = true;
     taskRows[0].current_run.pr_state = null;
     await evaluate('tick()'); await settle();
     call('reenterBoardTask', 're<task>');
@@ -1698,6 +1699,7 @@ let area = 'run page';
   }
   for (const [status, pr] of [['fail','closed'], ['ok',null]]) {
     taskRows[0].current_run.status = status;
+    taskRows[0].current_run.recoverable = status === 'fail';
     taskRows[0].current_run.pr_state = pr;
     await evaluate('tick()'); await settle();
     call('reenterBoardTask', 're<task>');
@@ -1714,6 +1716,7 @@ let area = 'run page';
   await call('submitTaskReentry', formEvent);
   assert.deepEqual(reentryWrites.at(-1).payload, {request:''}, 'issue-backed fresh run may be empty');
   taskRows[0].current_run.status = 'fail';
+  taskRows[0].current_run.recoverable = true;
   await evaluate('tick()'); await settle();
   call('reenterBoardTask', 're<task>');
   nodes.get('task-reentry-input').value = 'retained guidance';
