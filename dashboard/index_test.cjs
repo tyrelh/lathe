@@ -27,7 +27,7 @@ for (const id of ['app', 'status', 'note', 'version',
 // write's are dropped. Nothing precreates #log: that would skip the
 // first-render branch in loadRun(). scaffoldIDs are the regions every run
 // scaffold must carry.
-const scaffoldIDs = ['project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
+const scaffoldIDs = ['run-project-back', 'project-title', 'head', 'run-cancel', 'phases', 'phase', 'costs', 'summary',
   'iterations', 'revise', 'revise-request', 'revise-submit', 'revise-status',
   'resume', 'resume-guidance', 'resume-submit', 'resume-status', 'log', 'run-total',
   'tab-phases', 'tab-events', 'phases-panel', 'events-panel', 'event-controls', 'events-body', 'run-side'];
@@ -628,6 +628,8 @@ let area = 'run page';
   assert.equal(scaffoldCount, 1, 'the first poll creates the whole run scaffold');
   assert(nodes.get('revise').hidden && nodes.get('resume').hidden, 'revise and resume wait for the server to offer them');
   const scaffold = pageHTML();
+  assert(scaffold.includes('<a id="run-project-back">&larr; project</a>'));
+  assert.equal(nodes.get('run-project-back').attrs.get('href'), '#/projects/detail?repo=%2Frepo%2FMiXeD%20%3C%26%22%27%3E');
   for (const id of ['phases-panel', 'events-panel', 'events-body', 'run-side'])
     assert(scaffold.includes(`id="${id}"`), `bounded run region: ${id}`);
   assert(scaffold.includes('role="tablist"') && scaffold.includes('aria-controls="phases-panel"'));
@@ -750,6 +752,7 @@ let area = 'run page';
     'finished pages have final rows');
   assert(!costs().includes('pi/unknown') && !costs().includes('unknown/model'), 'model names are bare');
   assert.equal(scaffoldCount, 1, 'a redraw does not rebuild the append-only event stream');
+  assert.equal(nodes.get('run-project-back').attrs.get('href'), '#/projects/detail?repo=%2Frepo');
   assert.equal(nodes.get('note').textContent, 'run complete');
   assert.equal(nodes.get('follow-label').style.display, 'inline-flex', 'follow remains available in event controls after completion');
 
@@ -898,13 +901,14 @@ let area = 'run page';
 
   // A different run starts with no usage. Its total is authoritative even
   // before the backlog reaches any model responses.
-  const priced = {...run, run_id:'priced', cost:0.9};
+  const priced = {...run, run_id:'priced', repo:'/another/project', cost:0.9};
   context.location.hash = '#/runs/priced';
   evaluate('view = route()');
   const blankPage = Array.from({length:PAGE}, () => event('log', 'padding'));
   serve(blankPage, phases, priced);
   await evaluate('tick()');
   assert.equal(scaffoldCount, 2, 'navigation makes a new run scaffold');
+  assert.equal(nodes.get('run-project-back').attrs.get('href'), '#/projects/detail?repo=%2Fanother%2Fproject');
   assert(nodes.get('run-total').textContent === '$0.90' && costs().includes('Loading usage…'), costs());
   assert(!costs().includes('No usage recorded') && !costs().includes('unknown/model'),
     'neither an empty state nor the previous run leaks into a partial page');
