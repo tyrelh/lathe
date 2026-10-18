@@ -824,7 +824,10 @@ function route() {
   if (h === '' || h === '/' || h === '/overview') return {page: 'overview'};
   if (h === '/runs') return {page: 'runs'};
   if (h.startsWith('/runs/')) return {page: 'run', id: h.slice(6)};
-  if (h === '/tasks' || h.startsWith('/tasks?')) return {page: 'tasks', repo: new URLSearchParams(h.split('?')[1] || '').get('repo') || '', archived: new URLSearchParams(h.split('?')[1] || '').get('archived') === '1'};
+  if (h === '/tasks' || h.startsWith('/tasks?')) {
+    const q = new URLSearchParams(h.split('?')[1] || '');
+    return {page: 'tasks', repo: q.get('repo') || '', archived: q.get('archived') === '1'};
+  }
   if (h === '/projects') return {page: 'projects'};
   if (h === '/agents') return {page: 'agents'};
   if (h.startsWith('/agents/')) {

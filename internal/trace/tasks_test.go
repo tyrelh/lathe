@@ -21,11 +21,7 @@ func TestArchiveTask(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				for _, table := range []string{"runs", "iterations"} {
-					if _, err := db.sql.Exec(`UPDATE `+table+` SET status = ? WHERE run_id = ?`, status, id); err != nil {
-						t.Fatal(err)
-					}
-				}
+				setStatus(t, db, id, status)
 			}
 			if err := db.ArchiveTask(taskID); err != nil {
 				t.Fatal(err)
@@ -93,16 +89,21 @@ func TestArchiveCurrentSubmission(t *testing.T) {
 	if err := db.UnarchiveTask(*row.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"runs", "iterations"} {
-		if _, err := db.sql.Exec(`UPDATE `+table+` SET status = ? WHERE run_id = ?`, StatusOK, second); err != nil {
-			t.Fatal(err)
-		}
-	}
+	setStatus(t, db, second, StatusOK)
 	if err := db.ArchiveTask(*row.TaskID); err != nil {
 		t.Fatal(err)
 	}
 	if cancelled, err := db.Cancelled(first); err != nil || cancelled {
 		t.Fatalf("earlier live run cancelled = %v, %v", cancelled, err)
+	}
+}
+
+func setStatus(t *testing.T, db *DB, runID, status string) {
+	t.Helper()
+	for _, table := range []string{"runs", "iterations"} {
+		if _, err := db.sql.Exec(`UPDATE `+table+` SET status = ? WHERE run_id = ?`, status, runID); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

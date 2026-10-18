@@ -408,22 +408,21 @@ func dashboardCancel(runID string) (string, error) {
 	return db.RequestCancel(runID)
 }
 
-func dashboardArchiveTask(taskID string) error {
-	_, db, err := openWriter()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return db.ArchiveTask(taskID)
-}
+var (
+	dashboardArchiveTask   = dashboardTaskWrite((*trace.DB).ArchiveTask)
+	dashboardUnarchiveTask = dashboardTaskWrite((*trace.DB).UnarchiveTask)
+)
 
-func dashboardUnarchiveTask(taskID string) error {
-	_, db, err := openWriter()
-	if err != nil {
-		return err
+// dashboardTaskWrite returns a function that applies action to a task through a writer handle.
+func dashboardTaskWrite(action func(*trace.DB, string) error) func(string) error {
+	return func(taskID string) error {
+		_, db, err := openWriter()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		return action(db, taskID)
 	}
-	defer db.Close()
-	return db.UnarchiveTask(taskID)
 }
 
 // openWriter opens lathe's data root and database.

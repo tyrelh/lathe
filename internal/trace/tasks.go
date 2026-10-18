@@ -128,17 +128,14 @@ func (d *DB) ArchiveTask(id string) error {
 	if task.ArchivedAt != nil {
 		return nil
 	}
-	runs, err := d.TaskRuns(id)
-	if err != nil {
+	var runID string
+	switch err := d.sql.QueryRow(`SELECT run_id FROM runs WHERE task_id = ? ORDER BY submitted_at DESC, run_id DESC LIMIT 1`, id).Scan(&runID); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
 		return err
-	}
-	if len(runs) > 0 {
-		r := runs[0]
-		switch r.Status {
-		case StatusQueued, StatusStarting, StatusRunning:
-			if _, err := d.RequestCancel(r.ID); err != nil && !errors.Is(err, ErrAlreadyDone) {
-				return err
-			}
+	default:
+		if _, err := d.RequestCancel(runID); err != nil && !errors.Is(err, ErrAlreadyDone) {
+			return err
 		}
 	}
 	at := nowUTC()

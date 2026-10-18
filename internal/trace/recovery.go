@@ -52,17 +52,9 @@ func (d *DB) Recover(runID string, rec Recovery) (int, error) {
 	}
 	defer tx.Rollback()
 
-	var status string
-	var n int
-	var archived bool
-	if err := tx.QueryRow(`SELECT status, iteration,
-		EXISTS (SELECT 1 FROM tasks WHERE tasks.id = runs.task_id AND archived_at IS NOT NULL)
-		FROM runs WHERE run_id = ?`, runID).
-		Scan(&status, &n, &archived); err != nil {
+	status, n, err := runState(tx, runID, ErrNotRecoverable)
+	if err != nil {
 		return 0, err
-	}
-	if archived {
-		return 0, fmt.Errorf("%w: its task is archived", ErrNotRecoverable)
 	}
 	if n != rec.Source {
 		return 0, fmt.Errorf("%w: iteration %d was submitted after iteration %d was inspected; inspect the run before retrying", ErrNotRecoverable, n, rec.Source)
